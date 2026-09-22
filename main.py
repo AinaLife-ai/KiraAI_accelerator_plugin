@@ -1,4 +1,4 @@
-"""KiraAI 加速器 —— 在不影响质量与兼容的前提下提速。
+"""KiraAI 提速器 —— 在不影响质量与兼容的前提下提速。
 
 分层设计：
   L1 观测层    始终可开，零风险：记录每步耗时/token/抢先发送情况
@@ -29,8 +29,10 @@ from .patches import PatchHandle, PatchRegistry, install, breaker_for
 from .stream_engine import StreamEngine, LLMClientProxy
 from .auto_thinking import (
     AutoThinkingController,
+    apply_thinking_params,
     build_thinking_extra_body,
     build_nothinking_extra_body,
+    resolve_style,
 )
 
 PLUGIN_ID = "kira_accelerator"
@@ -396,56 +398,94 @@ class AcceleratorPlugin(BasePlugin):
     # L5 自动思考注入
     # ══════════════════════════════════════════════════════════
     def _install_request_hook(self) -> None:
-        """patch `_build_request_kwargs` 注入思考参数。
+        """patch 各家的请求构造方法，注入思考参数。
 
-        框架原文（utils/model_clients.py:61-73）：
-            extra_body = section_advanced.get("extra_body")
-            if extra_body: kwargs["extra_body"] = extra_body
-        我们在这里合并/覆盖 —— 不改任何配置文件，热重载即生效。
+        ★ 为什么必须挂**三个**点（2026-09-23 实测，用户提问引出）：
+            OpenAICompatibleLLMClient._build_request_kwargs
+                ← 阿里 / 硅基 / 火山 / 魔搭 / OpenAI（子类都继承它）
+            DeepSeekLLMClient._build_request_kwargs
+                ← **直接继承 LLMModelClient**，不是 OpenAI 兼容的子类
+            AnthropicCompatibleLLMClient._build_request_body
+                ← 方法名都不一样（不是 _build_request_kwargs）
+        只挂第一个 ⇒ **DeepSeek / Anthropic 用户的自动思考完全无效**
+        （实测补丁前后请求体一模一样，开关等于摆设）。
+
+        且三家"参数放哪"也不同 —— 交给 auto_thinking.apply_thinking_params 路由：
+            OpenAI 兼容系 → extra_body
+            DeepSeek      → thinking 进 extra_body，reasoning_effort 必须顶层
+            Anthropic     → thinking 必须顶层（且 budget_tokens 要 < max_tokens）
+
+        我们不改任何配置文件，热重载即生效。
         """
+        targets = []
         try:
             from core.utils import model_clients as mc
+            targets.append((mc.OpenAICompatibleLLMClient, "_build_request_kwargs",
+                            "openai"))
         except Exception:  # noqa: BLE001
-            logger.exception("[accel] 导入 model_clients 失败")
-            return
+            logger.exception("[accel] 导入 OpenAI 兼容客户端失败，跳过该注入点")
+        try:
+            from core.provider.src.deepseek.model_clients import DeepSeekLLMClient
+            targets.append((DeepSeekLLMClient, "_build_request_kwargs", "deepseek"))
+        except Exception:  # noqa: BLE001
+            logger.warning("[accel] 未找到 DeepSeek 客户端，跳过该注入点")
+        try:
+            from core.provider.src.anthropic.model_clients import (
+                AnthropicCompatibleLLMClient,
+            )
+            targets.append((AnthropicCompatibleLLMClient, "_build_request_body",
+                            "anthropic"))
+        except Exception:  # noqa: BLE001
+            logger.warning("[accel] 未找到 Anthropic 客户端，跳过该注入点")
 
         plugin = self
+        installed = []
 
-        def factory(original):
-            def build(self, request, **overrides):
-                kwargs = original(self, request, **overrides)
+        for cls, attr, kind in targets:
+            def make_factory(kind=kind):
+                def factory(original):
+                    def build(self, request, **overrides):
+                        kwargs = original(self, request, **overrides)
 
-                # ★ 请求体兼容加固：把空白 content 规范成 None
-                #   （Gemini 等网关不接受 content:""，会让该模型持续不可用）
-                if plugin.normalize_empty_content and isinstance(kwargs.get("messages"), list):
-                    from .request_compat import normalize_messages
-                    n = normalize_messages(kwargs["messages"])
-                    if n:
-                        plugin._stats["content_normalized"] = (
-                            plugin._stats.get("content_normalized", 0) + n)
+                        # ★ 请求体兼容加固：把空白 content 规范成 None
+                        #   （Gemini 等网关不接受 content:""，会让该模型持续不可用）
+                        if (kind == "openai" and plugin.normalize_empty_content
+                                and isinstance(kwargs.get("messages"), list)):
+                            from .request_compat import normalize_messages
+                            n = normalize_messages(kwargs["messages"])
+                            if n:
+                                plugin._stats["content_normalized"] = (
+                                    plugin._stats.get("content_normalized", 0) + n)
 
-                if not plugin.thinking_enabled:
-                    return kwargs
-                decision = request.__dict__.get("_accel_thinking")
-                if decision is None:
-                    return kwargs
+                        return plugin._apply_thinking(kwargs, request, kind)
+                    return build
+                return factory
 
-                extra = dict(kwargs.get("extra_body") or {})
-                if decision.enabled:
-                    extra.update(build_thinking_extra_body(plugin.thinking_style, decision.effort))
-                elif plugin.thinking_inject_nothink:
-                    extra.update(build_nothinking_extra_body(plugin.thinking_style))
-                else:
-                    return kwargs
-                kwargs["extra_body"] = extra
-                return kwargs
-            return build
+            h = PatchHandle("auto_thinking:%s" % kind)
+            if install(h, cls, attr, make_factory()) is not None:
+                self.patches.add(h)
+                installed.append(kind)
 
-        h = PatchHandle("auto_thinking")
-        if install(h, mc.OpenAICompatibleLLMClient, "_build_request_kwargs", factory) is not None:
-            self.patches.add(h)
-            logger.info("[accel] 请求钩子已安装（自动思考=%s 规范空白=%s）",
-                        self.thinking_enabled, self.normalize_empty_content)
+        logger.info("[accel] 请求钩子已安装（自动思考=%s 规范空白=%s 注入点=%s）",
+                    self.thinking_enabled, self.normalize_empty_content, installed)
+
+    def _apply_thinking(self, kwargs: dict, request: Any, client_kind: str) -> dict:
+        """按本轮判定，把思考参数合并进请求体（位置由 apply_thinking_params 决定）。"""
+        if not self.thinking_enabled:
+            return kwargs
+        decision = request.__dict__.get("_accel_thinking")
+        if decision is None:
+            return kwargs
+
+        style = resolve_style(self.thinking_style, client_kind)
+        if decision.enabled:
+            params = build_thinking_extra_body(style, decision.effort)
+        elif self.thinking_inject_nothink:
+            params = build_nothinking_extra_body(style)
+        else:
+            return kwargs
+        return apply_thinking_params(kwargs, params, client_kind)
+
 
     def _install_parallel_tools(self) -> None:
         """同轮工具并行执行（默认关）。
@@ -655,7 +695,7 @@ class AcceleratorPlugin(BasePlugin):
         #   会通过 /api/plugins/<id>/menu-icon/<route> 提供）。这样侧边栏菜单里
         #   显示的是与插件图标同一套视觉，而不是通用图标字体里的某个图标。
         menu=PageMenu(
-            label={"zh": "加速器", "en": "Accelerator"},
+            label={"zh": "提速器", "en": "Accelerator"},
             icon="icon.svg",
             order=95,
         ),
@@ -729,7 +769,7 @@ class AcceleratorPlugin(BasePlugin):
 
     @register.tool(
         "accel_report",
-        "报告 KiraAI 加速器状态：已生效的优化项、抢先发送与自动思考统计（用于排查 为什么这轮很慢）",
+        "报告 KiraAI 提速器状态：已生效的优化项、抢先发送与自动思考统计（用于排查 为什么这轮很慢）",
         # ★ 刻意**不写 `required`**（而不是写 `required: []`）：
         #   空数组是部分网关（Gemini 的函数声明校验尤其严）拒收的模式，
         #   而"没有必填参数"用**省略**表达与"空数组"完全等价。

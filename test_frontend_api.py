@@ -22,6 +22,11 @@ MAIN = HERE / "main.py"
 PASS, FAIL = [], []
 
 
+def README_TITLE_OK(text):
+    first = next((l for l in text.split("\n") if l.startswith("# ")), "")
+    return "提速器" in first
+
+
 def check(name, ok, detail=""):
     (PASS if ok else FAIL).append(name)
     print(f"  {'✓' if ok else '✗'} {name}" + (f"  [{detail}]" if detail else ""))
@@ -102,6 +107,41 @@ bad_res = audit(bad)
 bad_fails = [n for n, ok in bad_res if not ok]
 check("★ 反向验证：篡改成复数后守卫确实报红", len(bad_fails) > 0,
       f"报红项={bad_fails}")
+
+print("\n6) 插件名称一致性（改名的那个）")
+# 用户定的名字：提速器（"加速器"容易被误会成代理/梯子那类东西）
+manifest = json.loads((HERE / "manifest.json").read_text(encoding="utf-8"))
+NAME = "提速器"
+OLD = "加速器"
+zh_name = manifest["locales"]["zh"]["display_name"]
+readme = (HERE / "README.md").read_text(encoding="utf-8")
+panel = HTML.read_text(encoding="utf-8")
+main_src2 = main_src
+
+check("★ manifest 中文名是「提速器」", NAME in zh_name, zh_name)
+check("★ 侧边栏菜单 label 是「提速器」",
+      '"zh": "%s"' % NAME in main_src2 or "'zh': '%s'" % NAME in main_src2,
+      "main.py 的 PageMenu label")
+check("★ 面板 <title>/<h1> 是「提速器」", panel.count(NAME) >= 2, f"{panel.count(NAME)} 处")
+check("★ README 标题是「提速器」", README_TITLE_OK(readme), "第一行 H1")
+
+# 全仓不该再有旧名字（测试文件除外 —— 它们要提到旧名字做反向验证）
+leftovers = []
+for f in HERE.rglob("*"):
+    if not f.is_file() or "__pycache__" in str(f) or f.name.startswith("test_"):
+        continue
+    if f.suffix not in (".py", ".json", ".md", ".html"):
+        continue
+    txt = f.read_text(encoding="utf-8", errors="ignore")
+    if OLD in txt:
+        leftovers.append(f.name)
+check("★ 全仓无残留旧名字", not leftovers, f"仍有: {leftovers}")
+
+# plugin_id 绝不能跟着改（改了会让已装用户的面板/数据/接口全失效）
+check("★ plugin_id 保持 kira_accelerator（改名不动它）",
+      manifest.get("plugin_id") == "kira_accelerator", str(manifest.get("plugin_id")))
+check("★ 面板里的 PLUGIN_ID 与 manifest 一致",
+      'PLUGIN_ID = "%s"' % manifest["plugin_id"] in panel, manifest["plugin_id"])
 
 print("\n" + "=" * 56)
 print(f"通过 {len(PASS)}  失败 {len(FAIL)}")

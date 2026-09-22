@@ -1,6 +1,6 @@
 """接管护栏（Patch Handle）—— 让 monkey patch 具备"幂等 / 可还原 / 可熔断"。
 
-这是整个加速器最关键的一个模块：**没有它，接管就是不可维护的**。
+这是整个提速器最关键的一个模块：**没有它，接管就是不可维护的**。
 
 三条铁律：
   R1 幂等：重复安装必须安全（插件热重载会重复走 initialize）。
@@ -45,7 +45,7 @@ except ImportError:  # 独立运行（自检脚本直接 import patches）
 
 logger = logging.getLogger("kira_accelerator")
 
-# 标记：证明某个函数"是加速器装的"
+# 标记：证明某个函数"是提速器装的"
 MARK = "__kira_accel__"
 # 反向引用：从包装函数拿回原函数（多层包装时用得上）
 MARK_ORIGINAL = "__kira_accel_original__"

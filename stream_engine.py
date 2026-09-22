@@ -53,6 +53,22 @@ class LLMClientProxy:
         self._wrapped = wrapped
         self._engine_factory = engine_factory
 
+    # ★ 冒充被包裹对象的类型，让 isinstance 认账。
+    #   为什么必须有：框架（以及插件）到处用 isinstance 判断客户端种类，实测 20+ 处，例如
+    #       core/provider/provider_manager.py:151
+    #           if not isinstance(model_client, LLMModelClient):
+    #               raise TypeError(f"Expected LLMModelClient, got {type(...).__name__}")
+    #   而 get_default_llm / get_default_fast_llm / get_default_vlm 内部都调 get_model_client
+    #   —— 正是我们打补丁的地方。不冒充类型 ⇒ 这些全抛 TypeError。
+    #   ★ 更坑的是调用方把**任何异常**都报成
+    #       "Default LLM model not configured, please configure it in Configuration"
+    #     （core/message_manager.py:627 的 except 分支）⇒ 类型错误被伪装成"没配置模型"，
+    #     排查方向被彻底带偏。
+    #   返回值是 _wrapped.__class__ 而非固定类：父类判定也跟着对，负例仍是 False。
+    @property
+    def __class__(self):
+        return self._wrapped.__class__
+
     # 插件/框架读属性 → 透传原 client
     def __getattr__(self, name):
         return getattr(self._wrapped, name)
