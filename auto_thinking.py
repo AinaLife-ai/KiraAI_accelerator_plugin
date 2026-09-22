@@ -470,3 +470,72 @@ def build_nothinking_extra_body(style: str) -> dict:
 
 def _budget_for(effort: str) -> int:
     return {"low": 1024, "medium": 4096, "high": 16384}.get(effort, 4096)
+
+
+# ══════════════════════════════════════════════════════════════
+# 参数注入路由 —— 同样是"开思考"，三家放的位置不一样
+# ══════════════════════════════════════════════════════════════
+
+#: 客户端类型 → 默认风格（用户没显式指定时用）
+_AUTO_STYLE = {
+    "openai": "compatible",        # 阿里/硅基/火山/魔搭/OpenAI 等兼容网关
+    "deepseek": "deepseek",        # DeepSeek：thinking + 顶层 reasoning_effort(high/max)
+    "anthropic": "thinking_object",  # Anthropic：顶层 thinking
+}
+
+
+def resolve_style(user_style: str, client_kind: str) -> str:
+    """用户没指定具体风格时，按**客户端类型**选合适的那个。
+
+    `auto` 与 `compatible` 都算"没指定"：
+      · `auto` 是新的默认值；
+      · `compatible` 是历史默认值 —— 而它在 DeepSeek / Anthropic 上
+        根本没有正确写法（发出去会被忽略或报错），所以一并按类型改写。
+    用户**显式**选了别的风格（reasoning_effort / enable_thinking /
+    thinking_object / deepseek / vllm_chat_template）就原样照用。
+    """
+    if user_style in ("auto", "compatible", "", None):
+        return _AUTO_STYLE.get(client_kind, "compatible")
+    return user_style
+
+
+def apply_thinking_params(kwargs: dict, params: dict, client_kind: str) -> dict:
+    """把思考参数放进**正确的位置**。
+
+    实测三家位置不同（读框架源码确认）：
+      · OpenAI 兼容系：全部塞 `extra_body`
+      · **DeepSeek**：`thinking` 进 extra_body，但 **`reasoning_effort` 必须在顶层**
+        —— 框架自己的 `DeepSeekLLMClient._build_request_kwargs` 就是
+        `kwargs["reasoning_effort"] = ...`（不是塞进 extra_body）
+      · **Anthropic**：**`thinking` 必须在顶层**（body 参数，不是 extra_body）
+    """
+    extra = dict(kwargs.get("extra_body") or {})
+    for k, v in params.items():
+        if client_kind == "deepseek" and k == "reasoning_effort":
+            kwargs[k] = v               # ★ DeepSeek 要顶层
+        elif client_kind == "anthropic" and k == "thinking":
+            kwargs[k] = v               # ★ Anthropic 要顶层
+        else:
+            extra[k] = v
+
+    if client_kind == "anthropic":
+        th = kwargs.get("thinking")
+        if isinstance(th, dict):
+            if th.get("type") == "disabled":
+                # Anthropic 关思考 = **不发**这个字段
+                # （{"type":"disabled"} 在旧版 API 会 400）
+                kwargs.pop("thinking", None)
+            else:
+                # ★ 硬约束：Anthropic 要求 max_tokens > budget_tokens，否则 400。
+                #   我们的档位最高 16384，而框架默认 max_tokens 才 4096 ⇒ 必须夹紧。
+                mt = kwargs.get("max_tokens")
+                bt = th.get("budget_tokens")
+                if isinstance(mt, int) and isinstance(bt, int) and bt >= mt:
+                    th = dict(th)
+                    th["budget_tokens"] = max(1024, mt - 1024)
+                    kwargs["thinking"] = th
+
+    if extra:
+        kwargs["extra_body"] = extra
+    return kwargs
+
