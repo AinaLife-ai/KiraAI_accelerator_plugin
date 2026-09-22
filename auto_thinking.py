@@ -139,6 +139,8 @@ class AutoThinkingController:
         # 上下文基线（EMA）与"当前是否判定为长"（滞回状态）
         self._ctx_ema: dict[str, float] = {}
         self._ctx_samples: dict[str, int] = {}
+        # 预热期样本缓冲（用来取中位数当种子，抗首轮尖峰）
+        self._ctx_warmup: dict[str, list[float]] = {}
         self._ctx_long: dict[str, bool] = {}
         # 上一轮是否用过工具（由 on_tool_result / on_final_result 维护）
         self._last_turn_tool: dict[str, bool] = {}
@@ -214,7 +216,7 @@ class AutoThinkingController:
             return
         keep = set(sorted(self._last_decision, key=lambda s: self._opened.get(s, [0])[-1] if self._opened.get(s) else 0)[-self.max_sessions // 2:])
         for d in (self._last_decision, self._last_tool_error, self._opened,
-                  self._ctx_ema, self._ctx_samples, self._ctx_long,
+                  self._ctx_ema, self._ctx_samples, self._ctx_warmup, self._ctx_long,
                   self._last_turn_tool, self._turn_had_tool):
             for s in list(d):
                 if s not in keep:
@@ -235,15 +237,26 @@ class AutoThinkingController:
         基线何时更新：**先判定、后更新**（否则本轮尖峰会立刻抬高基线，
         把自己这次命中抹掉）。
         """
-        base = self._ctx_ema.get(sid)
-        n = self._ctx_samples.get(sid, 0)
 
-        # 攒够样本前不判定，只积累
-        if base is None or n < self.context_min_samples:
-            self._ctx_samples[sid] = n + 1
-            self._ctx_ema[sid] = (ctx_chars if base is None
-                                  else base + self.context_ema_alpha * (ctx_chars - base))
-            return ""
+        base = self._ctx_ema.get(sid)
+
+        # ── 预热期：先收集样本，用**中位数**作种子 ──
+        #   为什么不用"第一个样本"当种子：单个样本没有抗噪能力。
+        #   如果该会话第一轮恰好是个尖峰（比如刚启动就读到一段超长历史），
+        #   基线会被带跑到那个值上，之后要十几轮才收敛回真实水平 ——
+        #   这段时间里的判定全部失准（基线虚高 ⇒ 该命中的不命中）。
+        #   中位数天然抗尖峰：[100000, 35000, 35000, 35000, 35000] 的中位数还是 35000。
+        if base is None:
+            buf = self._ctx_warmup.setdefault(sid, [])
+            buf.append(float(ctx_chars))
+            if len(buf) < self.context_min_samples:
+                self._ctx_samples[sid] = len(buf)
+                return ""                      # 样本不够，只积累不判定
+            base = sorted(buf)[len(buf) // 2]   # 中位数作种子
+            self._ctx_ema[sid] = base
+            self._ctx_warmup.pop(sid, None)
+            self._ctx_samples[sid] = self.context_min_samples
+            # 种子刚建立，本轮就参与判定（不用再等一轮）
 
         was_long = self._ctx_long.get(sid, False)
         ratio = (ctx_chars / base) if base > 0 else 0.0
@@ -262,7 +275,7 @@ class AutoThinkingController:
                 hit = False
 
         # 先判定、后更新基线（EMA，平滑掉单轮尖峰）
-        self._ctx_samples[sid] = n + 1
+        self._ctx_samples[sid] = self._ctx_samples.get(sid, 0) + 1
         self._ctx_ema[sid] = base + self.context_ema_alpha * (ctx_chars - base)
 
         if hit:
