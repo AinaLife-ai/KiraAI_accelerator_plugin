@@ -535,6 +535,10 @@ function renderHealth(d){
           : '<span class="state off">' + icon("circle-slash") + '不思考</span>')
       + '<span class="metric">强度 <b>' + (t.effort || "—") + '</b></span>'
       + '<span class="metric">得分 <b>' + Number(t.score).toFixed(1) + '</b></span>'
+      + (t.context_baseline
+          ? '<span class="metric">上下文基线 <b>' + Math.round(t.context_baseline / 1000) + 'k</b>'
+            + '<span style="opacity:.6"> (命中 ' + t.ratio_on + '× / 取消 ' + t.ratio_off + '×)</span></span>'
+          : '')
       + '</div><div class="track"><i id="tbar"></i></div>'
       + '<div class="chips">' + sig + '</div>';
     requestAnimationFrame(()=>{ const b = $("#tbar"); if(b) b.style.width = pct + "%"; });

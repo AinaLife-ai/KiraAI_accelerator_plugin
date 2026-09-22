@@ -85,9 +85,11 @@ class AcceleratorPlugin(BasePlugin):
         self.thinking_inject_nothink = bool(c_thk.get("inject_nothinking", False))
         self.thinking = AutoThinkingController(
             threshold=float(c_thk.get("threshold", 2.0)),
-            tool_count_threshold=int(c_thk.get("tool_count_threshold", 6)),
-            context_char_threshold=int(c_thk.get("context_char_threshold", 6000)),
             long_message_chars=int(c_thk.get("long_message_chars", 220)),
+            context_ratio_on=float(c_thk.get("context_ratio_on", 1.6)),
+            context_ratio_off=float(c_thk.get("context_ratio_off", 1.15)),
+            context_min_samples=int(c_thk.get("context_min_samples", 5)),
+            score_last_turn_tool=float(c_thk.get("score_last_turn_tool", 1.0)),
             effort_low=float(c_thk.get("effort_low", 2.0)),
             effort_high=float(c_thk.get("effort_high", 4.5)),
             max_per_minute=int(c_thk.get("max_per_minute", 60)),
@@ -157,6 +159,8 @@ class AcceleratorPlugin(BasePlugin):
         try:
             self._stats["turns"] += 1
             sid = getattr(event, "sid", "?")
+            # 把"本轮有没有用工具"记为"上一轮"，供下一轮判定使用
+            self.thinking.commit_turn(sid)
             d = self.thinking.last_decision(sid)
             logger.info(
                 "[accel] 一轮结束 sid=%s steps=%d 抢先发=%d 首段=%.2fs 思考=%s",
@@ -208,6 +212,8 @@ class AcceleratorPlugin(BasePlugin):
         sid = getattr(event, "sid", "")
         if not sid:
             return
+        # 「上一轮用过工具」信号的数据来源
+        self.thinking.note_turn_tool(sid)
         try:
             text = getattr(tool_result, "text", "") or ""
             head = text[:200].lower()
@@ -714,6 +720,10 @@ class AcceleratorPlugin(BasePlugin):
             "thinking_now": ({
                 "enabled": d.enabled, "score": d.score,
                 "signals": d.signals, "effort": d.effort,
+                # 供面板显示"相对基线在怎么判断"
+                "context_baseline": int(self.thinking.context_baseline(sid)) if sid else 0,
+                "ratio_on": self.thinking.context_ratio_on,
+                "ratio_off": self.thinking.context_ratio_off,
             } if d else None),
         }
 

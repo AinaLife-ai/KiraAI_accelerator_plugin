@@ -149,30 +149,6 @@
           }
         }
       },
-      "tool_count_threshold": {
-        "type": "integer",
-        "name": "Tool count threshold",
-        "default": 6,
-        "hint": "Add 1.0 to the score when this many tools are available.",
-        "locales": {
-          "zh": {
-            "name": "工具数加权阈值",
-            "hint": "可用工具达到该数量时 +1.0 分（说明可能要走多步）。默认：6。"
-          }
-        }
-      },
-      "context_char_threshold": {
-        "type": "integer",
-        "name": "Context length threshold (chars)",
-        "default": 6000,
-        "hint": "Add 0.5 when the context exceeds this length.",
-        "locales": {
-          "zh": {
-            "name": "上下文长度加权阈值（字符）",
-            "hint": "上下文超过该长度时 +0.5 分（长上下文容易迷路）。默认：6000。"
-          }
-        }
-      },
       "long_message_chars": {
         "type": "integer",
         "name": "Long message threshold (chars)",
@@ -230,6 +206,54 @@
           "zh": {
             "name": "不需要时显式关闭思考",
             "hint": "本轮判定不需要思考时，主动发关闭参数（更省更快，但个别提供商不认该参数）。默认：关。"
+          }
+        }
+      },
+      "context_ratio_on": {
+        "type": "float",
+        "name": "Context: turn on above baseline ratio",
+        "default": 1.6,
+        "hint": "Score the context signal when this turn's context exceeds the session's own rolling baseline by this factor.",
+        "locales": {
+          "zh": {
+            "name": "上下文：超过基线多少倍才算「变长」（开）",
+            "hint": "不用绝对字符数，而是和**你这个会话自己的基线**比较。默认 1.6：例如平时 3.5 万，本轮涨到 5.6 万以上才命中。这样对新装用户和重度用户都有效。"
+          }
+        }
+      },
+      "context_ratio_off": {
+        "type": "float",
+        "name": "Context: turn off below baseline ratio",
+        "default": 1.15,
+        "hint": "Cancel the signal once context falls back below this factor. Two different thresholds prevent flapping.",
+        "locales": {
+          "zh": {
+            "name": "上下文：回落到多少倍以下取消（关）",
+            "hint": "和上面的倍数**故意不同**（滞回）：涨到 1.6× 命中，回落到 1.15× 以下才取消，避免在临界点附近每轮抖动。默认 1.15。"
+          }
+        }
+      },
+      "context_min_samples": {
+        "type": "integer",
+        "name": "Context: warm-up turns before scoring",
+        "default": 5,
+        "hint": "Collect this many turns before the baseline is trustworthy.",
+        "locales": {
+          "zh": {
+            "name": "上下文：攒多少轮才启用基线",
+            "hint": "样本不足时不算这个信号，只积累基线（否则前几轮判断不准）。默认 5。"
+          }
+        }
+      },
+      "score_last_turn_tool": {
+        "type": "float",
+        "name": "Score: last turn used a tool",
+        "default": 1.0,
+        "hint": "Add this when the previous turn called a tool (multi-step work in progress).",
+        "locales": {
+          "zh": {
+            "name": "权重：上一轮用过工具",
+            "hint": "上一轮调过工具 ⇒ 多半在做多步任务 ⇒ 这一轮可能还要继续，值得思考。默认 +1.0。（取代原来恒定的「工具数 >= N」，那个在一个会话里是常数、不是信号。）"
           }
         }
       }
