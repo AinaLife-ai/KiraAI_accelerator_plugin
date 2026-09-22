@@ -1,0 +1,379 @@
+[
+  {
+    "info_intro": {
+      "type": "info",
+      "name": "About",
+      "hint": "All settings of this plugin can be changed live from the sidebar WebUI (no restart, no config-file editing). Saving applies instantly: the framework unloads and re-initialises the plugin, so every takeover point is re-installed with the new settings. The panel also visualises live metrics — early-send count, first-segment latency, breaker state per takeover point, and why this turn did or did not enable deep thinking.",
+      "level": "info",
+      "locales": {
+        "zh": {
+          "name": "说明",
+          "hint": "本插件的一切配置都可以在侧边栏 WebUI 里直接修改并热生效——不用重启，也不用改配置文件。点保存即立即应用：框架会自动卸载并重新初始化插件，所有接管点按新配置重新安装。面板还会把各项数据可视化：抢先发送段数、首段发出耗时、每个接管点的熔断状态、以及本轮为什么开/不开深度思考。"
+        }
+      }
+    }
+  },
+  {
+    "key": "section_observe",
+    "label": {
+      "zh": "① 观测（零风险，建议常开）",
+      "en": "1. Observe (zero risk)"
+    },
+    "type": "section",
+    "fields": {
+      "enabled": {
+        "type": "switch",
+        "default": true,
+        "label": {
+          "zh": "启用耗时与命中统计",
+          "en": "Enable timing & hit stats"
+        },
+        "hint": {
+          "zh": "记录每步/每轮的耗时、段数、抢先发送与思考命中，输出到日志。默认：开。",
+          "en": "Log per-step latency, segments, early-send and thinking hits. Default: on."
+        }
+      },
+      "window": {
+        "type": "integer",
+        "default": 50,
+        "label": {
+          "zh": "采样窗口",
+          "en": "Sample window"
+        },
+        "hint": {
+          "zh": "内存中保留的最近样本条数。默认：50。",
+          "en": "Recent samples kept in memory. Default: 50."
+        }
+      }
+    }
+  },
+  {
+    "key": "section_stream",
+    "label": {
+      "zh": "② 流式引擎（★ 提速的核心）",
+      "en": "2. Stream engine (the core speedup)"
+    },
+    "type": "section",
+    "fields": {
+      "force_stream": {
+        "type": "switch",
+        "default": false,
+        "label": {
+          "zh": "★ 强制所有提供商走流式",
+          "en": "Force streaming for all providers"
+        },
+        "hint": {
+          "zh": "不管提供商本身怎么写，一律改用流式接口收取响应。好处：不再整段等待、首字更快、兼容非标准端点。不改变最终回复内容。默认：关。",
+          "en": "Always fetch responses via the streaming API regardless of provider defaults. Faster first token, no change to the final reply. Default: off."
+        }
+      },
+      "early_send": {
+        "type": "switch",
+        "default": false,
+        "label": {
+          "zh": "★ 抢先发送（首字即刻可见）",
+          "en": "Early send (stream to user)"
+        },
+        "hint": {
+          "zh": "边收边把已成型的消息段发出去，用户约 1 秒就能看到第一句，而不是等整段生成完。会绕过框架发送层（已补齐 ON_MESSAGE_SENT 广播）。建议先用「生效提供商」灰度。默认：关。",
+          "en": "Send each finished message segment as it is generated. Bypasses the framework send path and re-broadcasts ON_MESSAGE_SENT. Test on one provider first. Default: off."
+        }
+      },
+      "providers": {
+        "type": "list",
+        "default": [],
+        "label": {
+          "zh": "生效提供商（留空=全部）",
+          "en": "Provider allowlist (empty = all)"
+        },
+        "hint": {
+          "zh": "只对列出的提供商名称或 ID 生效，方便灰度测试。留空表示全部。默认：空。",
+          "en": "Only apply to these provider names/IDs. Empty means all. Default: empty."
+        }
+      },
+      "gap": {
+        "type": "float",
+        "default": 0.25,
+        "label": {
+          "zh": "段间隔（秒）",
+          "en": "Gap between segments (s)"
+        },
+        "hint": {
+          "zh": "抢先发送时每段之间的等待，模拟自然节奏。默认：0.25。",
+          "en": "Wait between early-sent segments. Default: 0.25."
+        }
+      }
+    }
+  },
+  {
+    "key": "section_thinking",
+    "label": {
+      "zh": "③ 自动按需思考（★ 借鉴 Alife 并增强）",
+      "en": "3. Auto on-demand thinking"
+    },
+    "type": "section",
+    "fields": {
+      "enabled": {
+        "type": "switch",
+        "default": false,
+        "label": {
+          "zh": "启用自动思考判定",
+          "en": "Enable auto thinking"
+        },
+        "hint": {
+          "zh": "按多信号打分决定本轮要不要让模型深度思考：简单寒暄不用想（更快更省），复杂问题才开（质量更好）。默认：关。",
+          "en": "Score multiple signals to decide whether this turn needs deep thinking. Simple chat skips it; hard questions enable it. Default: off."
+        }
+      },
+      "style": {
+        "type": "enum",
+        "default": "compatible",
+        "options": [
+          "compatible",
+          "reasoning_effort",
+          "deepseek",
+          "enable_thinking",
+          "thinking_object",
+          "vllm_chat_template"
+        ],
+        "label": {
+          "zh": "思考开关风格（按提供商选）",
+          "en": "Thinking switch style"
+        },
+        "hint": {
+          "zh": "不同厂商开思考的字段名与取值范围都不同，选错会被静默忽略或报错。compatible=通用（默认，只用厂商交集值）；reasoning_effort=OpenAI o 系列（low/medium/high）；deepseek=DeepSeek V4（只有 high/max，插件会自动映射）；enable_thinking=通义/阿里系；thinking_object=Anthropic 或部分网关；vllm_chat_template=vLLM 部署的通义。",
+          "en": "Providers differ in both field name and accepted values. compatible=generic (default, provider-intersection values); reasoning_effort=OpenAI o-series (low/medium/high); deepseek=DeepSeek V4 (high/max only, auto-mapped); enable_thinking=Qwen/Aliyun; thinking_object=Anthropic or some gateways; vllm_chat_template=vLLM Qwen."
+        }
+      },
+      "threshold": {
+        "type": "float",
+        "default": 2.0,
+        "label": {
+          "zh": "开启阈值（分）",
+          "en": "Enable threshold (score)"
+        },
+        "hint": {
+          "zh": "得分 >= 该值就开思考。调高=更少思考（更快），调低=更多思考（更好）。默认：2.0。",
+          "en": "Enable thinking when score >= this. Higher = fewer thinking turns (faster). Default: 2.0."
+        }
+      },
+      "tool_count_threshold": {
+        "type": "integer",
+        "default": 6,
+        "label": {
+          "zh": "工具数加权阈值",
+          "en": "Tool count threshold"
+        },
+        "hint": {
+          "zh": "可用工具达到该数量时 +1.0 分（说明可能要走多步）。默认：6。",
+          "en": "Add 1.0 to the score when this many tools are available. Default: 6."
+        }
+      },
+      "context_char_threshold": {
+        "type": "integer",
+        "default": 6000,
+        "label": {
+          "zh": "上下文长度加权阈值（字符）",
+          "en": "Context length threshold (chars)"
+        },
+        "hint": {
+          "zh": "上下文超过该长度时 +0.5 分（长上下文容易迷路）。默认：6000。",
+          "en": "Add 0.5 when the context exceeds this length. Default: 6000."
+        }
+      },
+      "long_message_chars": {
+        "type": "integer",
+        "default": 220,
+        "label": {
+          "zh": "长消息阈值（字符）",
+          "en": "Long message threshold (chars)"
+        },
+        "hint": {
+          "zh": "用户单条消息超过该长度时 +0.5 分。默认：220。",
+          "en": "Add 0.5 when a user message exceeds this length. Default: 220."
+        }
+      },
+      "effort_low": {
+        "type": "float",
+        "default": 2.0,
+        "label": {
+          "zh": "medium 档起点（分）",
+          "en": "medium effort from score"
+        },
+        "hint": {
+          "zh": "得分达到该值时用中等强度（实际发出的档位会按所选风格映射到厂商合法值）。默认：2.0。",
+          "en": "Use medium intensity from this score. The actual value sent is mapped to the provider's legal range. Default: 2.0."
+        }
+      },
+      "effort_high": {
+        "type": "float",
+        "default": 4.5,
+        "label": {
+          "zh": "high 档起点（分）",
+          "en": "high effort from score"
+        },
+        "hint": {
+          "zh": "得分达到该值时用高强度。DeepSeek 风格下 high 会映射为 max。默认：4.5。",
+          "en": "Use high intensity from this score. Under the deepseek style, high maps to max. Default: 4.5."
+        }
+      },
+      "max_per_minute": {
+        "type": "integer",
+        "default": 60,
+        "label": {
+          "zh": "每分钟最多开思考次数",
+          "en": "Max thinking turns per minute"
+        },
+        "hint": {
+          "zh": "防止被「请认真思考」之类的话术刷爆 token。默认：60。",
+          "en": "Caps thinking turns to avoid token blow-up from prompt tricks. Default: 60."
+        }
+      },
+      "inject_nothinking": {
+        "type": "switch",
+        "default": false,
+        "label": {
+          "zh": "不需要时显式关闭思考",
+          "en": "Explicitly disable when not needed"
+        },
+        "hint": {
+          "zh": "本轮判定不需要思考时，主动发关闭参数（更省更快，但个别提供商不认该参数）。默认：关。",
+          "en": "Send an explicit disable flag when thinking is not needed. Some providers reject it. Default: off."
+        }
+      }
+    }
+  },
+  {
+    "key": "section_request",
+    "label": {
+      "zh": "④ 请求优化",
+      "en": "4. Request optimization"
+    },
+    "type": "section",
+    "fields": {
+      "tame_send_delay": {
+        "type": "switch",
+        "default": false,
+        "label": {
+          "zh": "收敛发送节流（解除会话锁占用）",
+          "en": "Tame send throttle"
+        },
+        "hint": {
+          "zh": "把框架默认 2~5 秒的分段等待降到目标值。主要收益是解除会话锁被长期占用（同会话新消息不再被卡住）。卸载时自动还原。默认：关。",
+          "en": "Lower the default 2-5s per-segment delay. Main benefit: releases the session lock. Auto-restored on unload. Default: off."
+        }
+      },
+      "send_delay_target": {
+        "type": "float",
+        "default": 0.25,
+        "label": {
+          "zh": "目标间隔（秒）",
+          "en": "Target delay (s)"
+        },
+        "hint": {
+          "zh": "多段消息之间的等待秒数。默认：0.25。",
+          "en": "Wait between message segments. Default: 0.25."
+        }
+      }
+    }
+  },
+  {
+    "key": "section_takeover",
+    "label": {
+      "zh": "⑤ 底层接管（默认全关）",
+      "en": "5. Low-level takeover (all off)"
+    },
+    "type": "section",
+    "fields": {
+      "reuse_http_client": {
+        "type": "switch",
+        "default": false,
+        "label": {
+          "zh": "复用 HTTP 客户端",
+          "en": "Reuse HTTP client"
+        },
+        "hint": {
+          "zh": "缓存客户端，避免每个模型步都新建连接池与 TLS 握手。默认：关。",
+          "en": "Cache the client instead of rebuilding it every step. Default: off."
+        }
+      },
+      "async_save_memory": {
+        "type": "switch",
+        "default": false,
+        "label": {
+          "zh": "记忆落盘异步化",
+          "en": "Async memory persistence"
+        },
+        "hint": {
+          "zh": "把记忆的全量 JSON 落盘移出事件循环。卸载前会 flush，但仍建议先备份记忆文件。默认：关。",
+          "en": "Move full JSON persistence off the event loop. Flushed on unload; back up first. Default: off."
+        }
+      }
+    }
+  },
+  {
+    "key": "section_appearance",
+    "label": {
+      "zh": "⑥ 外观 · 皮肤轮换",
+      "en": "6. Appearance · Skin rotation"
+    },
+    "type": "section",
+    "fields": {
+      "wallpaper_enabled": {
+        "type": "switch",
+        "default": true,
+        "label": {
+          "zh": "启用动漫壁纸背景（自动轮换）",
+          "en": "Anime wallpaper background (auto-rotate)"
+        },
+        "hint": {
+          "zh": "面板背景使用动漫壁纸并自动轮换，带柔和遮罩保证文字可读。关掉即恢复纯深色背景。默认：开。",
+          "en": "Show auto-rotating anime wallpapers behind the panel with a soft scrim for readability. Turn off for a plain dark background. Default: on."
+        }
+      },
+      "wallpaper_interval": {
+        "type": "integer",
+        "default": 30,
+        "label": {
+          "zh": "轮换间隔（秒，0=不轮换）",
+          "en": "Rotation interval in seconds (0 = static)"
+        },
+        "hint": {
+          "zh": "每隔多少秒换一张壁纸。设为 0 则固定显示第一张。默认：30。",
+          "en": "Seconds between wallpapers. 0 keeps the first one. Default: 30."
+        }
+      },
+      "wallpaper_files": {
+        "type": "list",
+        "default": [],
+        "label": {
+          "zh": "参与轮换的壁纸",
+          "en": "Wallpapers in rotation"
+        },
+        "hint": {
+          "zh": "在下方缩略图里点选。**只选 1 张 = 不轮换**（固定显示）。不选任何一张则默认全部参与轮换。",
+          "en": "Pick thumbnails below. Selecting exactly one means no rotation (static). Selecting none means all wallpapers rotate."
+        }
+      },
+      "wallpaper_effect": {
+        "type": "enum",
+        "default": "ink",
+        "options": [
+          "ink",
+          "ink_soft",
+          "burn",
+          "fade",
+          "none"
+        ],
+        "label": {
+          "zh": "切换特效",
+          "en": "Transition effect"
+        },
+        "hint": {
+          "zh": "ink=晕染（墨渗，默认）；ink_soft=柔和晕染；burn=燃开（带暖色焦痕）；fade=普通淡入淡出；none=直接切换。",
+          "en": "ink = colour bleed (default); ink_soft = gentle bleed; burn = scorch-open with warm rim; fade = plain crossfade; none = instant."
+        }
+      }
+    }
+  }
+]
