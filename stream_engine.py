@@ -26,6 +26,7 @@ from typing import Any, Awaitable, Callable, Optional
 from core.provider.llm_model import LLMRequest, LLMResponse
 
 from .stream_first import SegmentEmitter
+from .early_sent import mark_early_sent as _mark_early_sent
 
 # ── 递归护栏 ──
 # ⚠️ 必须用 contextvars 而不是全局 set：
@@ -85,10 +86,13 @@ class StreamEngine:
         force_stream: bool = True,
         emit: Optional[Callable[[str], Awaitable[None]]] = None,
         prefer_envelope: bool = False,
+        on_complete: Optional[Callable[[Any], None]] = None,
     ):
         self.force_stream = force_stream
         self.emit = emit
         self.prefer_envelope = prefer_envelope
+        # 构造完响应后回调（供插件记录"当前响应"，发送层要用它做剥离）
+        self.on_complete = on_complete
         self.stats: dict[str, Any] = {}
 
     async def run(self, client: Any, request: LLMRequest, **kwargs) -> LLMResponse:
@@ -164,10 +168,13 @@ class StreamEngine:
             resp.cached_tokens = usage.get("cached_tokens")
         resp.time_consumed = round(time.perf_counter() - started, 2)
 
+        # ★ 兼容性关键：**不改写 resp.text_response**
+        #   实测框架内置 kira-ai 插件与 sustained-chat 插件都会在 ON_LLM_RESPONSE 里
+        #   把它当作"模型的完整输出"来用（XML 校验 / 判断 AI 是否说话）。
+        #   我们只打一个标记，"剥离已发段"推迟到真正发送时做（main.py 的发送层）。
         early = len(emitter.emitted) if emitter else 0
         if early:
-            remaining = emitter.remaining()          # type: ignore[union-attr]
-            resp.text_response = remaining if remaining.strip() else "<msg/>"
+            _mark_early_sent(resp, emitter.emitted, resp.text_response)
 
         stats = {
             "chunks": chunks,
@@ -178,6 +185,11 @@ class StreamEngine:
         }
         resp.__dict__["_accel_stats"] = stats
         self.stats = stats
+        if self.on_complete is not None:
+            try:
+                self.on_complete(resp)
+            except Exception:  # noqa: BLE001
+                pass
         return resp
 
 

@@ -84,6 +84,14 @@ class ThinkingDecision:
                 f"effort={self.effort!r}, signals={self.signals})")
 
 
+# ── 会话起步"爬升期"抑制参数 ──
+# 会话刚开始时上下文会从接近 0 涨到稳定值（必然现象，不是"异常变长"）。
+# 这期间基线在追赶，会持续被判为"偏离基线"⇒ 十几轮误判。
+# 所以要求：基线**连续 N 轮变化都很小**后，才认为它代表"平时水平"，才开始判定。
+CONTEXT_SETTLE_TURNS = 3      # 连续多少轮
+CONTEXT_SETTLE_TOL = 0.05     # "变化很小" = 基线相对变化 ≤ 5%
+
+
 class AutoThinkingController:
     """多信号打分的自动思考开关。
 
@@ -100,9 +108,20 @@ class AutoThinkingController:
     def __init__(
         self,
         threshold: float = 2.0,
-        tool_count_threshold: int = 6,
-        context_char_threshold: int = 6000,
         long_message_chars: int = 220,
+        # ── 上下文信号：相对**自己会话的基线**，不再用绝对字符数 ──
+        #    绝对值对不同用户意义完全不同（新装用户 6000 就很长，
+        #    装了插件的人每轮都 3 万+ ⇒ 信号永远是"真" ⇒ 等于偷偷把阈值挪走）。
+        context_ratio_on: float = 1.6,     # 超过基线这个倍数 ⇒ 命中
+        context_ratio_off: float = 1.15,   # 回落到这个倍数以下 ⇒ 取消命中（滞回，防抖）
+        context_min_samples: int = 5,      # 攒够这么多样本才启用（否则无基线、不判定）
+        # 基线 EMA 的更新系数。越大越"健忘"（单轮尖峰一过就把基线带跑，
+        # 于是后续即使仍高于历史水平也不再算"长"）；越小越"稳"。
+        # 0.15 = 单轮尖峰只把基线推 15% 的差值，代表"平时水平"。
+        context_ema_alpha: float = 0.15,
+        # ── 工具信号：换成「上一轮是否用过工具」（逐轮变化，真正的信号）──
+        #    原来的「工具数 >= N」在一个会话里基本恒定，不是信号而是常数。
+        score_last_turn_tool: float = 1.0,
         effort_map: Optional[dict[str, str]] = None,
         effort_low: float = 2.0,
         effort_high: float = 4.5,
@@ -110,9 +129,12 @@ class AutoThinkingController:
         max_sessions: int = 500,
     ):
         self.threshold = threshold
-        self.tool_count_threshold = tool_count_threshold
-        self.context_char_threshold = context_char_threshold
         self.long_message_chars = long_message_chars
+        self.context_ratio_on = float(context_ratio_on)
+        self.context_ratio_off = float(context_ratio_off)
+        self.context_min_samples = max(1, int(context_min_samples))
+        self.context_ema_alpha = min(1.0, max(0.01, float(context_ema_alpha)))
+        self.score_last_turn_tool = float(score_last_turn_tool)
         self.effort_low = effort_low
         self.effort_high = effort_high
         self.max_per_minute = max_per_minute
@@ -122,6 +144,18 @@ class AutoThinkingController:
         self._last_tool_error: dict[str, bool] = {}
         self._last_decision: dict[str, ThinkingDecision] = {}
         self._opened: dict[str, list[float]] = {}
+        # 上下文基线（EMA）与"当前是否判定为长"（滞回状态）
+        self._ctx_ema: dict[str, float] = {}
+        self._ctx_samples: dict[str, int] = {}
+        # 预热期样本缓冲（用来取中位数当种子，抗首轮尖峰）
+        self._ctx_warmup: dict[str, list[float]] = {}
+        # 基线是否已"稳定到能代表平时水平"（一旦成立就锁定，不再回退）
+        self._ctx_ready: dict[str, bool] = {}
+        self._ctx_settle: dict[str, int] = {}
+        self._ctx_long: dict[str, bool] = {}
+        # 上一轮是否用过工具（由 on_tool_result / on_final_result 维护）
+        self._last_turn_tool: dict[str, bool] = {}
+        self._turn_had_tool: dict[str, bool] = {}
         self.max_sessions = max_sessions
 
     # ── 外部信号接口（对标 Alife 的 Rent/Return）──
@@ -155,17 +189,19 @@ class AutoThinkingController:
             score += 1.5
             signals.append("上轮工具失败")
 
-        # 3) 工具数量
-        tool_count = len(getattr(request, "tools", None) or [])
-        if tool_count >= self.tool_count_threshold:
-            score += 1.0
-            signals.append(f"工具多({tool_count})")
+        # 3) 上一轮用过工具 ⇒ 说明在做多步任务，这一轮很可能还要走多步
+        #    （原来的"工具数 >= N"在一个会话里恒定不变，是常数而不是信号，
+        #      它会恒定地+1.0，等于偷偷把阈值挪走）
+        if self._last_turn_tool.get(sid):
+            score += self.score_last_turn_tool
+            signals.append("上轮用过工具")
 
-        # 4) 上下文规模
+        # 4) 上下文相对**自己会话的基线**是否明显变长
         ctx_chars = self._context_chars(request)
-        if ctx_chars >= self.context_char_threshold:
+        ctx_sig = self._update_context_signal(sid, ctx_chars)
+        if ctx_sig:
             score += 0.5
-            signals.append(f"上下文长({ctx_chars})")
+            signals.append(ctx_sig)
 
         # 5) 单条消息长度
         if len(text) >= self.long_message_chars:
@@ -190,10 +226,108 @@ class AutoThinkingController:
         if len(self._last_decision) <= self.max_sessions:
             return
         keep = set(sorted(self._last_decision, key=lambda s: self._opened.get(s, [0])[-1] if self._opened.get(s) else 0)[-self.max_sessions // 2:])
-        for d in (self._last_decision, self._last_tool_error, self._opened):
+        for d in (self._last_decision, self._last_tool_error, self._opened,
+                  self._ctx_ema, self._ctx_samples, self._ctx_warmup, self._ctx_long,
+                  self._ctx_ready, self._ctx_settle,
+                  self._last_turn_tool, self._turn_had_tool):
             for s in list(d):
                 if s not in keep:
                     d.pop(s, None)
+
+    # ── 上下文信号：相对基线 + 滞回 ──
+    def _update_context_signal(self, sid: str, ctx_chars: int) -> str:
+        """返回信号描述（命中时），或空串（未命中/还在攒基线）。
+
+        为什么用**相对基线**而不是绝对字符数：
+          绝对值（比如 6000）对不同用户意义完全不同 —— 新装用户觉得"很长"，
+          装了插件的人每轮 3 万+，于是这个信号**永远为真** ⇒ 零信息量，
+          而且会恒定地把阈值往下挪。
+
+        为什么用**滞回**（开 1.6× / 关 1.15× 两个不同阈值）：
+          只用单一阈值时，上下文在临界点附近波动会导致每轮开关抖动。
+
+        基线何时更新：**先判定、后更新**（否则本轮尖峰会立刻抬高基线，
+        把自己这次命中抹掉）。
+        """
+
+        base = self._ctx_ema.get(sid)
+
+        # ── 预热期：先收集样本，用**中位数**作种子 ──
+        #   为什么不用"第一个样本"当种子：单个样本没有抗噪能力。
+        #   如果该会话第一轮恰好是个尖峰（比如刚启动就读到一段超长历史），
+        #   基线会被带跑到那个值上，之后要十几轮才收敛回真实水平 ——
+        #   这段时间里的判定全部失准（基线虚高 ⇒ 该命中的不命中）。
+        #   中位数天然抗尖峰：[100000, 35000, 35000, 35000, 35000] 的中位数还是 35000。
+        if base is None:
+            buf = self._ctx_warmup.setdefault(sid, [])
+            buf.append(float(ctx_chars))
+            if len(buf) < self.context_min_samples:
+                self._ctx_samples[sid] = len(buf)
+                return ""                      # 样本不够，只积累不判定
+            base = sorted(buf)[len(buf) // 2]   # 中位数作种子
+            self._ctx_ema[sid] = base
+            self._ctx_warmup.pop(sid, None)
+            self._ctx_samples[sid] = self.context_min_samples
+            # 种子刚建立，本轮就参与判定（不用再等一轮）
+
+        # ── 判断基线是否已"稳定"，没稳定就不判定 ──
+        #   理由：会话起步时上下文从接近 0 涨到稳定值，基线在追赶，
+        #   这期间会持续被判为"偏离基线"（十几轮误判）。
+        #   ★ 一旦 ready 就锁定为 True —— 否则一次真实尖峰会让基线大幅变化、
+        #     把 settle 计数清零，反而在"最该判定"的时候把信号关掉。
+        settle = self._ctx_settle.get(sid, 0)
+        new_base = base + self.context_ema_alpha * (ctx_chars - base)
+        rel = (abs(new_base - base) / base) if base > 0 else 1.0
+        settle = settle + 1 if rel <= CONTEXT_SETTLE_TOL else 0
+        self._ctx_settle[sid] = settle
+        ready = self._ctx_ready.get(sid, False) or settle >= CONTEXT_SETTLE_TURNS
+        self._ctx_ready[sid] = ready
+
+        was_long = self._ctx_long.get(sid, False)
+        ratio = (ctx_chars / base) if base > 0 else 0.0
+
+        if not ready:
+            # 基线还在追赶 ⇒ 本轮不判定（但仍继续更新基线/样本）
+            self._ctx_samples[sid] = self._ctx_samples.get(sid, 0) + 1
+            self._ctx_ema[sid] = new_base
+            return ""
+
+        if was_long:
+            if ratio < self.context_ratio_off:
+                self._ctx_long[sid] = False            # 回落到关阈值以下 ⇒ 恢复
+                hit = False
+            else:
+                hit = True
+        else:
+            if ratio > self.context_ratio_on:
+                self._ctx_long[sid] = True             # 突破开阈值 ⇒ 命中
+                hit = True
+            else:
+                hit = False
+
+        # 先判定、后更新基线（EMA，平滑掉单轮尖峰）
+        self._ctx_samples[sid] = self._ctx_samples.get(sid, 0) + 1
+        self._ctx_ema[sid] = new_base
+
+        if hit:
+            return f"上下文偏离基线({ratio:.2f}×)"
+        return ""
+
+    def context_baseline(self, sid: str) -> float:
+        """给面板看：该会话当前的上下文基线。"""
+        return float(self._ctx_ema.get(sid, 0.0) or 0.0)
+
+    # ── 工具信号：维护"上一轮是否用过工具" ──
+    def note_turn_tool(self, sid: str) -> None:
+        """本轮调用了工具（由 on_tool_result 调用）。"""
+        if sid:
+            self._turn_had_tool[sid] = True
+
+    def commit_turn(self, sid: str) -> None:
+        """本轮结束（由 on_final_result 调用）：把本轮的工具有无记为"上一轮"。"""
+        if not sid:
+            return
+        self._last_turn_tool[sid] = bool(self._turn_had_tool.pop(sid, False))
 
     def _budget_ok(self, sid: str) -> bool:
         now = time.time()
@@ -235,7 +369,20 @@ class AutoThinkingController:
 
     @staticmethod
     def _context_chars(request: Any) -> int:
+        """量"模型本轮真正会看到的上下文"。
+
+        ★ 必须把 `user_prompt` 也算进来：判断发生在 ON_LLM_REQUEST，
+          那一刻 `request.messages` 里**只有历史**，本轮刚收到的消息
+          还在 `request.user_prompt` 里（框架到 assemble_prompt 才合并）。
+          只量 messages 会导致"本轮消息把上下文撑大"要等到下一轮才被察觉 ——
+          也就是判断滞后一轮。
+        """
         total = 0
+        for p in getattr(request, "user_prompt", None) or []:
+            try:
+                total += len(getattr(p, "content", "") or "")
+            except Exception:  # noqa: BLE001
+                pass
         for m in getattr(request, "messages", None) or []:
             try:
                 c = m.get("content") if isinstance(m, dict) else getattr(m, "content", "")
