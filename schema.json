@@ -120,12 +120,12 @@
       "enabled": {
         "type": "switch",
         "name": "Enable auto thinking",
-        "default": true,
-        "hint": "Score several signals to decide whether this turn needs deep thinking. Simple chat skips it; hard questions enable it.",
+        "default": false,
+        "hint": "Score several signals to decide whether this turn needs deep thinking. Off by default because it changes request parameters; turn it on if your provider supports a thinking switch.",
         "locales": {
           "zh": {
             "name": "启用自动思考判定",
-            "hint": "按多信号打分决定本轮要不要让模型深度思考：简单寒暄不用想（更快更省），复杂问题才开（质量更好）。默认：开。"
+            "hint": "按多信号打分决定本轮要不要让模型深度思考：简单寒暄不用想（更快更省），复杂问题才开（质量更好）。默认关（因为这会改变发给模型的参数，且需要你的提供商支持思考开关）。"
           }
         }
       },
