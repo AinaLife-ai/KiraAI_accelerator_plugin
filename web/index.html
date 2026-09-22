@@ -892,7 +892,18 @@ function wpUrl(name){ return PAPI + "/wallpapers/" + encodeURIComponent(name); }
 function wpTransition(url){
   if (wpBusy) return;
   wpBusy = true;
+  // ★ 兜底：切换过程中任何异常都必须把锁放掉。
+  //   否则 wpBusy 永久为 true ⇒ 之后每次调用都在第一行 return
+  //   ⇒ **轮换静默死掉**（没有任何报错，只是图永远不换）。
+  try {
+    _wpTransition(url);
+  } catch (e) {
+    console.error("[accel] 壁纸切换失败，已释放锁", e);
+    wpBusy = false;
+  }
+}
 
+function _wpTransition(url){
   const a = $("#" + wpCur);
   const b = $("#" + (wpCur === "wp-a" ? "wp-b" : "wp-a"));
   const dur = wpEffect === "none" ? 0 : (wpEffect === "fade" ? 1500 : 1800);
@@ -941,11 +952,17 @@ function wpTransition(url){
   b.style.maskRepeat = "no-repeat"; b.style.webkitMaskRepeat = "no-repeat";
 
   // ★ 每次随机一个晕染中心（不是固定正中）—— 像墨滴落在纸上的不同位置
-  const cx = (18 + Math.random() * 64).toFixed(1);   // 18% ~ 82%
-  const cy = (18 + Math.random() * 64).toFixed(1);
-  // 再加一点方向性偏移，让扩散不是完美同心圆（更自然）
-  const ex = (cx + (Math.random() * 24 - 12)).toFixed(1);
-  const ey = (cy + (Math.random() * 24 - 12)).toFixed(1);
+  // ⚠️ 陷阱：cx/cy 是 toFixed() 的产物，**是字符串**。
+  //    拿它去参与算术会变成字符串拼接（"57.3" + 5 = "57.35"），
+  //    而字符串上没有 .toFixed ⇒ TypeError ⇒ 切换在 rAF 之前就抛，
+  //    新层拿不到 .on、wpBusy 永远卡 true ⇒ **整个轮换从此死掉**。
+  //    所以：先用数值算完，最后一步才转字符串。
+  const cxN = 18 + Math.random() * 64;              // 18% ~ 82%
+  const cyN = 18 + Math.random() * 64;
+  const exN = cxN + (Math.random() * 24 - 12);      // 一点方向性偏移，不完美同心
+  const eyN = cyN + (Math.random() * 24 - 12);
+  const cx = cxN.toFixed(1), cy = cyN.toFixed(1);
+  const ex = exN.toFixed(1), ey = eyN.toFixed(1);
   const at = " at " + cx + "% " + cy + "%";
   const edge = " at " + ex + "% " + ey + "%";
   const g0 = "radial-gradient(circle" + at + ", #000 0%, #000 5%, transparent 13%)";
