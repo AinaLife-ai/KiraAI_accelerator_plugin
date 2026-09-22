@@ -247,49 +247,13 @@
       }
     }
   },
-  "section_request": {
-    "type": "section",
-    "name": "4. Request optimisation",
-    "collapsed": false,
-    "locales": {
-      "zh": {
-        "name": "④ 请求优化"
-      }
-    },
-    "fields": {
-      "tame_send_delay": {
-        "type": "switch",
-        "name": "Tame send throttle",
-        "default": true,
-        "hint": "Lower the default 2-5s per-segment delay. Main benefit: the session lock is no longer held for seconds. Auto-restored on unload.",
-        "locales": {
-          "zh": {
-            "name": "收敛发送节流（解除会话锁占用）",
-            "hint": "把框架默认 2~5 秒的分段等待降到目标值。主要收益是解除会话锁被长期占用（同会话新消息不再被卡住）。卸载时自动还原。默认：开。"
-          }
-        }
-      },
-      "send_delay_target": {
-        "type": "float",
-        "name": "Target delay (s)",
-        "default": 0.25,
-        "hint": "Wait between message segments.",
-        "locales": {
-          "zh": {
-            "name": "目标间隔（秒）",
-            "hint": "多段消息之间的等待秒数。默认：0.25。"
-          }
-        }
-      }
-    }
-  },
   "section_takeover": {
     "type": "section",
-    "name": "5. Low-level takeover",
+    "name": "4. Low-level takeover",
     "collapsed": true,
     "locales": {
       "zh": {
-        "name": "⑤ 底层接管"
+        "name": "④ 底层接管"
       }
     },
     "fields": {
@@ -309,11 +273,11 @@
   },
   "section_appearance": {
     "type": "section",
-    "name": "6. Appearance - skin rotation",
+    "name": "5. Appearance - skin rotation",
     "collapsed": false,
     "locales": {
       "zh": {
-        "name": "⑥ 外观 · 皮肤轮换"
+        "name": "⑤ 外观 · 皮肤轮换"
       }
     },
     "fields": {

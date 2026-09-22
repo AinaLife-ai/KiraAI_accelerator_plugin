@@ -52,8 +52,6 @@ class AcceleratorPlugin(BasePlugin):
         self.observe_enabled = bool(c_obs.get("enabled", True))
         self.observe_window = int(c_obs.get("window", 50))
 
-        self.tame_send_delay = bool(c_req.get("tame_send_delay", False))
-        self.send_delay_target = float(c_req.get("send_delay_target", 0.25))
 
         self.takeover_build_client = bool(c_tak.get("reuse_http_client", False))
 
@@ -84,7 +82,6 @@ class AcceleratorPlugin(BasePlugin):
 
         # ── 运行时状态 ──
         self._samples: deque[dict] = deque(maxlen=self.observe_window)
-        self._orig_send_delay: Optional[tuple[float, float]] = None
         self._client_cache: dict[tuple, Any] = {}
         self._current_sid: Optional[str] = None
         self._current_event: Any = None
@@ -104,8 +101,6 @@ class AcceleratorPlugin(BasePlugin):
             self.observe_enabled, self.force_stream,
             self.early_send, self.thinking_enabled,
         )
-        if self.tame_send_delay:
-            self._install_send_delay()
         if self.takeover_build_client:
             self._install_client_cache()
         if self.force_stream or self.early_send:
@@ -115,7 +110,6 @@ class AcceleratorPlugin(BasePlugin):
 
     async def terminate(self) -> None:
         self.patches.uninstall_all()
-        self._restore_send_delay()
         self._proxy_cache.clear()
         logger.info("[accel] terminate，所有接管点已还原")
 
@@ -204,24 +198,6 @@ class AcceleratorPlugin(BasePlugin):
                 self.thinking.note_tool_ok(sid)
         except Exception:  # noqa: BLE001
             logger.exception("[accel] 工具结果信号读取失败（已忽略）")
-
-    # ── 发送节流收敛（解除 session_lock 被 sleep 占用）──
-    def _install_send_delay(self) -> None:
-        mp = getattr(self.ctx, "message_processor", None)
-        if mp is None:
-            logger.warning("[accel] 拿不到 message_processor，跳过节流收敛")
-            return
-        self._orig_send_delay = (mp.min_message_delay, mp.max_message_delay)
-        mp.min_message_delay = self.send_delay_target
-        mp.max_message_delay = self.send_delay_target
-        logger.info("[accel] 发送节流 %s → %.2fs/段（卸载时还原）",
-                    self._orig_send_delay, self.send_delay_target)
-
-    def _restore_send_delay(self) -> None:
-        mp = getattr(self.ctx, "message_processor", None)
-        if mp is not None and self._orig_send_delay is not None:
-            mp.min_message_delay, mp.max_message_delay = self._orig_send_delay
-        self._orig_send_delay = None
 
     # ══════════════════════════════════════════════════════════
     # L3 接管
