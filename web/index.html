@@ -1,0 +1,1046 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>KiraAI 加速器</title>
+<style>
+/* ═══════════════════════════════════════════════════════════════
+   KiraAI Accelerator · Control Deck
+   全图标为 Lucide（sprite 内联，无 CDN、无 emoji）
+   ═══════════════════════════════════════════════════════════════ */
+@font-face{font-family:"NimbusDisplay";src:local("Helvetica Neue"),local("Arial");font-weight:800}
+
+:root{
+  --ink:#0a0b12;
+  --panel:rgba(16,18,28,.50);
+  --panel-solid:#161825;
+  --edge:rgba(255,255,255,.08);
+  --edge-hi:rgba(255,255,255,.18);
+  --fg:#eef1fb;
+  --dim:#8e97b4;
+  --dim2:#616a86;
+  --pink:#ff6fae;
+  --mint:#5ef0c0;
+  --violet:#8b7cff;
+  --amber:#ffc46b;
+  --rose:#ff7a90;
+  --glow-pink:0 0 30px rgba(255,111,174,.45);
+  --glow-mint:0 0 30px rgba(94,240,192,.4);
+  --r:18px;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{
+  background:var(--ink);color:var(--fg);overflow-x:hidden;
+  font:14px/1.65 -apple-system,BlinkMacSystemFont,"PingFang SC","Noto Sans CJK SC","Hiragino Sans GB",sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+.ico{width:1em;height:1em;fill:none;stroke:currentColor;stroke-width:2;
+     stroke-linecap:round;stroke-linejoin:round;flex:none}
+
+/* ── 背景层：可轮换动漫壁纸（可在配置里关掉） ── */
+.wallpaper{position:fixed;inset:0;z-index:0;pointer-events:none;background:#0a0b12}
+.wp-layer{position:absolute;inset:0;background-size:cover;background-position:center;
+  opacity:0;transition:opacity 1.6s ease-in-out;will-change:opacity}
+.wp-layer.on{opacity:1}
+/* 遮罩：既保证 UI 可读，又让壁纸透出来（不是把图盖死） */
+.wp-scrim{position:absolute;inset:0;
+  background:
+    linear-gradient(180deg, rgba(10,11,18,.92) 0%, rgba(10,11,18,.62) 12%,
+                            rgba(10,11,18,.40) 34%, rgba(10,11,18,.56) 70%,
+                            rgba(10,11,18,.88) 100%),
+    radial-gradient(130% 76% at 50% 44%, rgba(10,11,18,.06), rgba(10,11,18,.52) 82%)}
+body.no-wallpaper .wallpaper{display:none}
+
+/* ── 背景：极光 + 网格 ── */
+.aurora{position:fixed;inset:-30%;z-index:1;pointer-events:none;filter:blur(80px);opacity:.42}
+.aurora i{position:absolute;display:block;border-radius:50%}
+.a1{width:46vw;height:46vw;left:2%;top:6%;background:radial-gradient(circle,#ff6fae,transparent 66%);
+    animation:drift1 26s ease-in-out infinite}
+.a2{width:40vw;height:40vw;right:4%;top:22%;background:radial-gradient(circle,#8b7cff,transparent 66%);
+    animation:drift2 32s ease-in-out infinite}
+.a3{width:38vw;height:38vw;left:26%;bottom:2%;background:radial-gradient(circle,#5ef0c0,transparent 66%);
+    animation:drift3 29s ease-in-out infinite}
+@keyframes drift1{0%,100%{transform:translate(0,0) scale(1)}50%{transform:translate(6vw,4vh) scale(1.15)}}
+@keyframes drift2{0%,100%{transform:translate(0,0) scale(1.1)}50%{transform:translate(-5vw,6vh) scale(.92)}}
+@keyframes drift3{0%,100%{transform:translate(0,0) scale(.95)}50%{transform:translate(4vw,-5vh) scale(1.12)}}
+.grid{position:fixed;inset:0;z-index:1;pointer-events:none;opacity:.34;
+  background-image:linear-gradient(rgba(255,255,255,.045) 1px,transparent 1px),
+                   linear-gradient(90deg,rgba(255,255,255,.045) 1px,transparent 1px);
+  background-size:46px 46px;
+  mask-image:radial-gradient(120% 80% at 50% 0%,#000 20%,transparent 78%);
+  -webkit-mask-image:radial-gradient(120% 80% at 50% 0%,#000 20%,transparent 78%)}
+
+/* ── 布局 ── */
+.shell{position:relative;z-index:2;max-width:880px;margin:0 auto;padding:26px 18px 104px}
+header{display:flex;align-items:flex-end;justify-content:space-between;gap:14px;margin-bottom:26px;flex-wrap:wrap}
+.brand{display:flex;align-items:center;gap:11px}
+.brand .mark{width:40px;height:40px;border-radius:13px;display:grid;place-items:center;
+  background:linear-gradient(140deg,rgba(255,111,174,.22),rgba(139,124,255,.22));
+  border:1px solid var(--edge-hi);box-shadow:var(--glow-pink);color:var(--pink);font-size:19px}
+h1{margin:0;font-size:15px;letter-spacing:.3px;font-weight:600}
+.sub{margin:2px 0 0;font-size:11.5px;color:var(--dim2);letter-spacing:.6px;text-transform:uppercase}
+
+/* 编辑大字 */
+.wordmark{font-family:NimbusDisplay,Helvetica,sans-serif;font-weight:800;
+  font-size:clamp(38px,12.5vw,86px);line-height:.86;letter-spacing:-.045em;margin:0 0 4px}
+.wordmark>span{display:inline-block;opacity:0;transform:translateY(.42em) rotate(-4deg);
+  animation:rise .78s cubic-bezier(.16,1,.3,1) forwards}
+.wordmark .o{background:linear-gradient(96deg,var(--pink),var(--violet) 45%,var(--mint));
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.wordmark .e{-webkit-text-stroke:1.5px rgba(255,255,255,.5);color:transparent}
+@keyframes rise{to{opacity:1;transform:none}}
+.tagline{margin:0 0 24px;color:var(--dim);font-size:12.5px;letter-spacing:.2px}
+
+/* ── 卡片 ── */
+.card{background:var(--panel);backdrop-filter:blur(22px) saturate(120%);-webkit-backdrop-filter:blur(22px) saturate(120%);
+  border:1px solid var(--edge);border-radius:var(--r);padding:16px;margin-bottom:14px;
+  position:relative;overflow:hidden;
+  opacity:0;transform:translateY(14px);
+  animation:cardIn .62s cubic-bezier(.16,1,.3,1) forwards}
+@keyframes cardIn{to{opacity:1;transform:none}}
+.card::before{content:"";position:absolute;inset:0;border-radius:var(--r);pointer-events:none;
+  background:linear-gradient(180deg,rgba(255,255,255,.055),transparent 42%)}
+.card h2{margin:0 0 13px;font-size:11px;letter-spacing:1.5px;text-transform:uppercase;
+  color:var(--dim);display:flex;align-items:center;gap:7px;font-weight:600}
+.card h2 .ico{font-size:14px;color:var(--violet)}
+
+/* ── 指标 ── */
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(126px,1fr));gap:10px}
+.kpi{background:rgba(10,11,18,.42);border:1px solid var(--edge);border-radius:13px;
+  padding:12px 13px;position:relative;overflow:hidden;transition:border-color .25s,transform .25s}
+.kpi:hover{border-color:var(--edge-hi);transform:translateY(-2px)}
+.kpi .v{font-family:NimbusDisplay,Helvetica,sans-serif;font-size:27px;font-weight:800;
+  letter-spacing:-.03em;line-height:1.05;
+  font-variant-numeric:tabular-nums}
+.kpi .lab{font-size:10.5px;color:var(--dim2);letter-spacing:.7px;margin-top:3px;
+  display:flex;align-items:center;gap:4px}
+.kpi .lab .ico{font-size:11px}
+.kpi.hot .v{color:var(--pink);text-shadow:var(--glow-pink)}
+.kpi.cool .v{color:var(--mint);text-shadow:var(--glow-mint)}
+.kpi span.unit{font-size:12px;color:var(--dim2);font-weight:600;margin-left:1px}
+
+/* ── 思考 ── */
+.think-top{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:10px}
+.state{display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:600;
+  padding:3px 11px;border-radius:999px;letter-spacing:.3px}
+.state.on{color:var(--mint);background:rgba(94,240,192,.12);box-shadow:var(--glow-mint)}
+.state.off{color:var(--dim);background:rgba(142,151,180,.12)}
+.metric{font-size:12px;color:var(--dim2)}
+.metric b{color:var(--fg);font-variant-numeric:tabular-nums}
+.track{height:5px;border-radius:5px;background:rgba(255,255,255,.07);overflow:hidden;position:relative}
+.track>i{display:block;height:100%;width:0;border-radius:5px;
+  background:linear-gradient(90deg,var(--pink),var(--violet),var(--mint));
+  transition:width .9s cubic-bezier(.16,1,.3,1);box-shadow:var(--glow-pink)}
+.chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:11px}
+.chip{font-size:11px;padding:3px 9px;border-radius:8px;color:var(--dim);
+  border:1px solid var(--edge);background:rgba(255,255,255,.03);
+  animation:chipIn .5s cubic-bezier(.16,1,.3,1) both}
+@keyframes chipIn{from{opacity:0;transform:scale(.9)}to{opacity:1;transform:none}}
+
+/* ── 表格 ── */
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+th{text-align:left;font-size:10.5px;letter-spacing:.9px;text-transform:uppercase;
+  color:var(--dim2);font-weight:600;padding:0 8px 8px 0}
+td{padding:9px 8px 9px 0;border-top:1px solid var(--edge)}
+tr:first-child td{border-top:none}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;color:var(--dim)}
+.pill{display:inline-flex;align-items:center;gap:4px;font-size:10.5px;font-weight:600;
+  padding:2px 9px;border-radius:999px;letter-spacing:.3px}
+.pill .ico{font-size:10px}
+.p-ok{color:var(--mint);background:rgba(94,240,192,.12)}
+.p-off{color:var(--dim2);background:rgba(142,151,180,.1)}
+.p-bad{color:var(--rose);background:rgba(255,122,144,.13)}
+.num{font-variant-numeric:tabular-nums}
+
+/* ── 配置 ── */
+.tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:15px}
+.tab{border:1px solid var(--edge);background:rgba(255,255,255,.03);color:var(--dim);
+  font:inherit;font-size:11.5px;padding:6px 13px;border-radius:999px;cursor:pointer;
+  display:inline-flex;align-items:center;gap:5px;transition:all .22s}
+.tab .ico{font-size:12px}
+.tab:hover{color:var(--fg);border-color:var(--edge-hi)}
+.tab[aria-selected=true]{color:var(--ink);background:linear-gradient(96deg,var(--pink),var(--violet));
+  border-color:transparent;font-weight:600}
+.sect{display:none}.sect.on{display:block;animation:cardIn .45s cubic-bezier(.16,1,.3,1) both}
+.f{border-top:1px solid var(--edge);padding:13px 0}
+.f:first-child{border-top:none;padding-top:0}
+.f-head{display:flex;align-items:center;gap:10px;justify-content:space-between;gap:12px}
+.f-title{font-size:13px;font-weight:500;display:flex;align-items:center;gap:7px;min-width:0}
+.f-title .ico{font-size:13px;color:var(--dim2)}
+.f-hint{font-size:11.5px;color:var(--dim2);margin-top:5px;line-height:1.6}
+.f-ctl{margin-top:10px}
+
+/* 开关 */
+.sw{position:relative;width:46px;height:26px;flex:none;cursor:pointer}
+.sw input{position:absolute;opacity:0;width:100%;height:100%;margin:0;cursor:pointer}
+.sw .rail{position:absolute;inset:0;border-radius:999px;background:rgba(255,255,255,.09);
+  border:1px solid var(--edge);transition:all .3s cubic-bezier(.16,1,.3,1)}
+.sw .rail::after{content:"";position:absolute;top:3px;left:3px;width:18px;height:18px;border-radius:50%;
+  background:var(--dim);transition:all .3s cubic-bezier(.16,1,.3,1)}
+.sw input:checked+.rail{background:linear-gradient(96deg,rgba(255,111,174,.85),rgba(139,124,255,.85));
+  border-color:transparent;box-shadow:var(--glow-pink)}
+.sw input:checked+.rail::after{left:23px;background:#fff}
+.sw input:focus-visible+.rail{outline:2px solid var(--mint);outline-offset:2px}
+
+input[type=text],input[type=number],select,textarea{
+  width:100%;background:rgba(10,11,18,.62);border:1px solid var(--edge);color:var(--fg);
+  border-radius:10px;padding:9px 11px;font:inherit;font-size:12.5px;transition:border-color .2s,box-shadow .2s}
+input[type=number]{font-variant-numeric:tabular-nums}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--violet);box-shadow:0 0 0 3px rgba(139,124,255,.16)}
+textarea{min-height:64px;resize:vertical;font-family:ui-monospace,Menlo,monospace;font-size:11.5px}
+select{appearance:none;background-image:none;cursor:pointer}
+.f-ctl .wrap-sel{position:relative}
+.f-ctl .wrap-sel .ico{position:absolute;right:11px;top:50%;transform:translateY(-50%);
+  pointer-events:none;color:var(--dim2);font-size:13px}
+.chk{display:inline-flex;align-items:center;gap:7px;font-size:12px;color:var(--dim);cursor:pointer}
+.chk input{accent-color:var(--violet)}
+
+/* ── 壁纸选择器（缩略图网格） ── */
+.wp-picker{display:grid;grid-template-columns:repeat(auto-fill,minmax(104px,1fr));
+  gap:9px;margin-top:10px}
+.wp-cell{position:relative;aspect-ratio:16/9;border-radius:9px;overflow:hidden;
+  cursor:pointer;border:2px solid var(--edge);background:#0d0f16;
+  transition:transform .22s cubic-bezier(.16,1,.3,1),border-color .22s,box-shadow .22s}
+.wp-cell:hover{transform:translateY(-3px) scale(1.03);border-color:var(--edge-hi)}
+.wp-cell img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:block;
+  filter:saturate(.85) brightness(.75);transition:filter .28s}
+.wp-cell.sel{border-color:var(--pink);box-shadow:var(--glow-pink)}
+.wp-cell.sel img{filter:saturate(1.05) brightness(1)}
+.wp-cell .tick{position:absolute;top:5px;right:5px;width:18px;height:18px;border-radius:50%;
+  display:grid;place-items:center;font-size:11px;color:#fff;
+  background:linear-gradient(120deg,var(--pink),var(--violet));
+  opacity:0;transform:scale(.5);transition:all .22s}
+.wp-cell.sel .tick{opacity:1;transform:none}
+.wp-cell .nm{position:absolute;left:6px;bottom:4px;font-size:10px;color:#fff;
+  text-shadow:0 1px 4px #000;font-family:ui-monospace,monospace;opacity:.85}
+.wp-tools{display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap}
+.fx-row{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
+.fx{font-size:11px;padding:5px 11px;border-radius:999px;cursor:pointer;
+  border:1px solid var(--edge);background:rgba(255,255,255,.03);color:var(--dim);
+  transition:all .2s}
+.fx:hover{color:var(--fg);border-color:var(--edge-hi)}
+.fx[aria-checked=true]{color:var(--ink);font-weight:600;border-color:transparent;
+  background:linear-gradient(96deg,var(--pink),var(--violet))}
+
+/* 底部操作条 */
+.dock{position:sticky;bottom:0;z-index:5;margin-top:22px;padding:14px 0 10px;
+  display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+  background:linear-gradient(180deg,transparent,var(--ink) 38%);
+  backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);
+  border-radius:14px 14px 0 0}
+.btn{border:1px solid var(--edge-hi);background:rgba(255,255,255,.05);color:var(--fg);
+  font:inherit;font-size:12.5px;font-weight:500;padding:9px 17px;border-radius:11px;cursor:pointer;
+  display:inline-flex;align-items:center;gap:7px;transition:all .22s}
+.btn .ico{font-size:14px}
+.btn:hover{transform:translateY(-1px);border-color:var(--violet)}
+.btn.primary{background:linear-gradient(96deg,var(--pink),var(--violet));border-color:transparent;
+  color:#fff;font-weight:600;box-shadow:var(--glow-pink)}
+.btn.primary:hover{filter:brightness(1.08)}
+.btn[disabled]{opacity:.5;cursor:not-allowed;transform:none}
+.mini{font:inherit;font-size:10px;padding:1px 7px;border-radius:6px;cursor:pointer;
+  background:rgba(255,255,255,.06);color:var(--dim);border:1px solid var(--edge);margin-left:6px}
+.mini:hover{color:var(--fg);border-color:var(--violet)}
+.status{font-size:11.5px;color:var(--dim2);display:flex;align-items:center;gap:5px}
+.status.ok{color:var(--mint)}.status.err{color:var(--rose)}
+
+.hint-note{font-size:11px;color:var(--dim2);margin-top:9px;display:flex;gap:6px;align-items:flex-start}
+.hint-note .ico{font-size:12px;margin-top:2px;color:var(--amber)}
+
+/* 空态 */
+.empty{color:var(--dim2);font-size:12px;display:flex;align-items:center;gap:7px;padding:6px 0}
+.empty .ico{font-size:14px}
+
+/* 减少动效：只关装饰动画，内容一律保持可见 */
+@media (prefers-reduced-motion:reduce){
+  .aurora i,.wordmark>span,.card,.chip,.track>i{animation:none!important;transition:none!important}
+  .wp-layer{transition:none!important}
+  .wordmark>span{opacity:1!important;transform:none!important}
+  .card{opacity:1!important;transform:none!important}
+}
+</style>
+</head>
+<body>
+<div class="wallpaper" id="wallpaper" aria-hidden="true">
+  <div class="wp-layer" id="wp-a"></div>
+  <div class="wp-layer" id="wp-b"></div>
+  <div class="wp-scrim"></div>
+</div>
+
+<div class="aurora"><i class="a1"></i><i class="a2"></i><i class="a3"></i></div>
+<div class="grid"></div>
+
+<div class="shell">
+  <header>
+    <div class="brand">
+      <div class="mark"><svg class="ico"><use href="#i-rocket"/></svg></div>
+      <div>
+        <h1>KiraAI 加速器</h1>
+        <p class="sub">Accelerator · Control Deck</p>
+      </div>
+    </div>
+    <div class="status" id="conn"><svg class="ico"><use href="#i-activity"/></svg><span>连接中</span></div>
+  </header>
+
+  <h2 class="wordmark" aria-label="KiraAI 加速器">
+    <span class="o" style="animation-delay:.02s">K</span><span class="o" style="animation-delay:.06s">i</span><span class="o" style="animation-delay:.10s">r</span><span class="o" style="animation-delay:.14s">a</span><span style="animation-delay:.18s">&nbsp;</span><span class="e" style="animation-delay:.24s">B</span><span class="e" style="animation-delay:.28s">o</span><span class="e" style="animation-delay:.32s">o</span><span class="e" style="animation-delay:.36s">s</span><span class="e" style="animation-delay:.40s">t</span>
+  </h2>
+  <p class="tagline">在不影响质量与兼容的前提下提速 —— 强制流式 · 抢先发送 · 按需思考</p>
+
+  <!-- 实时指标 -->
+  <section class="card" style="animation-delay:.30s">
+    <h2><svg class="ico"><use href="#i-gauge"/></svg>实时指标</h2>
+    <div class="kpis">
+      <div class="kpi hot"><div class="v" id="k-early">0</div>
+        <div class="lab"><svg class="ico"><use href="#i-zap"/></svg>抢先发送段数</div></div>
+      <div class="kpi hot"><div class="v" id="k-first">—</div>
+        <div class="lab"><svg class="ico"><use href="#i-timer"/></svg>首段发出耗时</div></div>
+      <div class="kpi"><div class="v" id="k-steps">0</div>
+        <div class="lab"><svg class="ico"><use href="#i-layers"/></svg>处理步数</div></div>
+      <div class="kpi"><div class="v" id="k-turns">0</div>
+        <div class="lab"><svg class="ico"><use href="#i-waves"/></svg>对话轮数</div></div>
+      <div class="kpi cool"><div class="v" id="k-sig">0</div>
+        <div class="lab"><svg class="ico"><use href="#i-arrow-down-up"/></svg>工具失败信号</div></div>
+    </div>
+  </section>
+
+  <!-- 本轮思考 -->
+  <section class="card" style="animation-delay:.36s">
+    <h2><svg class="ico"><use href="#i-brain"/></svg>本轮思考判定</h2>
+    <div id="think"></div>
+  </section>
+
+  <!-- 接管点 -->
+  <section class="card" style="animation-delay:.42s">
+    <h2><svg class="ico"><use href="#i-shield-check"/></svg>底层接管点健康度</h2>
+    <table>
+      <thead><tr><th>接管点</th><th>状态</th><th style="width:78px">连续失败</th></tr></thead>
+      <tbody id="patches"><tr><td colspan="3"><div class="empty"><svg class="ico"><use href="#i-activity"/></svg>加载中</div></td></tr></tbody>
+    </table>
+    <div class="hint-note"><svg class="ico"><use href="#i-triangle-alert"/></svg>
+      <span>熔断是<b>可自动恢复</b>的：连续失败 3 次后进入熔断，冷却结束会自动「试探恢复」；试探成功即恢复正常，失败则冷却翻倍（最长 10 分钟一次）。任何时候都可以点「立即重置」。</span></div>
+  </section>
+
+  <!-- 配置（全部热更改） -->
+  <section class="card" style="animation-delay:.48s">
+    <h2><svg class="ico"><use href="#i-sliders-horizontal"/></svg>配置 · 保存即生效（无需重启）</h2>
+    <div class="tabs" id="tabs" role="tablist"></div>
+    <div id="form"></div>
+    <div class="hint-note"><svg class="ico"><use href="#i-rotate-cw"/></svg>
+      <span>保存后框架会自动卸载并重载本插件，所有接管点按新配置重新安装 —— 等同于改配置文件后再重载。</span></div>
+  </section>
+
+  <!-- 思考分布 -->
+  <section class="card" style="animation-delay:.54s">
+    <h2><svg class="ico"><use href="#i-sparkles"/></svg>思考开关分布</h2>
+    <table>
+      <thead><tr><th>开启</th><th>关闭</th><th>被预算拦截</th></tr></thead>
+      <tbody id="tstats"><tr><td colspan="3"><div class="empty"><svg class="ico"><use href="#i-activity"/></svg>加载中</div></td></tr></tbody>
+    </table>
+  </section>
+
+  <div class="dock">
+    <button class="btn primary" id="save" disabled>
+      <svg class="ico"><use href="#i-save"/></svg><span id="save-label">保存配置</span></button>
+    <button class="btn" id="revert"><svg class="ico"><use href="#i-rotate-cw"/></svg>放弃修改</button>
+    <div class="status" id="msg"></div>
+  </div>
+</div>
+
+<svg xmlns="http://www.w3.org/2000/svg" style="display:none" aria-hidden="true">
+  <symbol id="i-rocket" viewBox="0 0 24 24">
+    <path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5" />
+    <path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09" />
+    <path d="M9 12a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.4 22.4 0 0 1-4 2z" />
+    <path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 .05 5 .05" />
+  </symbol>
+  <symbol id="i-activity" viewBox="0 0 24 24">
+    <path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2" />
+  </symbol>
+  <symbol id="i-zap" viewBox="0 0 24 24">
+    <path d="M15.914 4a1.5 1.5 0 00-2.474-1.561l-9 9A1.5 1.5 0 005.5 14h4.002a.5.5 0 01.471.666L8.086 20a1.5 1.5 0 002.475 1.56l9-9A1.5 1.5 0 0018.5 10h-3.997a.5.5 0 01-.472-.667z" />
+  </symbol>
+  <symbol id="i-brain" viewBox="0 0 24 24">
+    <path d="M12 18V5" />
+    <path d="M15 13a4.17 4.17 0 0 1-3-4 4.17 4.17 0 0 1-3 4" />
+    <path d="M17.598 6.5A3 3 0 1 0 12 5a3 3 0 1 0-5.598 1.5" />
+    <path d="M17.997 5.125a4 4 0 0 1 2.526 5.77" />
+    <path d="M18 18a4 4 0 0 0 2-7.464" />
+    <path d="M19.967 17.483A4 4 0 1 1 12 18a4 4 0 1 1-7.967-.517" />
+    <path d="M6 18a4 4 0 0 1-2-7.464" />
+    <path d="M6.003 5.125a4 4 0 0 0-2.526 5.77" />
+  </symbol>
+  <symbol id="i-sliders-horizontal" viewBox="0 0 24 24">
+    <path d="M10 5H3" />
+    <path d="M12 19H3" />
+    <path d="M14 3v4" />
+    <path d="M16 17v4" />
+    <path d="M21 12h-9" />
+    <path d="M21 19h-5" />
+    <path d="M21 5h-7" />
+    <path d="M8 10v4" />
+    <path d="M8 12H3" />
+  </symbol>
+  <symbol id="i-cog" viewBox="0 0 24 24">
+    <path d="M11 10.27 7 3.34" />
+    <path d="m11 13.73-4 6.93" />
+    <path d="M12 22v-2" />
+    <path d="M12 2v2" />
+    <path d="M14 12h8" />
+    <path d="m17 20.66-1-1.73" />
+    <path d="m17 3.34-1 1.73" />
+    <path d="M2 12h2" />
+    <path d="m20.66 17-1.73-1" />
+    <path d="m20.66 7-1.73 1" />
+    <path d="m3.34 17 1.73-1" />
+    <path d="m3.34 7 1.73 1" />
+    <circle cx="12" cy="12" r="2" />
+    <circle cx="12" cy="12" r="8" />
+  </symbol>
+  <symbol id="i-check" viewBox="0 0 24 24">
+    <path d="M20 6 9 17l-5-5" />
+  </symbol>
+  <symbol id="i-triangle-alert" viewBox="0 0 24 24">
+    <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3" />
+    <path d="M12 9v4" />
+    <path d="M12 17h.01" />
+  </symbol>
+  <symbol id="i-x" viewBox="0 0 24 24">
+    <path d="M18 6 6 18" />
+    <path d="m6 6 12 12" />
+  </symbol>
+  <symbol id="i-chevron-down" viewBox="0 0 24 24">
+    <path d="m6 9 6 6 6-6" />
+  </symbol>
+  <symbol id="i-rotate-cw" viewBox="0 0 24 24">
+    <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8" />
+    <path d="M21 3v5h-5" />
+  </symbol>
+  <symbol id="i-save" viewBox="0 0 24 24">
+    <path d="M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z" />
+    <path d="M17 21v-7a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7" />
+    <path d="M7 3v4a1 1 0 0 0 1 1h7" />
+  </symbol>
+  <symbol id="i-eye" viewBox="0 0 24 24">
+    <path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0" />
+    <circle cx="12" cy="12" r="3" />
+  </symbol>
+  <symbol id="i-sparkles" viewBox="0 0 24 24">
+    <path d="M11.017 2.814a1 1 0 0 1 1.966 0l1.051 5.558a2 2 0 0 0 1.594 1.594l5.558 1.051a1 1 0 0 1 0 1.966l-5.558 1.051a2 2 0 0 0-1.594 1.594l-1.051 5.558a1 1 0 0 1-1.966 0l-1.051-5.558a2 2 0 0 0-1.594-1.594l-5.558-1.051a1 1 0 0 1 0-1.966l5.558-1.051a2 2 0 0 0 1.594-1.594z" />
+    <path d="M20 2v4" />
+    <path d="M22 4h-4" />
+    <circle cx="4" cy="20" r="2" />
+  </symbol>
+  <symbol id="i-gauge" viewBox="0 0 24 24">
+    <path d="m12 14 4-4" />
+    <path d="M3.34 19a10 10 0 1 1 17.32 0" />
+  </symbol>
+  <symbol id="i-timer" viewBox="0 0 24 24">
+    <line x1="10" x2="14" y1="2" y2="2" />
+    <line x1="12" x2="15" y1="14" y2="11" />
+    <circle cx="12" cy="14" r="8" />
+  </symbol>
+  <symbol id="i-wand-sparkles" viewBox="0 0 24 24">
+    <path d="m21.64 3.64-1.28-1.28a1.21 1.21 0 0 0-1.72 0L2.36 18.64a1.21 1.21 0 0 0 0 1.72l1.28 1.28a1.2 1.2 0 0 0 1.72 0L21.64 5.36a1.2 1.2 0 0 0 0-1.72" />
+    <path d="m14 7 3 3" />
+    <path d="M5 6v4" />
+    <path d="M19 14v4" />
+    <path d="M10 2v2" />
+    <path d="M7 8H3" />
+    <path d="M21 16h-4" />
+    <path d="M11 3H9" />
+  </symbol>
+  <symbol id="i-shield-check" viewBox="0 0 24 24">
+    <path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z" />
+    <path d="m9 12 2 2 4-4" />
+  </symbol>
+  <symbol id="i-circle-slash" viewBox="0 0 24 24">
+    <circle cx="12" cy="12" r="10" />
+    <line x1="9" x2="15" y1="15" y2="9" />
+  </symbol>
+  <symbol id="i-bolt" viewBox="0 0 24 24">
+    <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
+    <circle cx="12" cy="12" r="4" />
+  </symbol>
+  <symbol id="i-layers" viewBox="0 0 24 24">
+    <path d="M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83z" />
+    <path d="M2 12a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 12" />
+    <path d="M2 17a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 17" />
+  </symbol>
+  <symbol id="i-waves" viewBox="0 0 24 24">
+    <path d="M2 12q2.5 2 5 0t5 0 5 0 5 0" />
+    <path d="M2 19q2.5 2 5 0t5 0 5 0 5 0" />
+    <path d="M2 5q2.5 2 5 0t5 0 5 0 5 0" />
+  </symbol>
+  <symbol id="i-arrow-down-up" viewBox="0 0 24 24">
+    <path d="m3 16 4 4 4-4" />
+    <path d="M7 20V4" />
+    <path d="m21 8-4-4-4 4" />
+    <path d="M17 4v16" />
+  </symbol>
+</svg>
+<script>
+/* ═══ 常量 ═══ */
+const PLUGIN_ID = "kira_accelerator";
+const API = "/api/plugin/" + encodeURIComponent(PLUGIN_ID);
+const LANG = (navigator.language || "zh").toLowerCase().startsWith("zh") ? "zh" : "en";
+
+/* ═══ 小工具 ═══ */
+const $  = (s, r=document) => r.querySelector(s);
+function el(tag, cls, html){ const e = document.createElement(tag); if(cls) e.className = cls;
+  if(html != null) e.innerHTML = html; return e; }
+function icon(name){ return '<svg class="ico"><use href="#i-' + name + '"/></svg>'; }
+function txtOf(field, kind){
+  const loc = field.locales && field.locales[LANG];
+  const v = loc && loc[kind];
+  return v || field[kind === "name" ? "name" : "hint"] || "";
+}
+
+/* Lucide 图标已内联为 <symbol> sprite，无需网络请求 */
+
+/* ═══ 状态 ═══ */
+let SCHEMA = null, SAVED = {}, DRAFT = {}, dirty = false;
+const SECTIONS = [];
+const FX_LABEL = {
+  ink: "晕染（墨渗）", ink_soft: "柔和晕染", burn: "燃开（焦痕）",
+  fade: "淡入淡出", none: "直接切换",
+};
+
+/* ═══ 渲染：实时指标 ═══ */
+function renderHealth(d){
+  const s = d.stats || {};
+  $("#k-early").textContent = s.early_sent ?? 0;
+  const fs = s.first_seg_s;
+  $("#k-first").innerHTML = (fs == null) ? "—"
+      : (fs > 0 ? fs.toFixed(2) + '<span class="unit">s</span>' : '<span class="unit">&lt;0.01s</span>');
+  $("#k-steps").textContent = s.steps ?? 0;
+  $("#k-turns").textContent = s.turns ?? 0;
+  $("#k-sig").textContent   = s.tool_signals ?? 0;
+
+  const t = d.thinking_now, box = $("#think");
+  if (!t){
+    box.innerHTML = '<div class="empty">' + icon("circle-slash")
+      + '<span>本轮未做思考判定（可能未开启该功能，或尚未发生对话）。</span></div>';
+  } else {
+    const pct = Math.max(0, Math.min(100, (t.score / 6) * 100));
+    const sig = (t.signals && t.signals.length)
+        ? t.signals.map((x,i)=>'<span class="chip" style="animation-delay:'+(i*55)+'ms">'+x+'</span>').join("")
+        : '<span class="chip">无信号</span>';
+    box.innerHTML =
+      '<div class="think-top">'
+      + (t.enabled
+          ? '<span class="state on">' + icon("brain") + '开思考</span>'
+          : '<span class="state off">' + icon("circle-slash") + '不思考</span>')
+      + '<span class="metric">强度 <b>' + (t.effort || "—") + '</b></span>'
+      + '<span class="metric">得分 <b>' + Number(t.score).toFixed(1) + '</b></span>'
+      + '</div><div class="track"><i id="tbar"></i></div>'
+      + '<div class="chips">' + sig + '</div>';
+    requestAnimationFrame(()=>{ const b = $("#tbar"); if(b) b.style.width = pct + "%"; });
+  }
+
+  const rows = (d.patches || []).map(p => {
+    let pill;
+    if (p.state === "half_open")
+      pill = '<span class="pill p-ok">' + icon("rotate-cw") + '试探恢复中</span>';
+    else if (p.state === "open"){
+      const cd = Math.ceil(p.cooldown_remaining || 0);
+      pill = '<span class="pill p-bad">' + icon("timer") + '熔断中 · ' + cd + 's 后试探</span>';
+    }
+    else if (p.active)
+      pill = '<span class="pill p-ok">' + icon("check") + '生效</span>';
+    else
+      pill = '<span class="pill p-off">' + icon("circle-slash") + '未启用</span>';
+    const rec = p.recovered_count ? ' <span class="muted" style="font-size:10px">已恢复' + p.recovered_count + '次</span>' : '';
+    const btn = p.tripped
+      ? ' <button class="mini" onclick="resetBreaker(\'' + p.name + '\')">立即重置</button>' : '';
+    return '<tr><td class="mono">' + p.name + '</td><td>' + pill + rec
+         + '</td><td class="num">' + p.failures + btn + '</td></tr>';
+  }).join("");
+  $("#patches").innerHTML = rows || '<tr><td colspan="3"><div class="empty">'
+      + icon("circle-slash") + '<span>无接管点</span></div></td></tr>';
+
+  $("#tstats").innerHTML = '<tr><td class="num">' + (s.thinking_on ?? 0)
+    + '</td><td class="num">' + (s.thinking_off ?? 0)
+    + '</td><td class="num">' + (s.thinking_skipped_budget ?? 0) + '</td></tr>';
+}
+
+/* ═══ 渲染：配置表单 ═══ */
+function makeControl(field, key, value, onChange){
+  const type = field.type;
+  const box = el("div", "f-ctl");
+  const on = v => { DRAFT[key] = v; onChange(); };
+
+  if (type === "switch"){
+    const w = el("label", "sw");
+    const inp = el("input"); inp.type = "checkbox";
+    inp.checked = !!value;
+    inp.addEventListener("change", ()=> on(inp.checked));
+    w.appendChild(inp); w.appendChild(el("span", "rail"));
+    box.appendChild(w);
+
+  } else if (type === "enum" || (field.options && field.options.length)){
+    const wrap = el("div", "wrap-sel");
+    const sel = el("select");
+    (field.options || []).forEach(o => {
+      const op = el("option"); op.value = o; op.textContent = o;
+      if (String(value) === String(o)) op.selected = true;
+      sel.appendChild(op);
+    });
+    sel.addEventListener("change", ()=> on(sel.value));
+    wrap.appendChild(sel); wrap.appendChild(el("span", "", icon("chevron-down")));
+    box.appendChild(wrap);
+
+  } else if (type === "integer" || type === "float"){
+    const inp = el("input"); inp.type = "number";
+    if (type === "float") inp.step = "0.05";
+    inp.value = (value === null || value === undefined) ? "" : value;
+    inp.addEventListener("input", ()=>{
+      const n = inp.value === "" ? null : Number(inp.value);
+      if (n !== null && !Number.isNaN(n)) on(n);
+    });
+    box.appendChild(inp);
+
+  } else if (type === "list"){
+    const inp = el("input"); inp.type = "text";
+    inp.placeholder = "逗号分隔，留空=全部";
+    inp.value = Array.isArray(value) ? value.join(", ") : "";
+    inp.addEventListener("input", ()=>{
+      const parts = inp.value.split(",").map(x=>x.trim()).filter(Boolean);
+      on(parts.length ? parts : []);
+    });
+    box.appendChild(inp);
+
+  } else if (type === "json"){
+    const ta = el("textarea");
+    ta.value = value == null ? "{}" : JSON.stringify(value, null, 2);
+    ta.addEventListener("input", ()=>{
+      try { on(JSON.parse(ta.value || "{}")); ta.style.borderColor = ""; }
+      catch(e){ ta.style.borderColor = "var(--rose)"; }
+    });
+    box.appendChild(ta);
+
+  } else {
+    const inp = el("input"); inp.type = "text";
+    inp.value = value == null ? "" : String(value);
+    inp.addEventListener("input", ()=> on(inp.value));
+    box.appendChild(inp);
+  }
+  return box;
+}
+
+/* ═══ 壁纸缩略图选择器 ═══ */
+let WP_FILES = [];
+
+async function loadWallpaperFiles(){
+  try {
+    const r = await fetch(API + "/wallpapers", {credentials:"include"});
+    if (r.ok) WP_FILES = (await r.json()).files || [];
+  } catch(e){ WP_FILES = []; }
+  return WP_FILES;
+}
+
+function renderWallpaperPicker(host){
+  host.innerHTML = "";
+  const grid = el("div", "wp-picker");
+
+  WP_FILES.forEach(name => {
+    const cell = el("div", "wp-cell" + (wpPick.includes(name) ? " sel" : ""));
+    const img = el("img");
+    // 缩略图直接复用原图（浏览器缓存，且 16:9 裁切由 object-fit 处理）
+    img.src = wpUrl(name);
+    img.loading = "lazy";
+    img.alt = name;
+    cell.appendChild(img);
+    cell.appendChild(el("div", "tick", icon("check")));
+    cell.appendChild(el("div", "nm", name.replace(/\.[a-z]+$/i, "")));
+    cell.addEventListener("click", () => {
+      const i = wpPick.indexOf(name);
+      if (i >= 0){ wpPick.splice(i, 1); cell.classList.remove("sel"); }
+      else { wpPick.push(name); cell.classList.add("sel"); }
+      DRAFT["section_appearance.wallpaper_files"] = wpPick.slice();
+      markDirty();
+      updatePickHint(count);
+    });
+    grid.appendChild(cell);
+  });
+  host.appendChild(grid);
+
+  // 工具行 + 计数
+  const tools = el("div", "wp-tools");
+  const count = el("span", "muted");
+  count.style.fontSize = "11.5px";
+
+  const bAll = el("button", "mini", "全选");
+  bAll.type = "button";
+  bAll.onclick = () => { wpPick = WP_FILES.slice();
+    grid.querySelectorAll(".wp-cell").forEach(c=>c.classList.add("sel"));
+    DRAFT["section_appearance.wallpaper_files"] = wpPick.slice(); markDirty(); updatePickHint(count); };
+
+  const bNone = el("button", "mini", "全不选");
+  bNone.type = "button";
+  bNone.onclick = () => { wpPick = [];
+    grid.querySelectorAll(".wp-cell").forEach(c=>c.classList.remove("sel"));
+    DRAFT["section_appearance.wallpaper_files"] = []; markDirty(); updatePickHint(count); };
+
+  tools.appendChild(bAll); tools.appendChild(bNone); tools.appendChild(count);
+  host.appendChild(tools);
+
+  function updatePickHint(c){
+    if (!wpPick.length) c.textContent = "未选择 → 全部 " + WP_FILES.length + " 张参与轮换";
+    else if (wpPick.length === 1) c.textContent = "已选 1 张 → 固定显示，不轮换";
+    else c.textContent = "已选 " + wpPick.length + " 张 → 轮流显示";
+  }
+  updatePickHint(count);
+}
+
+function buildForm(){
+  const tabs = $("#tabs"), form = $("#form");
+  tabs.innerHTML = ""; form.innerHTML = "";
+  SECTIONS.length = 0;
+
+  const keys = Object.keys(SCHEMA || {});
+  keys.forEach((key, idx) => {
+    const field = SCHEMA[key];
+    const label = txtOf(field, "name") || key;
+    const sec = el("section", "sect" + (idx === 0 ? " on" : ""));
+    sec.dataset.key = key;
+
+    Object.entries(field.fields || {}).forEach(([fk, f]) => {
+      const full = key + "." + fk;
+      const row = el("div", "f");
+      const head = el("div", "f-head");
+      head.appendChild(el("div", "f-title", txtOf(f, "name") || fk));
+
+      let ctl;
+      if (f.type === "switch"){
+        ctl = makeControl(f, full, DRAFT[full], markDirty);   // 开关放右侧
+        head.appendChild(ctl.firstChild);
+      }
+      row.appendChild(head);
+      const hint = txtOf(f, "hint");
+      if (hint) row.appendChild(el("div", "f-hint", hint));
+
+      if (fk === "wallpaper_effect"){
+        // 特效：做成芯片选择器
+        const chips = el("div", "fx-row");
+        (f.options || []).forEach(opt => {
+          const c = el("div", "fx" + (DRAFT[full] === opt ? "" : ""));
+          c.setAttribute("role", "radio");
+          c.setAttribute("aria-checked", DRAFT[full] === opt ? "true" : "false");
+          c.textContent = FX_LABEL[opt] || opt;
+          c.onclick = () => {
+            DRAFT[full] = opt;
+            chips.querySelectorAll(".fx").forEach(x => x.setAttribute("aria-checked", "false"));
+            c.setAttribute("aria-checked", "true");
+            wpEffect = opt;
+            markDirty();
+          };
+          chips.appendChild(c);
+        });
+        row.appendChild(chips);
+      } else if (fk === "wallpaper_files"){
+        // 壁纸：做成缩略图选择器
+        const host = el("div");
+        row.appendChild(host);
+        (async () => {
+          if (!WP_FILES.length) await loadWallpaperFiles();
+          wpPick = Array.isArray(DRAFT[full]) ? DRAFT[full].slice() : [];
+          renderWallpaperPicker(host);
+        })();
+      } else if (key === "section_appearance"){
+        // 外观段其它字段（开关/数字）正常渲染，但要实时生效
+        ctl = makeControl(f, full, DRAFT[full], () => {
+          if (fk === "wallpaper_enabled") wpEnabled = !!DRAFT[full];
+          if (fk === "wallpaper_interval") wpIntervalS = Number(DRAFT[full]) || 0;
+          startWallpaperRotation();
+          markDirty();
+        });
+        row.appendChild(ctl);
+      } else {
+        if (f.type !== "switch") row.appendChild(ctl || makeControl(f, full, DRAFT[full], markDirty));
+      }
+      sec.appendChild(row);
+    });
+
+    form.appendChild(sec);
+    // tab
+    const btn = el("button", "tab");
+    btn.type = "button"; btn.setAttribute("role", "tab");
+    btn.setAttribute("aria-selected", idx === 0 ? "true" : "false");
+    btn.innerHTML = icon(idx === 0 ? "activity" :
+                    idx === 1 ? "zap" : idx === 2 ? "brain" :
+                    idx === 3 ? "bolt" : idx === 4 ? "cog" : "layers")
+                 + "<span>" + label + "</span>";
+    btn.addEventListener("click", ()=>{
+      tabs.querySelectorAll(".tab").forEach(b => b.setAttribute("aria-selected","false"));
+      btn.setAttribute("aria-selected","true");
+      form.querySelectorAll(".sect").forEach(s => s.classList.toggle("on", s.dataset.key === key));
+    });
+    tabs.appendChild(btn);
+    SECTIONS.push(key);
+  });
+}
+
+function markDirty(){
+  dirty = compareDirty();
+  $("#save").disabled = !dirty;
+  $("#save-label").textContent = dirty ? "保存并热重载" : "已是最新";
+}
+function compareDirty(){
+  return JSON.stringify(flatten(DRAFT)) !== JSON.stringify(flatten(SAVED));
+}
+function flatten(o){
+  const out = {};
+  Object.keys(o).sort().forEach(k => {
+    const v = o[k];
+    out[k] = Array.isArray(v) ? v.slice().sort() : (v && typeof v === "object" ? JSON.parse(JSON.stringify(v)) : v);
+  });
+  return out;
+}
+
+/* ═══ 载入配置 ═══ */
+async function loadConfig(){
+  const r = await fetch(API + "/config", {credentials:"include"});
+  if (!r.ok) throw new Error("HTTP " + r.status);
+  const d = await r.json();
+  SCHEMA = d.schema || {};
+  SAVED = {}; DRAFT = {};
+  Object.entries(SCHEMA).forEach(([sk, sf]) => {
+    Object.entries(sf.fields || {}).forEach(([fk, f]) => {
+      const full = sk + "." + fk;
+      const cur = (d.config && d.config[sk] && (fk in d.config[sk])) ? d.config[sk][fk] : f.default;
+      SAVED[full] = cur; DRAFT[full] = Array.isArray(cur) ? cur.slice() : cur;
+    });
+  });
+  buildForm();
+  markDirty();
+}
+
+/* ═══ 保存（热重载） ═══ */
+async function saveConfig(){
+  const msg = $("#msg"), btn = $("#save");
+  btn.disabled = true; msg.className = "status";
+  msg.innerHTML = icon("rotate-cw") + "<span>保存并热重载中…</span>";
+
+  // 按 section 重新组装成嵌套结构
+  const payload = {};
+  Object.entries(SCHEMA).forEach(([sk, sf]) => {
+    payload[sk] = {};
+    Object.keys(sf.fields || {}).forEach(fk => { payload[sk][fk] = DRAFT[sk + "." + fk]; });
+  });
+
+  try {
+    const r = await fetch(API + "/config", {
+      method: "PUT", credentials: "include",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({config: payload}),
+    });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    msg.className = "status ok";
+    msg.innerHTML = icon("check") + "<span>已保存，插件已热重载生效</span>";
+    setTimeout(()=>{ loadConfig().catch(()=>{}); }, 1200);
+  } catch(e){
+    msg.className = "status err";
+    msg.innerHTML = icon("triangle-alert") + "<span>保存失败：" + e.message + "</span>";
+    btn.disabled = false;
+  }
+}
+
+function revert(){
+  DRAFT = JSON.parse(JSON.stringify(SAVED));
+  buildForm(); markDirty();
+  const msg = $("#msg"); msg.className = "status";
+  msg.innerHTML = icon("rotate-cw") + "<span>已放弃未保存的修改</span>";
+}
+
+/* ═══ 手动重置熔断 ═══ */
+async function resetBreaker(name){
+  try {
+    await fetch(API + "/breaker/reset", {
+      method: "POST", credentials: "include",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({name}),
+    });
+    poll();
+  } catch(e){ console.warn("[accel] 重置失败", e); }
+}
+window.resetBreaker = resetBreaker;
+
+/* ═══ 壁纸轮换（支持多种切换特效） ═══ */
+let WALLPAPERS = [];            // 全部可用壁纸（来自 API）
+let wpActive = [];              // 实际参与轮换的（配置筛选后）
+let wpIdx = 0, wpTimer = null, wpEnabled = true, wpIntervalS = 30;
+let wpEffect = "ink";           // ink | ink_soft | burn | fade | none
+let wpPick = [];                // 用户在面板上勾选的壁纸（空 = 全部）
+let wpCur = "wp-a", wpBusy = false;
+
+function wpUrl(name){ return API + "/wallpapers/" + encodeURIComponent(name); }
+
+/* 切换特效：把新图画进另一层，用遮罩/透明度把它"渗"出来 */
+function wpTransition(url){
+  if (wpBusy) return;
+  wpBusy = true;
+
+  const a = $("#" + wpCur);
+  const b = $("#" + (wpCur === "wp-a" ? "wp-b" : "wp-a"));
+  const dur = wpEffect === "none" ? 0 : (wpEffect === "fade" ? 1500 : 1800);
+
+  // 复位目标层
+  b.className = "wp-layer";
+  b.style.cssText = "";
+  b.style.backgroundImage = 'url("' + url + '")';
+  b.style.backgroundSize = "cover";
+  b.style.backgroundPosition = "center";
+
+  const done = () => {
+    a.classList.remove("on");
+    a.style.cssText = "";
+    wpCur = b.id;
+    wpBusy = false;
+  };
+
+  if (wpEffect === "none"){
+    b.classList.add("on");
+    setTimeout(done, 30);
+    return;
+  }
+
+  if (wpEffect === "fade"){
+    b.style.transition = "opacity " + (dur/1000) + "s ease-in-out";
+    requestAnimationFrame(()=> b.classList.add("on"));
+    setTimeout(done, dur + 120);
+    return;
+  }
+
+  // 晕染 / 燃开：radial-gradient 遮罩由小放大
+  const soft = wpEffect === "ink_soft";
+  const burn = wpEffect === "burn";
+  const ease = burn ? "cubic-bezier(.3,.7,.2,1)" : "cubic-bezier(.22,.61,.24,1)";
+
+  b.style.transition =
+    "opacity .7s ease-out, " +
+    "mask-size " + dur + "ms " + ease + ", " +
+    "-webkit-mask-size " + dur + "ms " + ease + ", " +
+    "filter " + dur + "ms ease-out";
+  b.style.filter = burn ? "blur(5px) sepia(.45) saturate(1.5) brightness(1.18)"
+                        : (soft ? "blur(6px) saturate(.85)" : "blur(10px) saturate(.7)");
+  b.style.maskSize = "230% 230%";   b.style.webkitMaskSize = "230% 230%";
+  b.style.maskPosition = "center";  b.style.webkitMaskPosition = "center";
+  b.style.maskRepeat = "no-repeat"; b.style.webkitMaskRepeat = "no-repeat";
+
+  // ★ 每次随机一个晕染中心（不是固定正中）—— 像墨滴落在纸上的不同位置
+  const cx = (18 + Math.random() * 64).toFixed(1);   // 18% ~ 82%
+  const cy = (18 + Math.random() * 64).toFixed(1);
+  // 再加一点方向性偏移，让扩散不是完美同心圆（更自然）
+  const ex = (cx + (Math.random() * 24 - 12)).toFixed(1);
+  const ey = (cy + (Math.random() * 24 - 12)).toFixed(1);
+  const at = " at " + cx + "% " + cy + "%";
+  const edge = " at " + ex + "% " + ey + "%";
+  const g0 = "radial-gradient(circle" + at + ", #000 0%, #000 5%, transparent 13%)";
+  const g1 = "radial-gradient(circle" + edge + ", #000 0%, #000 58%, transparent 84%)";
+  const g2 = "radial-gradient(circle" + edge + ", #000 0%, #000 148%, transparent 176%)";
+  b.style.maskImage = g0; b.style.webkitMaskImage = g0;
+
+  requestAnimationFrame(()=>{
+    b.classList.add("on");
+    b.style.maskImage = g1; b.style.webkitMaskImage = g1;
+    setTimeout(()=>{
+      b.style.maskImage = g2; b.style.webkitMaskImage = g2;
+      b.style.filter = burn ? "blur(0px) sepia(0) saturate(1) brightness(1)"
+                            : "blur(0px) saturate(1)";
+    }, 130);
+  });
+  setTimeout(done, dur + 350);
+}
+
+function startWallpaperRotation(){
+  stopWallpaperRotation();
+  wpActive = (Array.isArray(wpPick) && wpPick.length) ? wpPick.slice() : WALLPAPERS.slice();
+
+  if (!wpEnabled || !wpActive.length){
+    document.body.classList.add("no-wallpaper");
+    return;
+  }
+  document.body.classList.remove("no-wallpaper");
+
+  wpIdx = Math.min(wpIdx, wpActive.length - 1);
+  // 第一张直接放上，不做特效
+  const a = $("#wp-a"), b = $("#wp-b");
+  a.className = "wp-layer on"; b.className = "wp-layer";
+  a.style.cssText = ""; b.style.cssText = "";
+  a.style.backgroundImage = 'url("' + wpUrl(wpActive[wpIdx]) + '")';
+  a.style.backgroundSize = "cover"; a.style.backgroundPosition = "center";
+  wpCur = "wp-a";
+
+  // 只选 1 张 = 不轮换
+  if (wpActive.length < 2 || wpIntervalS <= 0) return;
+
+  wpTimer = setInterval(() => {
+    wpIdx = (wpIdx + 1) % wpActive.length;
+    wpTransition(wpUrl(wpActive[wpIdx]));
+  }, wpIntervalS * 1000);
+}
+function stopWallpaperRotation(){ if (wpTimer){ clearInterval(wpTimer); wpTimer = null; } }
+
+/* ═══ 手动重置熔断 ═══ */
+async function resetBreaker(name){
+  try {
+    await fetch(API + "/breaker/reset", {
+      method: "POST", credentials: "include",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({name}),
+    });
+    poll();
+  } catch(e){ console.warn("[accel] 重置失败", e); }
+}
+window.resetBreaker = resetBreaker;
+
+/* ═══ 轮询健康状态 ═══ */
+async function poll(){
+  const conn = $("#conn");
+  try {
+    const r = await fetch(API + "/health", {credentials:"include"});
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    renderHealth(await r.json());
+    conn.className = "status ok";
+    conn.innerHTML = icon("activity") + "<span>已连接</span>";
+  } catch(e){
+    conn.className = "status err";
+    conn.innerHTML = icon("triangle-alert") + "<span>未连接</span>";
+  }
+}
+
+/* ═══ 启动 ═══ */
+$("#save").addEventListener("click", saveConfig);
+$("#revert").addEventListener("click", revert);
+poll(); setInterval(poll, 3000);
+/* 壁纸配置独立读取（即使配置加载失败也要能显示） */
+(async function initWallpaper(){
+  try {
+    const r = await fetch(API + "/config", {credentials:"include"});
+    if (r.ok){
+      const cfg = (await r.json()).config || {};
+      const w = cfg.section_appearance || {};
+      if (typeof w.wallpaper_enabled === "boolean") wpEnabled = w.wallpaper_enabled;
+      if (typeof w.wallpaper_interval === "number") wpIntervalS = w.wallpaper_interval;
+      if (typeof w.wallpaper_effect === "string" && w.wallpaper_effect) wpEffect = w.wallpaper_effect;
+      if (Array.isArray(w.wallpaper_files)) wpPick = w.wallpaper_files.slice();
+    }
+  } catch(e){ /* 用默认 */ }
+  if (!WALLPAPERS.length){
+    try {
+      const r2 = await fetch(API + "/wallpapers", {credentials:"include"});
+      if (r2.ok){ WALLPAPERS = (await r2.json()).files || []; }
+    } catch(e){ /* 无壁纸 */ }
+  }
+  startWallpaperRotation();
+})();
+
+loadConfig().catch(e => {
+  $("#form").innerHTML = '<div class="empty">' + icon("triangle-alert")
+    + "<span>配置载入失败：" + e.message + "（请确认插件已启用）</span></div>";
+});
+</script>
+</body>
+</html>
