@@ -90,7 +90,7 @@ class AcceleratorPlugin(BasePlugin):
         self._current_sid: Optional[str] = None
         self._current_event: Any = None
         self._current_tag_set: Any = None
-        self._proxy_cache: dict[int, LLMClientProxy] = {}
+        self._proxy_cache: dict[tuple, LLMClientProxy] = {}
         self._stats = {
             "turns": 0, "steps": 0,
             "tool_signals": 0,
@@ -313,6 +313,10 @@ class AcceleratorPlugin(BasePlugin):
         proxy_cache = self._proxy_cache
         allowed = set(self.stream_providers)
 
+        # ★ 缓存上限：provider 反复重建时旧 proxy 会累积（且键是 id(client)，
+        #   id 复用会造成脏命中）。超过上限就整体清空重建 —— 代价只是下次多包一层。
+        MAX_PROXY_CACHE = 64
+
         def factory(original):
             def get_model_client(self, provider_id, model_id, model_type=None):
                 client = original(self, provider_id, model_id, model_type)
@@ -332,14 +336,20 @@ class AcceleratorPlugin(BasePlugin):
                     if pname not in allowed and pid not in allowed:
                         return client
 
-                cached = proxy_cache.get(id(client))
+                # 用 (provider_id, model_id) 而非 id(client) 做键：
+                # id 会被解释器复用，拿它当键在对象被 GC 后可能命中"别人的"代理。
+                m = getattr(client, "model", None)
+                key = (getattr(m, "provider_id", ""), getattr(m, "model_id", ""))
+                if len(proxy_cache) > MAX_PROXY_CACHE:
+                    proxy_cache.clear()
+                    logger.info("[accel] 流式代理缓存超过 %d，已重置", MAX_PROXY_CACHE)
+                cached = proxy_cache.get(key)
                 if cached is not None:
                     return cached
                 proxy = LLMClientProxy(client, plugin._make_engine)
-                proxy_cache[id(client)] = proxy
-                logger.info("[accel] 已为 %s/%s 启用流式代理", 
-                            getattr(getattr(client, "model", None), "provider_name", "?"),
-                            getattr(getattr(client, "model", None), "model_id", "?"))
+                proxy_cache[key] = proxy
+                logger.info("[accel] 已为 %s/%s 启用流式代理",
+                            getattr(m, "provider_name", "?"), getattr(m, "model_id", "?"))
                 return proxy
             return get_model_client
 

@@ -107,6 +107,7 @@ class AutoThinkingController:
         effort_low: float = 2.0,
         effort_high: float = 4.5,
         max_per_minute: int = 60,
+        max_sessions: int = 500,
     ):
         self.threshold = threshold
         self.tool_count_threshold = tool_count_threshold
@@ -117,10 +118,11 @@ class AutoThinkingController:
         self.max_per_minute = max_per_minute
         self.effort_map = effort_map or {}
 
-        # sid -> 状态
+        # sid -> 状态。★ 上限保护：会话多了这些 dict 会缓慢增长，超过就清最旧。
         self._last_tool_error: dict[str, bool] = {}
         self._last_decision: dict[str, ThinkingDecision] = {}
         self._opened: dict[str, list[float]] = {}
+        self.max_sessions = max_sessions
 
     # ── 外部信号接口（对标 Alife 的 Rent/Return）──
     def note_tool_error(self, sid: str) -> None:
@@ -180,7 +182,18 @@ class AutoThinkingController:
         effort = self._pick_effort(score)
         decision = ThinkingDecision(enabled, score, signals, effort)
         self._last_decision[sid] = decision
+        self._trim_sessions()
         return decision
+
+    def _trim_sessions(self) -> None:
+        """会话数超过上限时，丢弃一半最不活跃的记录（简单、够用）。"""
+        if len(self._last_decision) <= self.max_sessions:
+            return
+        keep = set(sorted(self._last_decision, key=lambda s: self._opened.get(s, [0])[-1] if self._opened.get(s) else 0)[-self.max_sessions // 2:])
+        for d in (self._last_decision, self._last_tool_error, self._opened):
+            for s in list(d):
+                if s not in keep:
+                    d.pop(s, None)
 
     def _budget_ok(self, sid: str) -> bool:
         now = time.time()
