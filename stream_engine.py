@@ -49,7 +49,7 @@ class LLMClientProxy:
 
     __slots__ = ("_wrapped", "_engine_factory")
 
-    def __init__(self, wrapped: Any, engine_factory: Callable[[], "StreamEngine"]):
+    def __init__(self, wrapped: Any, engine_factory: Callable[[Any], "StreamEngine"]):
         self._wrapped = wrapped
         self._engine_factory = engine_factory
 
@@ -82,8 +82,10 @@ class LLMClientProxy:
 
     # 真正被替换的方法
     async def chat(self, request: LLMRequest, **kwargs) -> LLMResponse:
-        # 每次调用一个新引擎 ⇒ 统计不串（并发安全）
-        return await self._engine_factory().run(self._wrapped, request, **kwargs)
+        # 每次调用一个新引擎 ⇒ 统计不串（并发安全）。
+        # ★ 必须把 request 传进工厂：发送上下文（会话 sid 等）挂在它身上，
+        #   工厂拿不到就会退回实例变量 ⇒ 并发会话下消息会发串（线上事故）。
+        return await self._engine_factory(request).run(self._wrapped, request, **kwargs)
 
     # chat_stream 原样透传（不要再包一层，避免互相干扰）
     def chat_stream(self, request: LLMRequest, **kwargs):

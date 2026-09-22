@@ -109,10 +109,20 @@ check("已删除自造的 stream_gap 配置", "stream_gap" not in src)
 check("有 _frame_delay（读框架的 min/max_message_delay）", "_frame_delay" in src)
 check("读的是框架属性而非另立配置",
       'getattr(mp, "min_message_delay"' in src and 'getattr(mp, "max_message_delay"' in src)
-check("用速率限制（先算差值再决定等多久）", "wait = random.uniform(lo, hi) - (now -" in src)
-check("模型生成慢于目标间隔时不额外等待",
-      "if wait > 0:" in src)
-check("每轮重置时间戳", "self._last_seg_ts = None" in src)
+check("用速率限制（先算差值再决定等多久）",
+      "random.uniform(lo, hi) - (time.monotonic() - last)" in src)
+check("模型生成慢于目标间隔时不额外等待", "if wait > 0:" in src)
+# ★ 时间戳按**会话**分开存（并发下才不会互相干扰），且**不**每轮重置 ——
+#   重置会让新一轮的第一段紧贴着上一轮的最后一段出去（间隔失效）。
+check("★ 时间戳按会话分开（dict，不是标量）", "self._last_seg_ts: dict[str, float]" in src)
+check("★ 不再每轮重置时间戳（否则第二轮起会贴脸发）",
+      "self._last_seg_ts = None" not in src)
+# ★★ 节奏必须在**发送之前**：放发送之后、又让第一段跳过等待的话，
+#    第二段就会紧贴第一段出去（实测间隔 0s，用户报过）。
+i_pace = src.index("await self._pace(ctx)")
+i_send = src.index("await mp.send_message_chain(ctx.sid, action)")
+check("★★ 节奏在发送之前（这是「间隔没生效」的真凶）", i_pace < i_send,
+      f"_pace@{i_pace} vs send@{i_send}")
 
 
 def _pace_sim(gen_s, lo, hi, n=4, rnd=None):

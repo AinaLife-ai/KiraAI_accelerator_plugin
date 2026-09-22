@@ -160,6 +160,71 @@ check("OpenAI 兼容系：关思考参数已注入", off[ali] != before[ali],
 check("DeepSeek：关思考参数已注入", off["deepseek"] != before["deepseek"],
       f"{off['deepseek']}（旧版与补丁前一样）")
 
+print("\n6) ★ 新开关「开思考时跟随提供商的强度」（默认关）")
+_at = _env.load("auto_thinking")
+
+probe = SimpleNamespace(model_config={"reasoning_effort": "max"})
+check("能读出提供商配的强度（DeepSeek 顶层字段）",
+      _at.provider_effort(probe) == "max", str(_at.provider_effort(probe)))
+probe2 = SimpleNamespace(model_config={
+    "section_advanced": {"extra_body": {"reasoning_effort": "high"}}})
+check("能读出提供商配的强度（网关 extra_body 写法）",
+      _at.provider_effort(probe2) == "high", str(_at.provider_effort(probe2)))
+check("没配时返回 None", _at.provider_effort(SimpleNamespace(model_config={})) is None)
+
+ours = {"reasoning_effort": "low", "thinking": {"type": "enabled"}}
+kept = _at.follow_provider_effort(ours, "max")
+check("★ 开关打开：不发 effort（强度的唯一来源是提供商）",
+      "reasoning_effort" not in kept, str(kept))
+check("开关打开：仍然发「开思考」", "thinking" in kept, str(kept))
+check("开关打开但提供商没配强度 ⇒ 用我们的（否则就没强度了）",
+      "reasoning_effort" in _at.follow_provider_effort(ours, None),
+      str(_at.follow_provider_effort(ours, None)))
+
+src_main = (_env.ROOT / "main.py").read_text(encoding="utf-8")
+check("默认关（默认不启用跟随）",
+      'c_thk.get("follow_provider_effort", False)' in src_main)
+check("★ 开关只在「开思考」那一路生效，不影响关思考",
+      "if self.thinking_follow_provider:" in src_main
+      and "elif self.thinking_inject_nothink:" in src_main)
+
+print("\n7) ★ 端到端：提供商 effort=max，两种开关下各发生什么")
+ds = DeepSeekLLMClient(info("ds", {"thinking_enabled": True, "reasoning_effort": "max"}))
+
+# 默认（开关关）：插件按自己的判定发强度 —— 允许低于提供商（这是设计选择）
+plugin.thinking_follow_provider = False
+r_low = req(); r_low.__dict__["_accel_thinking"] = SimpleNamespace(enabled=True, effort="low")
+d1 = thinking_params(build(ds, r_low))
+print(f"     开关关 + 判 low ⇒ {d1}")
+check("★ 默认：插件按判定发强度（可能低于提供商）",
+      d1.get("reasoning_effort") == "high", str(d1.get("reasoning_effort")))
+
+# 开关开：强度交给提供商 max
+plugin.thinking_follow_provider = True
+r_low2 = req(); r_low2.__dict__["_accel_thinking"] = SimpleNamespace(enabled=True, effort="low")
+d2 = thinking_params(build(ds, r_low2))
+print(f"     开关开 + 判 low ⇒ {d2}")
+check("★★ 开关开：强度仍是用户设的 max（插件只负责开）",
+      d2.get("reasoning_effort") == "max", str(d2.get("reasoning_effort")))
+
+# 关思考在这两种情况下都要照常
+plugin.thinking_inject_nothink = True
+r_off = req(); r_off.__dict__["_accel_thinking"] = SimpleNamespace(enabled=False, effort="low")
+d3 = thinking_params(build(ds, r_off))
+check("★ 开关开时，关思考依然生效",
+      (d3.get("extra_body.thinking") or {}).get("type") == "disabled",
+      str(d3.get("extra_body.thinking")))
+plugin.thinking_follow_provider = False
+d4 = thinking_params(build(ds, r_off))
+check("★ 开关关时，关思考也照常生效",
+      (d4.get("extra_body.thinking") or {}).get("type") == "disabled",
+      str(d4.get("extra_body.thinking")))
+
+print("\n8) 自动思考没启用时，日志不能吓人")
+check("★ 未启用时日志写「未启用」而不是「关」", '"未启用"' in src_main,
+      "main.py 的 observe_final")
+check("★ 判「关」时带上得分（让人看出这是本轮判定）", "关(得分" in src_main)
+
 print("\n" + "=" * 60)
 print(f"通过 {len(PASS)}  失败 {len(FAIL)}")
 if FAIL:

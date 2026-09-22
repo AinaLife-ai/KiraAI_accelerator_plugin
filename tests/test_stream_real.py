@@ -174,7 +174,7 @@ async def main():
 
     client = make_client()
     proxy = LLMClientProxy(
-        client, lambda: StreamEngine(force_stream=True, emit=emit))
+        client, lambda _req=None: StreamEngine(force_stream=True, emit=emit))
     check("代理通过了 isinstance（上一轮修的）",
           isinstance(proxy, type(client).__mro__[1]) or True, type(proxy).__name__)
 

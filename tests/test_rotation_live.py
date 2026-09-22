@@ -57,6 +57,9 @@ hook = """
   get wpIntervalS(){return wpIntervalS}, set wpIntervalS(v){wpIntervalS=v},
   get WALLPAPERS(){return WALLPAPERS}, set WALLPAPERS(v){WALLPAPERS=v},
   wpTransition, startWallpaperRotation, stopWallpaperRotation, wpUrl,
+  get wpParallax(){return wpParallax}, set wpParallax(v){wpParallax=v},
+  get swayX(){return swayX}, get swayY(){return swayY},
+  applySway, initParallax, get parallaxBound(){return parallaxBound},
 };
 """
 main = main + "\n" + hook
@@ -108,6 +111,13 @@ global.document = {
   addEventListener: () => {},
 };
 global.window = global;
+global.innerWidth = 1600;
+global.innerHeight = 900;
+global.__listeners = {};
+global.addEventListener = (type, fn) => {
+  (global.__listeners[type] = global.__listeners[type] || []).push(fn);
+};
+global.removeEventListener = () => {};
 global.navigator = { language: 'zh-CN' };
 global.requestAnimationFrame = (fn) => setTimeout(fn, 16);
 global.getComputedStyle = () => ({ opacity: '1' });
@@ -167,6 +177,30 @@ if (!H) { console.log('HOOK_MISSING'); process.exit(4); }
   //   （切换本身要 2.15s，采到 busy=true 是正常的在飞状态）
   out.busyReleased = busyTrack.includes(false);
   out.busyEverHeld = busyTrack.includes(true);
+  // ── C. 视差：派发真实 mousemove，看两层位移有没有跟着变 ──
+  const fire = (type, ev) => (global.__listeners[type] || []).forEach(f => f(ev));
+  H.wpParallax = true;
+  H.initParallax();
+  const tf = () => document.getElementById('wp-b').style.transform
+              || document.getElementById('wp-a').style.transform;
+  out.sway = {};
+  out.sway.bound = H.parallaxBound;
+  out.sway.listeners = Object.keys(global.__listeners);
+  fire('mousemove', {clientX: 800, clientY: 450});
+  out.sway.atCenter = tf();
+  fire('mousemove', {clientX: 0, clientY: 0});
+  out.sway.atTopLeft = tf();
+  out.sway.swayAtTL = [H.swayX, H.swayY];
+  fire('mousemove', {clientX: 1600, clientY: 900});
+  out.sway.atBottomRight = tf();
+  out.sway.swayAtBR = [H.swayX, H.swayY];
+  fire('mouseleave', {});
+  out.sway.afterLeave = tf();
+  // 关掉开关后不该再动
+  H.wpParallax = false;
+  fire('mousemove', {clientX: 0, clientY: 0});
+  out.sway.whenOff = [H.swayX, H.swayY, tf()];
+
   console.log(JSON.stringify(out));
   // ★ 必须显式退出：面板脚本里的 setInterval(poll,3000) 会让事件循环永远活着
   process.exit(0);
@@ -217,6 +251,30 @@ check("切换期间确实持锁（说明锁在起作用）", data["busyEverHeld"
 # 但整整 6 秒只有 1 张 = 没在换
 check("★ 6 秒内换过多张（不是停在某一张）", len(data["distinct"]) >= 2,
       f"{len(data['distinct'])} 张: {data['distinct']}")
+
+print("\n3b) ★ 伪 live2D：鼠标一动，背景真的跟着位移")
+sw = data["sway"]
+print(f"     监听类型: {sw['listeners']}")
+check("window 上真的挂了 mousemove 监听", "mousemove" in sw["listeners"], str(sw["listeners"]))
+check("只注册一次（有 bound 标记）", sw["bound"] is True)
+
+def tx_of(s):
+    import re as _re
+    m = _re.search(r"translate3d\((-?\d+)px,\s*(-?\d+)px", s or "")
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+check("画面中心 ⇒ 位移为 0", tx_of(sw["atCenter"]) == (0, 0), str(sw["atCenter"]))
+tl = tx_of(sw["atTopLeft"])
+br = tx_of(sw["atBottomRight"])
+check("★ 鼠标在左上 ⇒ 画面往右下让（方向相反，形成景深）",
+      tl and tl[0] > 0 and tl[1] > 0, f"左上={tl}")
+check("★ 鼠标在右下 ⇒ 画面往左上让", br and br[0] < 0 and br[1] < 0, f"右下={br}")
+check("位移幅度克制（不会晃眼）",
+      tl and abs(tl[0]) <= 20 and abs(tl[1]) <= 20, f"最大 {tl}")
+check("鼠标离开窗口 ⇒ 回到中心", tx_of(sw["afterLeave"]) == (0, 0),
+      str(sw["afterLeave"]))
+check("★ 关掉开关后不再跟随", sw["whenOff"][0] == 0 and sw["whenOff"][1] == 0,
+      str(sw["whenOff"]))
 
 print("\n4) ★ 反向验证：把旧的写法喂回去，必须报错")
 reverse = r"""

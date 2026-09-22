@@ -16,6 +16,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import random
 import time
 from collections import deque
@@ -32,10 +33,37 @@ from .auto_thinking import (
     apply_thinking_params,
     build_thinking_extra_body,
     build_nothinking_extra_body,
+    follow_provider_effort,
+    provider_effort,
     resolve_style,
 )
 
 PLUGIN_ID = "kira_accelerator"
+
+
+class SendCtx:
+    """一轮请求的发送上下文（会话 / 事件 / 标签集）。
+
+    ★ 为什么必须**跟着 request 走**，而不是放在 self 上（线上事故）：
+      框架会并发处理多个会话（群里来消息、私聊同时在回复）。
+      `self._current_sid` 是实例级的，会被**后到的**事件覆盖，
+      而抢先发送发生在之后的 `chat()` 里 —— 于是
+      **A 会话的回复被发到了 B 会话**（用户实测：私聊的回复进了群）。
+
+      上下文挂在 request 上，天然跟着这一次调用走，并发也不会串。
+    """
+
+    __slots__ = ("sid", "event", "tag_set")
+
+    def __init__(self, sid, event, tag_set):
+        self.sid = sid
+        self.event = event
+        self.tag_set = tag_set
+
+
+def ctx_of(request) -> "Optional[SendCtx]":
+    """取出挂在 request 上的发送上下文（没有就是 None）。"""
+    return getattr(request, "__dict__", {}).get("_accel_ctx")
 
 class AcceleratorPlugin(BasePlugin):
     def __init__(self, ctx, cfg: dict):
@@ -85,6 +113,9 @@ class AcceleratorPlugin(BasePlugin):
         self.thinking_enabled = bool(c_thk.get("enabled", False))
         self.thinking_style = str(c_thk.get("style", "compatible"))
         self.thinking_inject_nothink = bool(c_thk.get("inject_nothinking", False))
+        # 开思考时是否"只开、强度照用提供商配的"（默认关：插件按判定调强度）
+        self.thinking_follow_provider = bool(
+            c_thk.get("follow_provider_effort", False))
         self.thinking = AutoThinkingController(
             threshold=float(c_thk.get("threshold", 2.0)),
             long_message_chars=int(c_thk.get("long_message_chars", 220)),
@@ -104,7 +135,8 @@ class AcceleratorPlugin(BasePlugin):
         self._current_event: Any = None
         self._current_tag_set: Any = None
         self._current_resp: Any = None
-        self._last_seg_ts: Optional[float] = None
+        self._last_seg_ts: dict[str, float] = {}   # 每个会话各自的"上次发送时刻"
+        self._resp_by_sid: dict[str, Any] = {}      # 每个会话各自的"本轮响应"
         self._proxy_cache: dict[tuple, LLMClientProxy] = {}
         self._stats = {
             "turns": 0, "steps": 0,
@@ -164,12 +196,25 @@ class AcceleratorPlugin(BasePlugin):
             # 把"本轮有没有用工具"记为"上一轮"，供下一轮判定使用
             self.thinking.commit_turn(sid)
             d = self.thinking.last_decision(sid)
+            # ★ 文案要让"这不是全局开关"看得明白：
+            #   以前自动思考没开时也打「思考=关」⇒ 用户（尤其自己已在提供商
+            #   那边开了思考的人）会以为插件把思考关掉了，看着吓人。
+            #   现在：没启用的功能就说「未启用」，启用后不打光秃秃的「关」，
+            #   而是把得分带上，明确这是**本轮判定结果**。
+            if not self.thinking_enabled:
+                think_txt = "未启用"
+            elif d is None:
+                think_txt = "—"
+            elif d.enabled:
+                think_txt = "开(%s,%s)" % (d.effort, "/".join(d.signals))
+            else:
+                think_txt = "关(得分%.1f)" % d.score
             logger.info(
                 "[accel] 一轮结束 sid=%s steps=%d 抢先发=%d 首段=%.2fs 思考=%s",
                 sid, len(getattr(final_result, "step_results", []) or []),
                 self._stats["early_sent"],
                 self._stats["first_seg_s"] or 0.0,
-                (f"开({d.effort},{'/'.join(d.signals)})" if d and d.enabled else "关"),
+                think_txt,
             )
         except Exception:  # noqa: BLE001
             logger.exception("[accel] 观测失败")
@@ -186,12 +231,13 @@ class AcceleratorPlugin(BasePlugin):
           1. 记录本轮上下文（sid/event/tag_set），供抢先发送使用
           2. 自动思考判定（结果在 request 上打标记，由 _build_request_kwargs 注入）
         """
-        self._current_sid = getattr(event, "sid", None)
-        self._current_event = event
-        self._current_tag_set = tag_set
+        sid_now = getattr(event, "sid", None)
+        # 仅供面板展示"最近一次判定属于哪个会话"，功能路径一律用 req 上的 SendCtx
+        self._current_sid = sid_now
+        req.__dict__["_accel_ctx"] = SendCtx(sid_now, event, tag_set)
 
-        if self.thinking_enabled and self._current_sid:
-            decision = self.thinking.decide(self._current_sid, req)
+        if self.thinking_enabled and sid_now:
+            decision = self.thinking.decide(sid_now, req)
             req.__dict__["_accel_thinking"] = decision
             if decision.enabled:
                 self._stats["thinking_on"] += 1
@@ -322,72 +368,86 @@ class AcceleratorPlugin(BasePlugin):
             logger.info("[accel] 流式引擎已安装（强制流式=%s 抢先发送=%s providers=%s）",
                         self.force_stream, self.early_send, sorted(allowed) or "ALL")
 
-    def _make_engine(self) -> StreamEngine:
-        # 每次模型调用都是新的一轮 ⇒ 重置节奏时间戳，
-        # 避免上一轮的发送时刻被算进本轮的"距上次发送"
-        self._last_seg_ts = None
+    def _make_engine(self, request=None) -> StreamEngine:
+        """建一个引擎实例。request 必须传进来 —— 发送上下文挂在它身上。"""
+        ctx = ctx_of(request) if request is not None else None
         emit = None
         if self.early_send:
             async def _emit(seg: str) -> None:
-                await self._emit_segment(seg)
+                await self._emit_segment(seg, ctx)
             emit = _emit
+
         def _remember(resp):
-            # 记录本轮响应，供发送层（send_xml_messages）读取标记做剥离
-            self._current_resp = resp
+            # 记录本轮响应，供发送层（send_xml_messages）读取标记做剥离。
+            # ★ 按 sid 分开存：并发会话下用一个实例变量会拿错响应
+            #   ⇒ 要么重复发送、要么把内容丢掉。
+            if ctx is not None and ctx.sid:
+                self._resp_by_sid[ctx.sid] = resp
+                if len(self._resp_by_sid) > 32:          # 防泄漏
+                    self._resp_by_sid.clear()
+                    self._resp_by_sid[ctx.sid] = resp
+            self._current_resp = resp                    # 仅供观测
 
         return StreamEngine(force_stream=self.force_stream, emit=emit, on_complete=_remember)
 
-    async def _emit_segment(self, seg: str) -> None:
-        """把一段已闭合的 <msg> 真正发出去，并补广播 ON_MESSAGE_SENT。"""
+    async def _pace(self, ctx: "SendCtx") -> None:
+        """发送**前**等够 min/max_message_delay（第一段不等，保证首字快）。
+
+        间隔值直接取框架自己的配置（`_frame_delay`），插件不自造第二个数字。
+        """
+        lo, hi = self._frame_delay()
+        if hi <= 0:
+            self._last_seg_ts.pop(ctx.sid, None)
+            return
+        last = self._last_seg_ts.get(ctx.sid)
+        if last is not None:
+            wait = random.uniform(lo, hi) - (time.monotonic() - last)
+            if wait > 0:
+                await asyncio.sleep(wait)
+
+    def _mark_sent(self, ctx: "SendCtx") -> None:
+        """记下"刚刚发出"的时刻（下一段据此计算还要等多久）。"""
+        if self._frame_delay()[1] > 0:
+            self._last_seg_ts[ctx.sid] = time.monotonic()
+
+    async def _emit_segment(self, seg: str, ctx: "SendCtx" = None) -> None:
+        """把一段已闭合的 <msg> 真正发出去，并补广播 ON_MESSAGE_SENT。
+
+        ctx 必须来自**这一次**请求（request 上挂的 SendCtx）——
+        用实例变量会在并发会话下把消息发到别的会话去。
+        """
         import asyncio
 
         mp = getattr(self.ctx, "message_processor", None)
-        if mp is None or not self._current_sid or self._current_tag_set is None:
+        if ctx is None or mp is None or not ctx.sid or ctx.tag_set is None:
             raise RuntimeError("抢先发送上下文不完整")
 
-        actions = await mp._parse_xml_msg(seg, self._current_tag_set)
+        actions = await mp._parse_xml_msg(seg, ctx.tag_set)
         from core.chat import MessageChain
 
         for action in actions:
             if not isinstance(action, MessageChain) or action.is_empty():
                 continue
-            result = await mp.send_message_chain(self._current_sid, action)
+            # ★ 段间隔：**发送前**补足与上一段的间隔（第一段不等 ⇒ 首字要快）
+            #
+            #   为什么必须在"发送前"而不是"发送后"：
+            #     框架是在每次发送**之后** sleep，所以它的第 1 段照发、第 2 段前
+            #     已经等过一次。我们若把等待放在发送后、又让第 1 段跳过等待，
+            #     **第 2 段就会紧贴着第 1 段出去**（实测间隔 0s）——
+            #     这正是用户报的"最小/最大间隔没生效"。
+            await self._pace(ctx)
+
+            result = await mp.send_message_chain(ctx.sid, action)
+            self._mark_sent(ctx)
 
             # ★ 补广播 ON_MESSAGE_SENT（绕过框架发送层就必须补）
             try:
                 from core.plugin.plugin_handlers import event_handler_reg, EventType
-                if self._current_event is not None:
+                if ctx.event is not None:
                     for handler in event_handler_reg.get_handlers(EventType.ON_MESSAGE_SENT):
-                        await handler.exec_handler(self._current_event, action, result)
+                        await handler.exec_handler(ctx.event, action, result)
             except Exception:  # noqa: BLE001
                 logger.exception("[accel] 补广播 ON_MESSAGE_SENT 失败")
-
-            # ★ 段间隔：**遵守框架自己的配置**（bot_config.min_message_delay /
-            #   max_message_delay），插件不自造第二个数字。
-            #
-            #   与框架的唯一差别是**等待的时机点**，等待时长完全相同：
-            #     框架：发完第 K 段之后，无条件 sleep(uniform(min, max))
-            #     我们：第 K+1 段就绪、准备发之前，补足"距上次发送还差的量"
-            #
-            #   两者数学等价：
-            #     · 第 K+1 段在间隔内就绪 ⇒ 两边都等到满间隔才发（间隔 = 目标值）
-            #     · 第 K+1 段来得比间隔晚 ⇒ 两边都立刻发（间隔 = 生成间隔）
-            #   ⇒ **段间隔与框架完全一致，不存在"绕过间隔"**
-            #   ⇒ 真正的差别只在第一段的时机：框架要等全部生成完，
-            #     我们第一段生成好就发，于是后续各段的绝对时刻一起前移。
-            #
-            #   （写成"就绪前补差值"而不是"发送后无条件 sleep"，
-            #     是为了不在没有内容可发的时候占住流式读取循环。）
-            lo, hi = self._frame_delay()
-            if hi > 0:
-                now = time.monotonic()
-                if self._last_seg_ts is not None:
-                    wait = random.uniform(lo, hi) - (now - self._last_seg_ts)
-                    if wait > 0:
-                        await asyncio.sleep(wait)
-                self._last_seg_ts = time.monotonic()
-            else:
-                self._last_seg_ts = None
 
             self._stats["early_sent"] += 1
             es = self._stats
@@ -457,7 +517,7 @@ class AcceleratorPlugin(BasePlugin):
                                 plugin._stats["content_normalized"] = (
                                     plugin._stats.get("content_normalized", 0) + n)
 
-                        return plugin._apply_thinking(kwargs, request, kind)
+                        return plugin._apply_thinking(kwargs, request, kind, self)
                     return build
                 return factory
 
@@ -469,7 +529,8 @@ class AcceleratorPlugin(BasePlugin):
         logger.info("[accel] 请求钩子已安装（自动思考=%s 规范空白=%s 注入点=%s）",
                     self.thinking_enabled, self.normalize_empty_content, installed)
 
-    def _apply_thinking(self, kwargs: dict, request: Any, client_kind: str) -> dict:
+    def _apply_thinking(self, kwargs: dict, request: Any, client_kind: str,
+                        client: Any = None) -> dict:
         """按本轮判定，把思考参数合并进请求体（位置由 apply_thinking_params 决定）。"""
         if not self.thinking_enabled:
             return kwargs
@@ -480,6 +541,10 @@ class AcceleratorPlugin(BasePlugin):
         style = resolve_style(self.thinking_style, client_kind)
         if decision.enabled:
             params = build_thinking_extra_body(style, decision.effort)
+            if self.thinking_follow_provider:
+                # 开关打开：只负责"开"，强度完全提供商配的那个值
+                params = follow_provider_effort(
+                    params, provider_effort(getattr(client, "model", None)))
         elif self.thinking_inject_nothink:
             params = build_nothinking_extra_body(style)
         else:
@@ -667,7 +732,11 @@ class AcceleratorPlugin(BasePlugin):
 
         def factory(original):
             async def send_xml_messages(self, event, xml_data, tag_set):
-                resp = getattr(plugin, "_current_resp", None)
+                # ★ 按 sid 取"本轮响应"：并发会话下用实例变量会拿错响应，
+                #   要么重复发送、要么把没发过的内容丢掉。
+                sid_now = getattr(event, "sid", None)
+                resp = (plugin._resp_by_sid.get(sid_now) if sid_now else None) \
+                    or getattr(plugin, "_current_resp", None)
                 n = early_sent_count(resp) if resp is not None else 0
                 if n > 0:
                     xml_data = strip_early_sent(xml_data, n)
@@ -679,6 +748,8 @@ class AcceleratorPlugin(BasePlugin):
                     # 本轮已消费完，清掉标记，避免影响下一步/下一轮
                     if resp is not None:
                         resp.__dict__.pop("_accel_early_sent_count", None)
+                    if sid_now:
+                        plugin._resp_by_sid.pop(sid_now, None)
             return send_xml_messages
 
         h = PatchHandle("early_sent_strip")

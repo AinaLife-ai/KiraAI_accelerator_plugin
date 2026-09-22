@@ -80,9 +80,28 @@ print("\n4) 轮换间隔默认值")
 import json
 sch = json.loads((HERE / "schema.json").read_text())
 iv = sch["section_appearance"]["fields"]["wallpaper_interval"]
-check("默认 30 秒", iv["default"] == 30, f"实际={iv['default']}")
+check("默认 8 秒", iv["default"] == 8, f"实际={iv['default']}")
 check("配置说明提到随机", "随机" in iv["locales"]["zh"]["hint"])
 check("0 表示不轮换的说明存在", "0" in iv["locales"]["zh"]["hint"])
+
+print("\n4b) ★ 伪 live2D 视差（跟随鼠标的轻微晃动）")
+pv = sch["section_appearance"]["fields"].get("wallpaper_parallax")
+check("schema 里有 wallpaper_parallax 开关", pv is not None)
+if pv:
+    check("默认开启", pv.get("default") is True, str(pv.get("default")))
+    hint = (pv.get("locales", {}).get("zh", {}) or {}).get("hint", "")
+    check("说明里提到鼠标", "鼠标" in hint, hint[:50])
+    check("说明里提到会随「减少动态效果」自动停用",
+          "减少动态效果" in hint or "reduced-motion" in hint.lower(), hint[:70])
+
+check("面板有 applySway / initParallax", "function applySway" in html and "function initParallax" in html)
+check("★ 位移方向与鼠标相反（有景深感）", "-nx * RX" in html and "-ny * RY" in html)
+check("★ 开关在事件里实时判断（改配置即时生效）", "if (!wpParallax) return;" in html)
+check("监听只注册一次（不会重复叠加）", "parallaxBound" in html)
+check("★ reduced-motion 下停用", "animation:none!important" in html.replace(" ", "")
+      and "transform:none!important" in html.replace(" ", ""))
+check("切换时保留位移（复位后补回）", html.count("applySway();") >= 3, f"{html.count('applySway();')} 次")
+check("过渡包含 transform（位移不会跳）", "transform .9s" in html)
 
 print("\n5) ★ 文档与实物一致（数字最容易漂）")
 import re as _re
