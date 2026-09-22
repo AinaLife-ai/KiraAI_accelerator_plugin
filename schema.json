@@ -92,18 +92,6 @@
             "hint": "只对列出的提供商名称或 ID 生效，方便灰度测试。留空表示全部。默认：空。"
           }
         }
-      },
-      "gap": {
-        "type": "float",
-        "name": "Gap between segments (s)",
-        "default": 0.25,
-        "hint": "Wait between early-sent segments.",
-        "locales": {
-          "zh": {
-            "name": "段间隔（秒）",
-            "hint": "抢先发送时每段之间的等待，模拟自然节奏。默认：0.25。"
-          }
-        }
       }
     }
   },
@@ -273,23 +261,51 @@
         "type": "list",
         "name": "Whitelist (empty = allow all)",
         "default": [],
-        "hint": "Leave empty to allow everything except the blacklist. Non-empty means only these may run in parallel.",
+        "hint": "Leave empty to allow everything except the blacklist (recommended). Non-empty means only these may run in parallel.",
         "locales": {
           "zh": {
             "name": "白名单（留空=全部放行）",
-            "hint": "留空则只由下面的黑名单控制（推荐，不用维护长名单）。填了则只放行名单里的工具。黑名单优先级高于白名单。"
+            "hint": "留空（推荐）＝ 只要不在黑名单里就允许并行。填了则**只放行名单里的**，其余一律串行。黑名单优先级高于白名单。"
           }
         }
       },
       "blacklist": {
         "type": "list",
         "name": "Blacklist",
-        "default": [],
-        "hint": "Tools here always run sequentially. Empty means use the built-in default list.",
+        "default": [
+          "exec",
+          "write_file",
+          "edit_file",
+          "manage_background_exec",
+          "memory_add",
+          "memory_update",
+          "memory_remove",
+          "session_send",
+          "manage_ignore",
+          "spawn_subagent",
+          "call_subagent",
+          "stop_subagent",
+          "resume_subagent",
+          "collect_subagent_results",
+          "register_subagent_tool",
+          "save_subagent_persona_tool",
+          "edit_subagent_tool",
+          "remove_subagent_tool",
+          "get_subagent_persona_tool",
+          "tool_navigate",
+          "tool_backend",
+          "tool_script",
+          "tool_interact",
+          "tool_cookie",
+          "tool_file",
+          "tool_wait",
+          "tool_tabs"
+        ],
+        "hint": "Tools listed here always run sequentially. The built-in list is pre-filled, so you can just add or remove entries.",
         "locales": {
           "zh": {
             "name": "黑名单（留空=用内置默认）",
-            "hint": "名单里的工具一律串行。留空则使用内置默认黑名单（已收录 exec / write_file / edit_file / memory_* / session_send / 浏览器系列 / 子代理系列等有副作用或有顺序语义的工具）。"
+            "hint": "名单里的工具一律串行。**内置默认值已经预填在列表里**，你直接在它基础上增删即可，不用手抄一遍。（清空列表 = 没有黑名单，全部放行，不推荐。）"
           }
         }
       },

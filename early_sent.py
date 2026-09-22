@@ -20,20 +20,30 @@
 把"给框架发送用的文本"与"给下游看的完整文本"**分开**：
 
 - `resp.text_response`  ← **模型的完整输出**（下游看到的就是它）
-- `resp.tool_results`   ← 塞一个内部标记，告诉**我们自己的发送层**："前 N 段已经发出去了"
+- `resp.__dict__` 上的私有标记 ← 告诉**我们自己的发送层**："前 N 段已经发出去了"
 
 真正的剥离发生在**发送时**（`_strip_early_sent`），而不是在构造响应时。
 这样：
   - 下游插件的语义**完全不变**（拿到的就是完整输出）
   - 框架仍然**不会重复发送**已发出的段
 
-标记放在 `tool_results` 里是刻意选的：框架对没有 `tool_calls` 的响应**不会读它**
-（只会在 `agent_executor` 里对 `tool_calls` 逐个匹配 `tool_call_id`），
-所以对框架是一条无害的附加数据。
+### ⚠️ 标记绝不能放进 `resp.tool_results`（我踩过的坑）
+
+第一版我把标记 append 进了 `resp.tool_results`，理由是"框架对没有 tool_calls 的响应
+不会读它"。**这个推理是错的**：模型完全可能"先说一句，再决定调工具"——同一个响应里
+`text_response` 有已抢发的段、`tool_calls` 又非空。这时 `agent_executor` 会走
+tool_calls 分支并执行：
+
+    tool_msgs = [OpenAIMessage(**r) for r in llm_resp.tool_results]
+
+标记 dict 没有 `role` 字段 ⇒ pydantic 抛 `ValidationError` ⇒ **整个回合崩掉**。
+
+所以标记只放 `resp.__dict__`——框架从不遍历它，绝无副作用。
 """
 from __future__ import annotations
 
-# 内部标记的键名（放在 resp.tool_results 里）
+# 历史遗留：曾经的标记键名。**已废弃** —— 标记现在只放 resp.__dict__，
+# 放 tool_results 会让框架的 OpenAIMessage(**r) 崩（见 mark_early_sent 的说明）。
 MARKER_KEY = "_accel_early_sent"
 
 # 正则：匹配一个**已闭合**的 <msg> 段（与 stream_first 保持一致）
@@ -43,18 +53,25 @@ _MSG_CLOSED = re.compile(r"<msg(?:\s[^>]*)?>.*?</msg>|<msg(?:\s[^>]*)?/>", re.DO
 
 
 def mark_early_sent(resp, segments: list[str], full_text: str) -> None:
-    """在响应上记录"这些段已经抢先发出去了"。"""
+    """在响应上记录"这些段已经抢先发出去了"。
+
+    ★★ 只写**私有属性**，绝不碰 `resp.tool_results`！
+
+    我第一版把标记塞进了 `tool_results`，注释还写着"框架对没有 tool_calls 的响应
+    不会读它"——**这个推理是错的**：模型完全可能"先说一句，再决定调工具"，
+    于是同一个响应里 `text_response` 有已抢发的段、`tool_calls` 又非空。
+    这时 `agent_executor` 会走 tool_calls 分支并执行：
+
+        tool_msgs = [OpenAIMessage(**r) for r in llm_resp.tool_results]
+
+    我的标记 dict 没有 `role` 字段 ⇒ pydantic 抛 `ValidationError`
+    ⇒ **整个回合崩掉**。
+
+    所以标记只放 `resp.__dict__`：框架从不遍历它，绝无副作用。
+    """
     if not segments:
         return
     try:
-        if not isinstance(getattr(resp, "tool_results", None), list):
-            resp.tool_results = []
-        resp.tool_results.append({
-            MARKER_KEY: True,
-            "count": len(segments),
-            "full_len": len(full_text or ""),
-        })
-        # 同时把完整文本与已发段数挂在私有属性上，供自己的发送层读取
         resp.__dict__["_accel_full_text"] = full_text or ""
         resp.__dict__["_accel_early_sent_count"] = len(segments)
     except Exception:  # noqa: BLE001
