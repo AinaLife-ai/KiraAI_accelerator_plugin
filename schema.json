@@ -209,6 +209,20 @@
           }
         }
       },
+      "follow_provider_effort": {
+        "type": "switch",
+        "default": false,
+        "locales": {
+          "zh": {
+            "name": "开思考时跟随提供商的强度",
+            "hint": "关（默认）：判定要思考时，插件按自己算出的档位发强度，可能比你提供商里设的低。开：判定要思考时插件只负责「开」，强度完全用你提供商里配的那个值（设的 max 就用 max，不会改成别的）。两种情况下，「关思考」都照常生效。"
+          },
+          "en": {
+            "name": "Use the provider's thinking strength",
+            "hint": "Off (default): when we decide to think, the plugin sends the effort it computed, which may be lower than the one set in your provider settings. On: when we decide to think, the plugin only turns thinking on and leaves the strength exactly as your provider configured it (max stays max). Turning thinking off still works either way."
+          }
+        }
+      },
       "context_ratio_on": {
         "type": "float",
         "name": "Context: turn on above baseline ratio",
@@ -424,15 +438,29 @@
           }
         }
       },
+      "wallpaper_parallax": {
+        "type": "switch",
+        "default": true,
+        "locales": {
+          "zh": {
+            "name": "跟随鼠标的轻微晃动",
+            "hint": "壁纸会随鼠标位置做很轻微的位移，配合缓慢的呼吸式缩放，像画面有景深在浮动（伪 live2D 感）。关掉就完全静止。系统开启「减少动态效果」时自动停用。"
+          },
+          "en": {
+            "name": "Subtle parallax with the cursor",
+            "hint": "The wallpaper drifts slightly with the cursor, plus a very slow breathing zoom, so the scene feels like it has depth. Turn off for a completely still background. Disabled automatically under prefers-reduced-motion."
+          }
+        }
+      },
       "wallpaper_interval": {
         "type": "integer",
         "name": "Rotation interval in seconds (0 = static)",
-        "default": 30,
+        "default": 8,
         "hint": "Seconds between wallpapers (picked at random each time, never the same twice in a row). 0 keeps the first one.",
         "locales": {
           "zh": {
             "name": "轮换间隔（秒，0=不轮换）",
-            "hint": "每隔多少秒换一张壁纸。默认 30 秒；每次随机挑一张（不会连着出现同一张）。设为 0 则固定显示第一张。"
+            "hint": "每隔多少秒换一张壁纸。默认 8 秒；每次随机挑一张（不会连着出现同一张）。设为 0 则固定显示第一张。"
           }
         }
       },
