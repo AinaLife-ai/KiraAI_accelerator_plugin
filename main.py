@@ -408,8 +408,13 @@ class AcceleratorPlugin(BasePlugin):
     # ══════════════════════════════════════════════════════════
     @register.page(
         "/index",
+        # ★ 图标改用插件自带的 SVG 文件（框架支持：PageMenu.icon 给相对路径时，
+        #   会通过 /api/plugins/<id>/menu-icon/<route> 提供）。这样侧边栏菜单里
+        #   显示的是与插件图标同一套视觉，而不是通用图标字体里的某个图标。
         menu=PageMenu(
-            label={"zh": "加速器", "en": "Accelerator"}, icon="Rocket", order=95
+            label={"zh": "加速器", "en": "Accelerator"},
+            icon="icon.svg",
+            order=95,
         ),
     )
     def page(self):

@@ -483,7 +483,8 @@ select{appearance:none;background-image:none;cursor:pointer}
 <script>
 /* ═══ 常量 ═══ */
 const PLUGIN_ID = "kira_accelerator";
-const API = "/api/plugin/" + encodeURIComponent(PLUGIN_ID);
+// 框架的插件路由前缀是 /api/plugins/<plugin_id>/<path>（注意复数 s）
+const API = "/api/plugins/" + encodeURIComponent(PLUGIN_ID);
 const LANG = (navigator.language || "zh").toLowerCase().startsWith("zh") ? "zh" : "en";
 
 /* ═══ 小工具 ═══ */
@@ -976,8 +977,18 @@ function startWallpaperRotation(){
   // 只选 1 张 = 不轮换
   if (wpActive.length < 2 || wpIntervalS <= 0) return;
 
+  // ★ 随机轮换：每次随机挑一张，并避免与当前这张重复
+  //   （2 张时退化为交替；1 张时上面已提前 return，不轮换）
   wpTimer = setInterval(() => {
-    wpIdx = (wpIdx + 1) % wpActive.length;
+    if (wpActive.length <= 1) return;
+    const cur = wpActive[wpIdx];
+    let next = wpIdx;
+    let guard = 0;
+    do {
+      next = Math.floor(Math.random() * wpActive.length);
+      guard++;
+    } while (wpActive[next] === cur && guard < 20);
+    wpIdx = next;
     wpTransition(wpUrl(wpActive[wpIdx]));
   }, wpIntervalS * 1000);
 }
