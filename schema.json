@@ -296,18 +296,6 @@
           "zh": "缓存客户端，避免每个模型步都新建连接池与 TLS 握手。默认：关。",
           "en": "Cache the client instead of rebuilding it every step. Default: off."
         }
-      },
-      "async_save_memory": {
-        "type": "switch",
-        "default": false,
-        "label": {
-          "zh": "记忆落盘异步化",
-          "en": "Async memory persistence"
-        },
-        "hint": {
-          "zh": "把记忆的全量 JSON 落盘移出事件循环。卸载前会 flush，但仍建议先备份记忆文件。默认：关。",
-          "en": "Move full JSON persistence off the event loop. Flushed on unload; back up first. Default: off."
-        }
       }
     }
   },

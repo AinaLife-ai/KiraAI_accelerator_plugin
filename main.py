@@ -56,7 +56,6 @@ class AcceleratorPlugin(BasePlugin):
         self.send_delay_target = float(c_req.get("send_delay_target", 0.25))
 
         self.takeover_build_client = bool(c_tak.get("reuse_http_client", False))
-        self.takeover_save_memory = bool(c_tak.get("async_save_memory", False))
 
         # L4
         self.force_stream = bool(c_str.get("force_stream", False))
@@ -109,8 +108,6 @@ class AcceleratorPlugin(BasePlugin):
             self._install_send_delay()
         if self.takeover_build_client:
             self._install_client_cache()
-        if self.takeover_save_memory:
-            self._install_async_save()
         if self.force_stream or self.early_send:
             self._install_stream_engine()
         if self.thinking_enabled:
@@ -252,43 +249,6 @@ class AcceleratorPlugin(BasePlugin):
 
         h = PatchHandle("reuse_http_client")
         if install(h, mc.OpenAICompatibleLLMClient, "_build_client", factory) is not None:
-            self.patches.add(h)
-
-    def _install_async_save(self) -> None:
-        try:
-            from core.chat import session_manager as sm_mod
-        except Exception:  # noqa: BLE001
-            logger.exception("[accel] 导入 session_manager 失败")
-            return
-
-        import asyncio
-        import json
-
-        cls = sm_mod.SessionManager
-
-        def factory(original):
-            def save(self, memory=None, path=None) -> bool:
-                mem = memory if memory is not None else self.chat_memory
-                p = path if path is not None else self.chat_memory_path
-
-                def _write():
-                    try:
-                        with open(p, "w", encoding="utf-8") as f:
-                            f.write(json.dumps(mem, indent=4, ensure_ascii=False))
-                    except Exception:  # noqa: BLE001
-                        logger.exception("[accel] 异步落盘失败")
-
-                try:
-                    loop = asyncio.get_running_loop()
-                except RuntimeError:
-                    _write()          # 不在事件循环里（退出阶段）→ 同步写
-                    return True
-                loop.create_task(asyncio.to_thread(_write))
-                return True
-            return save
-
-        h = PatchHandle("async_save_memory")
-        if install(h, cls, "_save_memory", factory) is not None:
             self.patches.add(h)
 
     # ══════════════════════════════════════════════════════════
