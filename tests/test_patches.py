@@ -13,7 +13,7 @@ import asyncio
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # 插件根
 
 import breaker as _breaker  # noqa: E402
 import patches as P  # noqa: E402

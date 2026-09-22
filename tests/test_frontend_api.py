@@ -15,7 +15,7 @@ import re
 import sys
 from pathlib import Path
 
-HERE = Path(__file__).resolve().parent
+HERE = Path(__file__).resolve().parent.parent   # 插件根
 HTML = HERE / "web" / "index.html"
 MAIN = HERE / "main.py"
 

@@ -12,28 +12,20 @@ import re
 import sys
 from pathlib import Path
 
-# 框架源码：优先环境变量，其次随插件固定的测试夹具（v2.34.6），最后 /tmp 下的克隆
-_FW_CANDIDATES = [
-    os.environ.get("KIRA_FW"),
-    "/var/minis/shared/alife_vs_kira/kira_fw_v2346",
-    "/tmp/kiraai_latest",
-]
-FRAMEWORK = next((c for c in _FW_CANDIDATES if c and
-                  os.path.isdir(os.path.join(c, "core", "plugin"))), None)
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # tests/ 自身
+import _env  # noqa: E402
+
+FRAMEWORK = _env.framework()
 if FRAMEWORK is None:
-    print("⚠ 找不到 KiraAI 框架源码（设 KIRA_FW=… 或恢复测试夹具）")
-    print("  集成测试需要真框架才能验证路由，跳过。")
-    import sys as _s
-    _s.exit(0)
+    _env.skip("需要 KiraAI 框架源码（设 KIRA_FW=/path/to/KiraAI）")
 os.environ["KIRA_FW"] = FRAMEWORK
-PLUGIN_PARENT = os.environ.get("PLUGIN_PARENT", "/var/minis/shared/alife_vs_kira")
+ROOT = _env.ROOT            # 被测插件根（以前这里硬编码了开发机绝对路径）
 PLUGIN_ID = "kira_accelerator"
 
 # 框架在导入期就会建日志目录，必须先切到有 data/ 的地方
 os.makedirs("/tmp/itest/data", exist_ok=True)
 os.chdir("/tmp/itest")
 sys.path.insert(0, FRAMEWORK)
-sys.path.insert(0, PLUGIN_PARENT)
 
 PASS, FAIL = [], []
 
@@ -48,7 +40,7 @@ async def main():
     from fastapi import FastAPI
     from core.plugin import plugin_registry as pr
     import importlib
-    mod = importlib.import_module("accelerator_poc.main")
+    mod = _env.load("main")
     check("框架导入成功", True)
     check("插件模块导入成功（装饰器已执行）", True)
 
@@ -62,7 +54,7 @@ async def main():
     print("\n=== 1) 挂载到真 FastAPI app ===")
     mgr = pr.PluginManager()
     cfg = {}
-    cfg_path = Path(PLUGIN_PARENT) / "accelerator_poc" / "schema.json"
+    cfg_path = ROOT / "schema.json"
     try:
         schema = json.loads(cfg_path.read_text())
         cfg = {k: v.get("default") for k, v in schema.items()
@@ -144,7 +136,7 @@ async def main():
 
         # ── 3) ★★ 从真前端源码里抽出所有 URL，按各自前缀逐个校验 ──
         print("\n=== 3) ★★ 前端写的每个 URL 都要真的能通 ===")
-        html = (Path(PLUGIN_PARENT) / "accelerator_poc" / "web" / "index.html").read_text()
+        html = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
 
         def prefix_of(var):
             # 形如: const PAPI = "/api/plugin/" + encodeURIComponent(PLUGIN_ID);

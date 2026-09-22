@@ -362,6 +362,27 @@ A：把你的图（webp/jpg/png）丢进 `wallpapers/` 目录，面板里就会�
 
 ---
 
+## 给维护者：怎么跑自检
+
+```sh
+sh run_tests.sh          # 插件根目录，一条命令跑完
+```
+
+16 个套件 / 378 条断言。10 个是纯逻辑套件（不需要框架、不需要网络，
+clone 下来直接跑）；5 个是集成套件，需要 KiraAI 框架源码，
+**找不到会自动跳过**（不算失败）。要跑它们就 `KIRA_FW=/path/to/KiraAI`。
+
+有 5 个套件是**真跑**的 —— 真 FastAPI + 真 HTTP、真 SSE 服务器、真框架调用链、
+用 node 跑从 `index.html` 抽出来的真脚本。原因是吃过两次亏：
+
+> **静态验证正常 ≠ 运行时能用。**
+> 面板只用「注入假数据 + 截图」验证过，于是 URL 前缀写错、
+> 切换特效里一个 `TypeError` 把轮换永久卡死，都发现不了；
+> 装载自检只测 install/uninstall，于是代理破坏 `isinstance`
+> 把整条消息链路搞挂，测试还全绿。
+
+细节和写测试的注意事项见 [`tests/README.md`](tests/README.md)。
+
 ## 给维护者：改前端时必读（两个 API 前缀）
 
 KiraAI 的插件端点分两类，**前缀不同**，写错就是 404：
@@ -392,8 +413,8 @@ const PAPI = "/api/plugin/"  + encodeURIComponent(PLUGIN_ID);  // 插件自定�
 当时验证面板用的是「**注入假数据**」→ 只能证明 HTML/CSS 没问题，
 **证明不了 URL 真的能通**。现在补了两道真检查：
 
-1. `test_frontend_api.py` —— 纯静态比对：前端拼的 URL ↔ `@register.api` 真实声明，
+1. `tests/test_frontend_api.py` —— 纯静态比对：前端拼的 URL ↔ `@register.api` 真实声明，
    并带**反向验证**（把前缀篡改成错的必须报红）
-2. `test_real_api.py` —— **真导入框架 + 真实例 + 真 FastAPI + 真 HTTP 请求**，
+2. `tests/test_real_api.py` —— **真导入框架 + 真实例 + 真 FastAPI + 真 HTTP 请求**，
    逐个端点断言不 404；还会从 `index.html` 里抽出所有 URL 逐个真请求
    （框架源码随插件固定一份在 `../kira_fw_v2346/`，见其 README）

@@ -15,7 +15,7 @@ import pathlib
 import sys
 import time
 
-HERE = pathlib.Path(__file__).parent
+HERE = pathlib.Path(__file__).resolve().parent.parent   # 插件根
 FAILED: list[str] = []
 
 

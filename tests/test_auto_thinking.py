@@ -10,7 +10,7 @@ import sys
 import types
 from pathlib import Path
 
-HERE = Path(__file__).parent
+HERE = Path(__file__).resolve().parent.parent   # 插件根（本文件在 tests/ 下）
 FAILED: list[str] = []
 
 

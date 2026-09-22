@@ -20,7 +20,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-HERE = Path(__file__).resolve().parent
+HERE = Path(__file__).resolve().parent.parent   # 插件根
 # 允许指向别的版本（用于反向验证：拿"改之前"的文件跑，必须报红）
 HTML = Path(os.environ.get("PANEL_HTML") or (HERE / "web" / "index.html"))
 PASS, FAIL = [], []

@@ -15,13 +15,18 @@
 """
 import os
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 os.makedirs("/tmp/itest/data", exist_ok=True)
 os.chdir("/tmp/itest")
-FW = os.environ.get("KIRA_FW", "/var/minis/shared/alife_vs_kira/kira_fw_v2346")
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # tests/ 自身
+import _env  # noqa: E402
+
+FW = _env.framework()
+if FW is None:
+    _env.skip("需要 KiraAI 框架源码（设 KIRA_FW=/path/to/KiraAI）")
 sys.path.insert(0, FW)
-sys.path.insert(0, "/var/minis/shared/alife_vs_kira")
 
 from core.provider.provider import ModelInfo, ModelType              # noqa: E402
 from core.provider.llm_model import LLMRequest                      # noqa: E402
@@ -94,9 +99,9 @@ for n, v in before.items():
 
 print("\n2) 装上插件（走插件自己的 _install_request_hook）")
 import importlib
-mod = importlib.import_module("accelerator_poc.main")
+mod = _env.load("main")
 schema = __import__("json").load(
-    open("/var/minis/shared/alife_vs_kira/accelerator_poc/schema.json"))
+    open(_env.ROOT / "schema.json", encoding="utf-8"))
 cfg = {}
 for sec in schema.values():
     if isinstance(sec, dict) and "fields" in sec:
