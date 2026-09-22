@@ -1,4 +1,4 @@
-"""KiraAI 加速器 —— 在不影响质量与兼容的前提下提速。
+"""KiraAI 提速器 —— 在不影响质量与兼容的前提下提速。
 
 分层设计：
   L1 观测层    始终可开，零风险：记录每步耗时/token/抢先发送情况
@@ -655,7 +655,7 @@ class AcceleratorPlugin(BasePlugin):
         #   会通过 /api/plugins/<id>/menu-icon/<route> 提供）。这样侧边栏菜单里
         #   显示的是与插件图标同一套视觉，而不是通用图标字体里的某个图标。
         menu=PageMenu(
-            label={"zh": "加速器", "en": "Accelerator"},
+            label={"zh": "提速器", "en": "Accelerator"},
             icon="icon.svg",
             order=95,
         ),
@@ -729,7 +729,7 @@ class AcceleratorPlugin(BasePlugin):
 
     @register.tool(
         "accel_report",
-        "报告 KiraAI 加速器状态：已生效的优化项、抢先发送与自动思考统计（用于排查 为什么这轮很慢）",
+        "报告 KiraAI 提速器状态：已生效的优化项、抢先发送与自动思考统计（用于排查 为什么这轮很慢）",
         # ★ 刻意**不写 `required`**（而不是写 `required: []`）：
         #   空数组是部分网关（Gemini 的函数声明校验尤其严）拒收的模式，
         #   而"没有必填参数"用**省略**表达与"空数组"完全等价。

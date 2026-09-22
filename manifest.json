@@ -16,7 +16,7 @@
   "icon": "icon.png",
   "locales": {
     "zh": {
-      "display_name": "KiraAI 加速器",
+      "display_name": "KiraAI 提速器",
       "description": "加快 KiraAI 处理和回复速度，边写边发约一秒就能看到第一句，而不是等整段写完；并自动判断该不该深度思考。所有优化可开可关、失败自动恢复，侧边栏面板里改配置即时生效。"
     },
     "en": {
