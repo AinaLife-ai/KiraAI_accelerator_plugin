@@ -86,10 +86,11 @@ class AcceleratorPlugin(BasePlugin):
         self._current_sid: Optional[str] = None
         self._current_event: Any = None
         self._current_tag_set: Any = None
+        self._current_resp: Any = None
         self._proxy_cache: dict[tuple, LLMClientProxy] = {}
         self._stats = {
             "turns": 0, "steps": 0,
-            "tool_signals": 0,
+            "tool_signals": 0, "strip_calls": 0,
             "streamed_calls": 0, "early_sent": 0, "first_seg_s": None,
             "thinking_on": 0, "thinking_off": 0, "thinking_skipped_budget": 0,
         }
@@ -107,6 +108,8 @@ class AcceleratorPlugin(BasePlugin):
             self._install_stream_engine()
         if self.thinking_enabled:
             self._install_thinking_injector()
+        if self.early_send:
+            self._install_early_sent_strip()
 
     async def terminate(self) -> None:
         self.patches.uninstall_all()
@@ -301,7 +304,11 @@ class AcceleratorPlugin(BasePlugin):
             async def _emit(seg: str) -> None:
                 await self._emit_segment(seg)
             emit = _emit
-        return StreamEngine(force_stream=self.force_stream, emit=emit)
+        def _remember(resp):
+            # 记录本轮响应，供发送层（send_xml_messages）读取标记做剥离
+            self._current_resp = resp
+
+        return StreamEngine(force_stream=self.force_stream, emit=emit, on_complete=_remember)
 
     async def _emit_segment(self, seg: str) -> None:
         """把一段已闭合的 <msg> 真正发出去，并补广播 ON_MESSAGE_SENT。"""
@@ -378,6 +385,52 @@ class AcceleratorPlugin(BasePlugin):
             self.patches.add(h)
             logger.info("[accel] 自动思考已安装（风格=%s 阈值=%.1f）",
                         self.thinking_style, self.thinking.threshold)
+
+    def _install_early_sent_strip(self) -> None:
+        """发送时剥离"已抢先发出的段"，避免重复发送。
+
+        ★ 为什么不在构造响应时就剥离（那是我的第一版做法，有兼容问题）：
+          实测框架内置 kira-ai 插件（builtin_plugins/kira-ai/main.py:111）和
+          sustained-chat 插件（main.py:1681）都会在 ON_LLM_RESPONSE 里
+          把 `resp.text_response` 当作**模型的完整输出**来用。
+          提前剥离会让它们只看到尾巴 ⇒ XML 校验误判、或误判"AI 没说话"。
+
+          所以现在：`resp.text_response` 保持完整；"哪些段已发出"记在
+          响应对象的私有标记里；真正发送时（本函数）才把它们去掉。
+
+        插在 `MessageProcessor.send_xml_messages` 上（它是类方法，可干净 patch）：
+          - 正常轮次：剥离后交给原实现发送剩余部分
+          - 全部发完：传 "<msg/>"，框架解析为空消息，不会重复发
+        """
+        try:
+            from core.message_manager import MessageProcessor
+            from .early_sent import early_sent_count, strip_early_sent
+        except Exception:  # noqa: BLE001
+            logger.exception("[accel] 导入 MessageProcessor 失败，跳过发送层剥离")
+            return
+
+        plugin = self
+
+        def factory(original):
+            async def send_xml_messages(self, event, xml_data, tag_set):
+                resp = getattr(plugin, "_current_resp", None)
+                n = early_sent_count(resp) if resp is not None else 0
+                if n > 0:
+                    xml_data = strip_early_sent(xml_data, n)
+                    # 记录一下：本条只发剩余部分（纯观测用）
+                    plugin._stats["strip_calls"] = plugin._stats.get("strip_calls", 0) + 1
+                try:
+                    return await original(self, event, xml_data, tag_set)
+                finally:
+                    # 本轮已消费完，清掉标记，避免影响下一步/下一轮
+                    if resp is not None:
+                        resp.__dict__.pop("_accel_early_sent_count", None)
+            return send_xml_messages
+
+        h = PatchHandle("early_sent_strip")
+        if install(h, MessageProcessor, "send_xml_messages", factory) is not None:
+            self.patches.add(h)
+            logger.info("[accel] 发送层已接管（剥离已抢发段，避免重复发送）")
 
     # ══════════════════════════════════════════════════════════
     # 侧边栏面板
