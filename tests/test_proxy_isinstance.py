@@ -24,17 +24,24 @@
 """
 import os
 import sys
+from pathlib import Path
 
 os.makedirs("/tmp/itest/data", exist_ok=True)
 os.chdir("/tmp/itest")
-FW = os.environ.get("KIRA_FW", "/var/minis/shared/alife_vs_kira/kira_fw_v2346")
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # tests/ 自身
+import _env  # noqa: E402
+
+FW = _env.framework()
+if FW is None:
+    _env.skip("需要 KiraAI 框架源码（设 KIRA_FW=/path/to/KiraAI）")
 sys.path.insert(0, FW)
-sys.path.insert(0, "/var/minis/shared/alife_vs_kira")
 
 from core.provider.provider_manager import ProviderManager          # noqa: E402
 from core.provider.provider import LLMModelClient, ModelInfo, ModelType  # noqa: E402
-from accelerator_poc.stream_engine import LLMClientProxy            # noqa: E402
-from accelerator_poc.patches import PatchHandle, install            # noqa: E402
+_se = _env.load("stream_engine")                                    # noqa: E402
+_pa = _env.load("patches")                                          # noqa: E402
+LLMClientProxy = _se.LLMClientProxy
+PatchHandle, install = _pa.PatchHandle, _pa.install
 
 PASS, FAIL = [], []
 
@@ -138,8 +145,13 @@ print(f"     类型检查分布（前 5）: {sites[:5]}")
 print("\n5) ★ 另一个受害者：别的插件靠 ctx.get_client() 拿 client")
 # 复刻 core/plugin/plugin_context.py:95-115 的模式（真框架里就是这么写的）
 def plugin_context_style(pm, llm_type="default"):
+    # 真框架就是长这样（含它对异常的沉默）。这里把异常也当成"拿不到"，
+    # 好让失败以断言的形式报出来，而不是把整套测试崩掉。
     if llm_type == "default":
-        client = pm.get_default_llm()
+        try:
+            client = pm.get_default_llm()
+        except Exception:  # noqa: BLE001
+            return None
         if isinstance(client, LLMModelClient):
             return client
     return None

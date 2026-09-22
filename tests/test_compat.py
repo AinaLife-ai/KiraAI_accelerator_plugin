@@ -67,7 +67,7 @@ def main() -> None:
     # （体积大、且随时会更新）。没准备就跳过，不让别人 clone 后被卡住。
     # 自备方式：把插件源码放到 /tmp/pkgs/<插件名>/ 即可。
     if not PKG_ROOT.exists():
-        print(f"⚠ 找不到 {PKG_ROOT}（需自备插件源码），跳过兼容性核对")
+        print(f"⚠ [SKIP] 找不到 {PKG_ROOT}（需自备插件市场源码）")
         print("  准备方式：把插件市场里重点插件的源码放到 /tmp/pkgs/<插件名>/")
         sys.exit(0)
 
@@ -140,7 +140,7 @@ def main() -> None:
         print(f"    {r}")
     check("存在依赖 client.model 的插件（代理类需透传）", len(client_model_reads) > 0)
     # 验证代理类真的透传
-    sys.path.insert(0, str(Path(__file__).parent))
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # 插件根
     import types
     stub = types.ModuleType("core.provider.llm_model")
     from dataclasses import dataclass as _dc, field as _f
@@ -163,12 +163,12 @@ def main() -> None:
     sys.modules["core.provider.llm_model"] = stub
     import importlib.util as _ilu
     pkg = types.ModuleType("_accelpkg")
-    pkg.__path__ = [str(Path(__file__).parent)]
+    pkg.__path__ = [str(Path(__file__).resolve().parent.parent)]
     sys.modules["_accelpkg"] = pkg
 
     def _load(name, filename):
         spec = _ilu.spec_from_file_location(
-            f"_accelpkg.{name}", str(Path(__file__).parent / filename))
+            f"_accelpkg.{name}", str(Path(__file__).resolve().parent.parent / filename))
         mod = _ilu.module_from_spec(spec)
         sys.modules[f"_accelpkg.{name}"] = mod
         spec.loader.exec_module(mod)

@@ -16,18 +16,24 @@ import os
 import sys
 import threading
 import time
+from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 os.makedirs("/tmp/itest/data", exist_ok=True)
 os.chdir("/tmp/itest")
-FW = os.environ.get("KIRA_FW", "/var/minis/shared/alife_vs_kira/kira_fw_v2346")
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # tests/ 自身
+import _env  # noqa: E402
+
+FW = _env.framework()
+if FW is None:
+    _env.skip("需要 KiraAI 框架源码（设 KIRA_FW=/path/to/KiraAI）")
 sys.path.insert(0, FW)
-sys.path.insert(0, "/var/minis/shared/alife_vs_kira")
 
 from core.provider.provider import ModelInfo, ModelType          # noqa: E402
 from core.provider.llm_model import LLMRequest                  # noqa: E402
 from core.utils.model_clients import OpenAICompatibleLLMClient  # noqa: E402
-from accelerator_poc.stream_engine import StreamEngine, LLMClientProxy  # noqa: E402
+_se = _env.load("stream_engine")                                    # noqa: E402
+StreamEngine, LLMClientProxy = _se.StreamEngine, _se.LLMClientProxy
 
 PASS, FAIL = [], []
 SEEN = {"stream": None, "bodies": 0}

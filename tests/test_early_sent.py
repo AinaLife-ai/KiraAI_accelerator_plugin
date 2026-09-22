@@ -9,7 +9,7 @@ import importlib.util as ilu
 import pathlib
 import sys
 
-HERE = pathlib.Path(__file__).parent
+HERE = pathlib.Path(__file__).resolve().parent.parent   # 插件根
 FAILED = []
 
 

@@ -12,7 +12,7 @@ import sys
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # 插件根
 
 # ── 把 core.provider.llm_model 用最小 stub 注入，让自检不依赖 KiraAI 运行环境 ──
 # （真实场景下 core 是导入得到的；这里只为让本文件可以独立运行）
