@@ -247,13 +247,85 @@
       }
     }
   },
-  "section_takeover": {
+  "section_parallel": {
     "type": "section",
-    "name": "4. Low-level takeover",
+    "name": "4. Parallel tool calls",
     "collapsed": true,
     "locales": {
       "zh": {
-        "name": "④ 底层接管"
+        "name": "④ 同轮工具并行（默认关）"
+      }
+    },
+    "fields": {
+      "enabled": {
+        "type": "switch",
+        "name": "Enable parallel tool calls",
+        "default": false,
+        "hint": "Run independent tools of the same turn concurrently instead of one by one. Off by default.",
+        "locales": {
+          "zh": {
+            "name": "启用同轮工具并行",
+            "hint": "同一轮里多个互相独立的工具会并发执行，而不是一个个等。默认关。开启后，只要有一个工具被判为不安全，整批就退回串行（最坏情况只是没加速）。"
+          }
+        }
+      },
+      "whitelist": {
+        "type": "list",
+        "name": "Whitelist (empty = allow all)",
+        "default": [],
+        "hint": "Leave empty to allow everything except the blacklist. Non-empty means only these may run in parallel.",
+        "locales": {
+          "zh": {
+            "name": "白名单（留空=全部放行）",
+            "hint": "留空则只由下面的黑名单控制（推荐，不用维护长名单）。填了则只放行名单里的工具。黑名单优先级高于白名单。"
+          }
+        }
+      },
+      "blacklist": {
+        "type": "list",
+        "name": "Blacklist",
+        "default": [],
+        "hint": "Tools here always run sequentially. Empty means use the built-in default list.",
+        "locales": {
+          "zh": {
+            "name": "黑名单（留空=用内置默认）",
+            "hint": "名单里的工具一律串行。留空则使用内置默认黑名单（已收录 exec / write_file / edit_file / memory_* / session_send / 浏览器系列 / 子代理系列等有副作用或有顺序语义的工具）。"
+          }
+        }
+      },
+      "match_exact": {
+        "type": "switch",
+        "name": "Exact name match",
+        "default": false,
+        "hint": "Off: a keyword matches if it appears anywhere in the tool name. On: the name must match exactly.",
+        "locales": {
+          "zh": {
+            "name": "全字匹配",
+            "hint": "关（默认）：关键词命中即可 —— 例如 exec 能命中 manage_background_exec。开：工具名必须完全相等，exec 只命中 exec 本身。"
+          }
+        }
+      },
+      "max_parallel": {
+        "type": "integer",
+        "name": "Max tools per batch",
+        "default": 8,
+        "hint": "Skip parallelising when a turn asks for more than this many tools.",
+        "locales": {
+          "zh": {
+            "name": "单批最大并行数",
+            "hint": "一轮里工具数超过该值时不做并行（避免同时打太多请求）。默认：8。"
+          }
+        }
+      }
+    }
+  },
+  "section_takeover": {
+    "type": "section",
+    "name": "5. Low-level takeover",
+    "collapsed": true,
+    "locales": {
+      "zh": {
+        "name": "⑤ 底层接管"
       }
     },
     "fields": {
@@ -273,11 +345,11 @@
   },
   "section_appearance": {
     "type": "section",
-    "name": "5. Appearance - skin rotation",
+    "name": "6. Appearance - skin rotation",
     "collapsed": false,
     "locales": {
       "zh": {
-        "name": "⑤ 外观 · 皮肤轮换"
+        "name": "⑥ 外观 · 皮肤轮换"
       }
     },
     "fields": {

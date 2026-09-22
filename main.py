@@ -61,6 +61,17 @@ class AcceleratorPlugin(BasePlugin):
         self.stream_providers = list(c_str.get("providers", []) or [])
         self.stream_gap = float(c_str.get("gap", 0.25))
 
+        # 同轮工具并行（默认关）
+        c_par = cfg.get("section_parallel", {}) or {}
+        from .parallel_tools import ToolGate, DEFAULT_BLACKLIST
+        self._tool_gate = ToolGate(
+            enabled=bool(c_par.get("enabled", False)),
+            whitelist=list(c_par.get("whitelist", []) or []),
+            blacklist=list(c_par.get("blacklist", []) or []) or list(DEFAULT_BLACKLIST),
+            match_exact=bool(c_par.get("match_exact", False)),
+            max_parallel=int(c_par.get("max_parallel", 8)),
+        )
+
         # 外观
         self.wallpaper_enabled = bool(c_app.get("wallpaper_enabled", True))
         self.wallpaper_interval = int(c_app.get("wallpaper_interval", 30))
@@ -90,7 +101,7 @@ class AcceleratorPlugin(BasePlugin):
         self._proxy_cache: dict[tuple, LLMClientProxy] = {}
         self._stats = {
             "turns": 0, "steps": 0,
-            "tool_signals": 0, "strip_calls": 0,
+            "tool_signals": 0, "strip_calls": 0, "parallel_batches": 0,
             "streamed_calls": 0, "early_sent": 0, "first_seg_s": None,
             "thinking_on": 0, "thinking_off": 0, "thinking_skipped_budget": 0,
         }
@@ -110,6 +121,8 @@ class AcceleratorPlugin(BasePlugin):
             self._install_thinking_injector()
         if self.early_send:
             self._install_early_sent_strip()
+        if self._tool_gate.enabled:
+            self._install_parallel_tools()
 
     async def terminate(self) -> None:
         self.patches.uninstall_all()
@@ -385,6 +398,140 @@ class AcceleratorPlugin(BasePlugin):
             self.patches.add(h)
             logger.info("[accel] 自动思考已安装（风格=%s 阈值=%.1f）",
                         self.thinking_style, self.thinking.threshold)
+
+    def _install_parallel_tools(self) -> None:
+        """同轮工具并行执行（默认关）。
+
+        ★ 只并行"执行工具"这一段；其余全部保持串行且按序：
+          - `max_tool_calls_per_turn` 超限的告警条目：原地保留
+          - `ON_TOOL_RESULT` 钩子：**串行、按序**（插件会在这里 event.stop()，
+            框架的实现会因此"提前返回 + 只写部分 tool_results"，
+            session_merger 的注释明确点出过这个时序）
+          - `assemble_result()`：串行、按序
+          - `resp.tool_results` 的写入顺序：**与 tool_calls 对齐**（乱了会 400）
+
+        ⇒ 所以并行只发生在"调用工具函数"这一层，可观测行为与串行版**完全一致**，
+          区别只是"等待时间"。
+        """
+        try:
+            from core.agent.func_tool_manager import FuncToolManager
+            from core.provider.llm_model import LLMResponse  # noqa: F401
+        except Exception:  # noqa: BLE001
+            logger.exception("[accel] 导入 func_tool_manager 失败，跳过工具并行")
+            return
+
+        import json as _json
+        from .parallel_tools import ToolGate
+
+        try:
+            from core.utils.tool_utils import BaseTool  # noqa: F401
+        except Exception:  # noqa: BLE001
+            pass
+
+        gate = self._tool_gate
+        plugin = self
+
+        def factory(original):
+            async def execute_tool(self, event, resp, tool_set=None):
+                calls = getattr(resp, "tool_calls", None) or []
+
+                # 先读框架自己的两个配置（与原实现一致）
+                max_calls = self.kira_config.get_config("bot_config.agent.max_tool_calls_per_turn")
+                try:
+                    max_calls = int(max_calls)
+                except (TypeError, ValueError):
+                    max_calls = 5
+
+                to_run = calls[:max_calls] if max_calls >= 0 else []
+                ok, reason = gate.can_parallelize(to_run)
+                if not ok:
+                    return await original(self, event, resp, tool_set=tool_set)
+
+                plugin._stats["parallel_batches"] = plugin._stats.get("parallel_batches", 0) + 1
+                logger.info("[accel] 同轮工具并行：%s", reason)
+
+                # ── 阶段一：并发执行（只这一层并行）──
+                timeout = self.kira_config.get_config("bot_config.agent.tool_call_timeout")
+                try:
+                    timeout = float(timeout)
+                    if timeout <= 0:
+                        timeout = None
+                except (TypeError, ValueError):
+                    timeout = 60
+
+                def parse_args(tc):
+                    raw = (tc.get("function") or {}).get("arguments") or ""
+                    try:
+                        return {} if not raw.strip() else _json.loads(raw)
+                    except Exception:  # noqa: BLE001
+                        return {}
+
+                async def run_one(tc):
+                    fn = tc.get("function") or {}
+                    name = fn.get("name")
+                    args = parse_args(tc)
+                    if not (tool_set and name in tool_set):
+                        return {"__error": f"Tool {name} not implemented"}
+                    try:
+                        inst = tool_set.get(name)
+                        coro = inst.execute(event, **args)
+                        import asyncio as _a
+                        return await (_a.wait_for(coro, timeout) if timeout else coro)
+                    except Exception as e:  # noqa: BLE001 —— 与框架一致：任何异常都变成结果
+                        return {"__error": f"Failed to call tool '{name}': {e}"}
+
+                import asyncio as _a
+                raw_results = await _a.gather(
+                    *[run_one(tc) for tc in to_run], return_exceptions=False)
+
+                # ── 阶段二：按序做"不能并行"的部分（与框架逐行等价）──
+                from asyncio import wait_for, TimeoutError as AsyncTimeoutError
+                from core.agent.tool import ToolResult
+                from core.plugin.plugin_handlers import event_handler_reg, EventType
+                import core.agent.func_tool_manager as _ftm
+
+                for idx, tool_call in enumerate(calls):
+                    tool_call_id = tool_call.get("id")
+                    name = (tool_call.get("function") or {}).get("name")
+
+                    if max_calls >= 0 and idx >= max_calls:
+                        warn_msg = (f"Tool call limit exceeded: maximum {max_calls} "
+                                    f"tool calls per turn, skipping tool '{name}'.")
+                        _ftm.tool_logger.warning(warn_msg)
+                        resp.tool_results.append({
+                            "role": "tool", "tool_call_id": tool_call_id,
+                            "name": name, "content": warn_msg,
+                        })
+                        continue
+
+                    result = raw_results[idx]
+                    if isinstance(result, dict) and "__error" in result:
+                        result = {"error": result["__error"]}
+                        _ftm.tool_logger.error(result["error"])
+
+                    tool_result_obj = result if isinstance(result, ToolResult) else ToolResult(str(result))
+
+                    # ON_TOOL_RESULT：串行、按序（保持 event.stop 语义）
+                    for handler in event_handler_reg.get_handlers(event_type=EventType.ON_TOOL_RESULT):
+                        await handler.exec_handler(event, tool_result_obj)
+                        if event.is_stopped:
+                            logger.info("Event stopped while ON_TOOL_RESULT stage")
+                            return
+
+                    content = await tool_result_obj.assemble_result()
+                    _ftm.tool_logger.info(f"tool_result: {content}")
+                    resp.tool_results.append({
+                        "role": "tool", "tool_call_id": tool_call_id,
+                        "name": name, "content": content,
+                    })
+            return execute_tool
+
+        from .patches import PatchHandle, install
+        h = PatchHandle("parallel_tools")
+        if install(h, FuncToolManager, "execute_tool", factory) is not None:
+            self.patches.add(h)
+            logger.info("[accel] 同轮工具并行已安装（白名单=%s 黑名单=%d条 全字匹配=%s）",
+                        gate.whitelist or "全部", len(gate.blacklist), gate.match_exact)
 
     def _install_early_sent_strip(self) -> None:
         """发送时剥离"已抢先发出的段"，避免重复发送。
