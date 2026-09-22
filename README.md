@@ -7,6 +7,43 @@
 
 ---
 
+
+## ⚠️ 前端两个 API 前缀不一样（改前端必读）
+
+KiraAI 的插件端点分两类，**前缀不同**，写错就是 404：
+
+| 端点类型 | 前缀 | 例子 | 来源 |
+|---|---|---|---|
+| **框架自带** | `/api/plugins/<id>/…`（**复数 s**） | `config` / `icon` / `reload` / `readme` | `webui/routes/plugins.py` |
+| **插件自己注册** | `/api/plugin/<id>/…`（**单数**） | `health` / `wallpapers` / `breaker/reset` | `@register.api` → `core/plugin/plugin_registry.py:1096` |
+
+面板里因此有**两个常量**（`web/index.html`）：
+
+```js
+const API  = "/api/plugins/" + encodeURIComponent(PLUGIN_ID);  // 框架端点
+const PAPI = "/api/plugin/"  + encodeURIComponent(PLUGIN_ID);  // 插件自定义端点
+```
+
+**加新端点时**：先想清楚是框架的还是自己的，再用对应的常量。
+
+### 这个坑真的踩过（2026-09-23，用户实测）
+现象：面板右上角**「未连接」** + 壁纸**一张都没有**（选择器显示「全部 0 张」）。
+
+根因：前端对**两类端点都用了复数** ⇒ 插件自定义端点全部 404。
+- `/health` 404 ⇒ 轮询失败 ⇒ 显示「未连接」
+- `/wallpapers` 404 ⇒ 列表为空 ⇒ 没有背景图
+- 而 `/config`（复数）**恰好是对的** ⇒ 配置照常显示，**所以症状看起来像"两个不相关的 bug"**
+
+### 为什么以前没发现（方法论教训）
+当时验证面板用的是「**注入假数据**」→ 只能证明 HTML/CSS 没问题，
+**证明不了 URL 真的能通**。现在补了两道真检查：
+
+1. `test_frontend_api.py` —— 纯静态比对：前端拼的 URL ↔ `@register.api` 真实声明，
+   并带**反向验证**（把前缀篡改成错的必须报红）
+2. `test_real_api.py` —— **真导入框架 + 真实例 + 真 FastAPI + 真 HTTP 请求**，
+   逐个端点断言不 404；还会从 `index.html` 里抽出所有 URL 逐个真请求
+   （框架源码随插件固定一份在 `../kira_fw_v2346/`，见其 README）
+
 ## 它治的是什么病
 
 如果你用过 KiraAI，可能有这些感受：
