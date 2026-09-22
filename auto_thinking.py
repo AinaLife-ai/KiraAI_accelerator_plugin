@@ -84,6 +84,14 @@ class ThinkingDecision:
                 f"effort={self.effort!r}, signals={self.signals})")
 
 
+# ── 会话起步"爬升期"抑制参数 ──
+# 会话刚开始时上下文会从接近 0 涨到稳定值（必然现象，不是"异常变长"）。
+# 这期间基线在追赶，会持续被判为"偏离基线"⇒ 十几轮误判。
+# 所以要求：基线**连续 N 轮变化都很小**后，才认为它代表"平时水平"，才开始判定。
+CONTEXT_SETTLE_TURNS = 3      # 连续多少轮
+CONTEXT_SETTLE_TOL = 0.05     # "变化很小" = 基线相对变化 ≤ 5%
+
+
 class AutoThinkingController:
     """多信号打分的自动思考开关。
 
@@ -141,6 +149,9 @@ class AutoThinkingController:
         self._ctx_samples: dict[str, int] = {}
         # 预热期样本缓冲（用来取中位数当种子，抗首轮尖峰）
         self._ctx_warmup: dict[str, list[float]] = {}
+        # 基线是否已"稳定到能代表平时水平"（一旦成立就锁定，不再回退）
+        self._ctx_ready: dict[str, bool] = {}
+        self._ctx_settle: dict[str, int] = {}
         self._ctx_long: dict[str, bool] = {}
         # 上一轮是否用过工具（由 on_tool_result / on_final_result 维护）
         self._last_turn_tool: dict[str, bool] = {}
@@ -217,6 +228,7 @@ class AutoThinkingController:
         keep = set(sorted(self._last_decision, key=lambda s: self._opened.get(s, [0])[-1] if self._opened.get(s) else 0)[-self.max_sessions // 2:])
         for d in (self._last_decision, self._last_tool_error, self._opened,
                   self._ctx_ema, self._ctx_samples, self._ctx_warmup, self._ctx_long,
+                  self._ctx_ready, self._ctx_settle,
                   self._last_turn_tool, self._turn_had_tool):
             for s in list(d):
                 if s not in keep:
@@ -258,8 +270,27 @@ class AutoThinkingController:
             self._ctx_samples[sid] = self.context_min_samples
             # 种子刚建立，本轮就参与判定（不用再等一轮）
 
+        # ── 判断基线是否已"稳定"，没稳定就不判定 ──
+        #   理由：会话起步时上下文从接近 0 涨到稳定值，基线在追赶，
+        #   这期间会持续被判为"偏离基线"（十几轮误判）。
+        #   ★ 一旦 ready 就锁定为 True —— 否则一次真实尖峰会让基线大幅变化、
+        #     把 settle 计数清零，反而在"最该判定"的时候把信号关掉。
+        settle = self._ctx_settle.get(sid, 0)
+        new_base = base + self.context_ema_alpha * (ctx_chars - base)
+        rel = (abs(new_base - base) / base) if base > 0 else 1.0
+        settle = settle + 1 if rel <= CONTEXT_SETTLE_TOL else 0
+        self._ctx_settle[sid] = settle
+        ready = self._ctx_ready.get(sid, False) or settle >= CONTEXT_SETTLE_TURNS
+        self._ctx_ready[sid] = ready
+
         was_long = self._ctx_long.get(sid, False)
         ratio = (ctx_chars / base) if base > 0 else 0.0
+
+        if not ready:
+            # 基线还在追赶 ⇒ 本轮不判定（但仍继续更新基线/样本）
+            self._ctx_samples[sid] = self._ctx_samples.get(sid, 0) + 1
+            self._ctx_ema[sid] = new_base
+            return ""
 
         if was_long:
             if ratio < self.context_ratio_off:
@@ -276,7 +307,7 @@ class AutoThinkingController:
 
         # 先判定、后更新基线（EMA，平滑掉单轮尖峰）
         self._ctx_samples[sid] = self._ctx_samples.get(sid, 0) + 1
-        self._ctx_ema[sid] = base + self.context_ema_alpha * (ctx_chars - base)
+        self._ctx_ema[sid] = new_base
 
         if hit:
             return f"上下文偏离基线({ratio:.2f}×)"
