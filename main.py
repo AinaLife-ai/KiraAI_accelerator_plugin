@@ -276,6 +276,13 @@ class AcceleratorPlugin(BasePlugin):
         # 仅供面板展示"最近一次判定属于哪个会话"，功能路径一律用 req 上的 SendCtx
         self._current_sid = sid_now
         req.__dict__["_accel_ctx"] = SendCtx(sid_now, event, tag_set)
+        # ★★ 把 event 也挂上 —— 思考判定要用它做**结构判据**
+        #   （从 event.messages[*].chain 的 Text 元素取"用户真正打的字"，
+        #   从而把图片/表情包描述天然排除）。
+        #   ⚠️ 漏了这一行 ⇒ 结构判据永远拿不到 event ⇒ 落到字符串兜底 ⇒
+        #      会把别的插件注入的内容（如记忆·Z 的记忆）当成用户消息扫。
+        #      实测：日志里 `[1021字]` 而用户只打了 50 字，就是这个原因。
+        req.__dict__["_accel_event"] = event
         # ★ 新一轮开始 ⇒ 清掉该会话的抢发台账（否则上一轮的残留会让本轮**多切**=丢内容）
         self._reset_turn_ledger(sid_now)
 

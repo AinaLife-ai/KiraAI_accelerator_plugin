@@ -18,8 +18,8 @@
   --edge:rgba(255,255,255,.07);
   --edge-hi:rgba(255,255,255,.18);
   --fg:#eef1fb;
-  --dim:#8e97b4;
-  --dim2:#616a86;
+  --dim:#aab3cd;
+  --dim2:#8b95b4;
   --pink:#ff6fae;
   --mint:#5ef0c0;
   --violet:#8b7cff;
@@ -103,17 +103,82 @@ body.no-wallpaper .wallpaper{display:none}
 /* ── 布局 ── */
 .shell{position:relative;z-index:2;max-width:880px;margin:0 auto;padding:26px 18px 104px;
   transition:opacity .9s cubic-bezier(.4,0,.2,1)}
+/* ═══ 欣赏模式 HUD：右上角简约实时读数 + 思考读条 ═══
+   设计意图：把"面板上的 5 个计数 + 思考判定"压缩成一组小读数，
+   在欣赏壁纸时仍能一眼看到系统在做什么，但**不打扰**。
+   出现方式：从原来 KPI 卡片的位置**飞过来**（见 JS 的 FLIP 实现）。 */
+.hud{position:fixed;top:14px;right:16px;z-index:40;
+  display:flex;flex-direction:column;gap:5px;align-items:flex-end;
+  opacity:0;pointer-events:none;transition:opacity .6s cubic-bezier(.4,0,.2,1)}
+body.zen .hud{opacity:1;pointer-events:auto}
+.hud-row{display:flex;gap:10px;align-items:center}
+.hud-item{display:inline-flex;align-items:center;gap:4px;
+  font-variant-numeric:tabular-nums;
+  font-family:NimbusDisplay,Helvetica,sans-serif;font-weight:800;
+  font-size:15px;line-height:1;color:var(--fg);
+  text-shadow:0 1px 10px rgba(0,0,0,.6)}
+.hud-item .ico{font-size:12px;color:var(--dim);stroke-width:2.2}
+.hud-item b{font:inherit}
+/* 数值变化时，图标随机播一种"亮起 / 颤抖 / 收缩"（JS 加类触发一次） */
+.hud-item.pulse .ico{animation:hudPulse .62s cubic-bezier(.3,0,.2,1)}
+.hud-item.shake .ico{animation:hudShake .46s cubic-bezier(.36,.07,.19,.97)}
+.hud-item.shrink .ico{animation:hudShrink .52s cubic-bezier(.3,0,.2,1)}
+@keyframes hudPulse{
+  0%{color:var(--dim);filter:none;transform:scale(1)}
+  40%{color:var(--nc, #8b7cff);filter:drop-shadow(0 0 8px var(--nc, #8b7cff));transform:scale(1.22)}
+  100%{color:var(--dim);filter:none;transform:scale(1)}
+}
+@keyframes hudShake{
+  0%,100%{transform:translateX(0)}
+  20%{transform:translateX(-2px) rotate(-8deg)}
+  50%{transform:translateX(2px) rotate(8deg)}
+  80%{transform:translateX(-1px) rotate(-4deg)}
+}
+@keyframes hudShrink{
+  0%{transform:scale(1.3);color:var(--nc, #8b7cff)}
+  60%{transform:scale(.86)}
+  100%{transform:scale(1);color:var(--dim)}
+}
+/* 思考读条：一条细轨 + 实时填充；有极缓的呼吸，不抢戏 */
+.hud-think{display:inline-flex;align-items:center;gap:5px;
+  font-size:11px;color:var(--dim);font-variant-numeric:tabular-nums}
+.hud-think .ico{font-size:12px;color:var(--dim)}
+.hud-track{display:block;width:74px;height:3px;border-radius:2px;overflow:hidden;
+  background:rgba(255,255,255,.13)}
+.hud-fill{display:block;height:100%;width:0;border-radius:2px;
+  background:linear-gradient(90deg,var(--mint),var(--violet),var(--pink));
+  transition:width .55s cubic-bezier(.4,0,.2,1);
+  animation:hudBreath 3.2s ease-in-out infinite}
+@keyframes hudBreath{0%,100%{opacity:.72}50%{opacity:1}}
+.hud-think b{font-family:NimbusDisplay,Helvetica,sans-serif;font-weight:800;
+  font-size:12px;color:var(--fg)}
+/* 减少动效：不飞、不闪，但仍可见 */
+@media (prefers-reduced-motion:reduce){
+  .hud{transition:none}
+  .hud-item .ico,.hud-fill{animation:none!important}
+}
+
 /* ═══ 空闲欣赏模式：面板 UI 完全淡出，**只留品牌字与连接状态** ═══
    ⚠️ 不能用 `:not(header)` —— 那会把 `.wordmark`（品牌字）也一起藏掉，
       而它正是要保留的。改成显式列出"要藏"的部分。 */
+/* ★★★ 必须**把动画停掉**，否则 `opacity:0` 根本不起作用。
+   原因：`.card{animation:cardIn .62s ... forwards}` —— CSS 动画的优先级**高于**普通声明，
+   而 `forwards` 会一直把 opacity 保持为 1 ⇒ 面板永远不会淡出（用户实测：
+   "10 秒后并不是除了标题和已连接其他都消失，UI 面板全部都还在"）。
+   设 `animation:none` 之后，下面的 `opacity:0` 才是最终生效值。 */
 body.zen .shell > section,
 body.zen .shell > .tagline,
 body.zen .dock,
 body.zen .shell > header > .brand > div,
-body.zen .shell > header > .brand > .mark{opacity:0;pointer-events:none}
+body.zen .shell > header > .brand > .mark{
+  animation:none!important;
+  opacity:0!important;
+  pointer-events:none}
 /* 保留：品牌字 + 连接状态（并强制可见，避免被上面的规则误伤） */
 body.zen .shell > .wordmark,
 body.zen .shell > header > .status{opacity:1!important;pointer-events:auto}
+/* wordmark 的逐字入场动画同样会压过声明 —— 但它是"要保留"的，不用动它；
+   这里只是说明：`.card` 那条**必须**停，否则藏不掉。 */
 body.zen .shell > section,
 body.zen .shell > .tagline{transition:opacity .9s cubic-bezier(.4,0,.2,1)}
 .shell > header > .brand > div,
@@ -129,7 +194,7 @@ h1{margin:0;font-size:15px;letter-spacing:.3px;font-weight:600}
 .sub{margin:2px 0 0;font-size:11.5px;color:var(--dim2);letter-spacing:.6px;text-transform:uppercase}
 
 /* 编辑大字 */
-.wordmark{font-family:NimbusDisplay,Helvetica,sans-serif;font-weight:800;
+.wordmark{position:relative;font-family:NimbusDisplay,Helvetica,sans-serif;font-weight:800;
   font-size:clamp(38px,12.5vw,86px);line-height:.86;letter-spacing:-.045em;margin:0 0 4px}
 .wordmark>span{display:inline-block;opacity:0;transform:translateY(.42em) rotate(-4deg);
   animation:rise .78s cubic-bezier(.16,1,.3,1) forwards}
@@ -167,6 +232,53 @@ h1{margin:0;font-size:15px;letter-spacing:.3px;font-weight:600}
 
 /* 弹珠绕字一圈：一个小发光点沿文字外框环行 */
 @keyframes orbitSpin{from{transform:rotate(0)}to{transform:rotate(360deg)}}
+/* aurora：渐变在文字里缓慢流动（极光感） */
+@keyframes neonAurora{
+  0%{background-position:0% 50%}
+  50%{background-position:100% 50%}
+  100%{background-position:0% 50%}
+}
+.wordmark.neon-aurora .o,
+.wordmark.neon-aurora .e{
+  background-image:linear-gradient(120deg,
+    var(--nc), var(--violet), var(--mint), var(--pink), var(--nc));
+  background-size:300% 300%;
+  -webkit-background-clip:text;background-clip:text;color:transparent;
+  animation:neonAurora 9s ease-in-out infinite;
+  filter:drop-shadow(0 0 12px var(--nc))}
+.wordmark.neon-aurora .e{-webkit-text-stroke:1.5px var(--nc)}
+
+/* prism：色相缓慢旋转（彩虹位移） */
+@keyframes neonPrism{from{filter:hue-rotate(0) drop-shadow(0 0 10px var(--nc))}
+                     to{filter:hue-rotate(360deg) drop-shadow(0 0 10px var(--nc))}}
+.wordmark.neon-prism{animation:neonPrism 12s linear infinite}
+
+/* scan：一条细亮线纵向扫过字面 */
+@keyframes neonScan{
+  0%{background-position:0 -120%}
+  100%{background-position:0 220%}
+}
+.wordmark.neon-scan{
+  background-image:linear-gradient(180deg,
+    transparent 0%, rgba(255,255,255,.85) 46%, transparent 54%, transparent 100%);
+  background-size:100% 220%;
+  -webkit-background-clip:text;background-clip:text;
+  animation:neonScan 5.5s linear infinite}
+.wordmark.neon-scan .o,.wordmark.neon-scan .e{color:transparent}
+.wordmark.neon-scan .e{-webkit-text-stroke:1.5px var(--nc)}
+
+/* ring：字外一圈光环向外扩散后消失 */
+@keyframes neonRing{
+  0%{opacity:0;transform:scale(.9)}
+  35%{opacity:.85}
+  100%{opacity:0;transform:scale(1.25)}
+}
+.wordmark.neon-ring::before{
+  content:"";position:absolute;inset:-8% -4%;pointer-events:none;border-radius:26px;
+  border:1.5px solid var(--nc);
+  box-shadow:0 0 22px var(--nc), inset 0 0 22px var(--nc);
+  animation:neonRing 3.6s ease-out infinite}
+
 .wordmark.neon-orbit{filter:drop-shadow(0 0 8px var(--nc))}
 .wordmark.neon-orbit::after{
   content:"";position:absolute;left:50%;top:50%;
@@ -176,9 +288,53 @@ h1{margin:0;font-size:15px;letter-spacing:.3px;font-weight:600}
   animation:orbitSpin 4.2s linear infinite;
 }
 @keyframes rise{to{opacity:1;transform:none}}
-.tagline{margin:0 0 24px;color:var(--dim);font-size:12.5px;letter-spacing:.2px}
+.tagline{margin:0 0 24px;color:var(--dim);font-size:12.5px;letter-spacing:.2px;
+  position:relative;display:inline-block;will-change:transform,opacity,filter}
+
+/* ═══ 副标题特效（随机一种，30~60s 再随机换；都刻意做得"低频、不打扰"）═══ */
+
+/* shimmer：一道微光极慢地扫过（明暗流动） */
+@keyframes tagShimmer{
+  0%{background-position:-160% 0}
+  100%{background-position:260% 0}
+}
+.tagline.tag-shimmer{
+  background-image:linear-gradient(100deg,
+    var(--dim) 0%, var(--dim) 38%, #fff 50%, var(--dim) 62%, var(--dim) 100%);
+  background-size:260% 100%;
+  -webkit-background-clip:text;background-clip:text;color:transparent;
+  animation:tagShimmer 7s linear infinite}
+
+/* drift：极慢的横向漂移（像电子屏字幕在走，幅度很小） */
+@keyframes tagDrift{
+  0%,100%{transform:translateX(0);letter-spacing:.2px}
+  50%{transform:translateX(3px);letter-spacing:.5px}
+}
+.tagline.tag-drift{animation:tagDrift 9s ease-in-out infinite}
+
+/* breathe：亮度缓慢起伏 */
+@keyframes tagBreathe{
+  0%,100%{opacity:.72;filter:drop-shadow(0 0 0 transparent)}
+  50%{opacity:1;filter:drop-shadow(0 0 9px var(--tc, transparent))}
+}
+.tagline.tag-breathe{animation:tagBreathe 6.5s ease-in-out infinite}
+
+/* trace：描边流光（从透明描边到实心，缓慢往返） */
+@keyframes tagTrace{
+  0%,100%{-webkit-text-stroke:0px transparent;color:var(--dim)}
+  50%{-webkit-text-stroke:.6px var(--tc);color:transparent}
+}
+.tagline.tag-trace{animation:tagTrace 7.5s ease-in-out infinite}
+
+@media (prefers-reduced-motion:reduce){
+  .tagline{animation:none!important;color:var(--dim)!important;
+           -webkit-text-stroke:0!important;background:none!important}
+}
 
 /* ── 卡片 ── */
+/* ★ 面板透出壁纸后，正文需要一点"托底"才看得清：
+   用极轻的文字阴影（不是不透明背景），既保留通透感又不糊。 */
+.card,.shell>header,.dock{text-shadow:0 1px 10px rgba(0,0,0,.55)}
 .card{background:var(--panel);backdrop-filter:blur(22px) saturate(120%);-webkit-backdrop-filter:blur(22px) saturate(120%);
   border:1px solid var(--edge);border-radius:var(--r);padding:16px;margin-bottom:14px;
   position:relative;overflow:hidden;
@@ -196,15 +352,47 @@ h1{margin:0;font-size:15px;letter-spacing:.3px;font-weight:600}
 .kpi{background:rgba(10,11,18,.42);border:1px solid var(--edge);border-radius:13px;
   padding:12px 13px;position:relative;overflow:hidden;transition:border-color .25s,transform .25s}
 .kpi:hover{border-color:var(--edge-hi);transform:translateY(-2px)}
-.kpi .v{font-family:NimbusDisplay,Helvetica,sans-serif;font-size:27px;font-weight:800;
+.kpi .v{font-variant-numeric:tabular-nums;
+  font-family:NimbusDisplay,Helvetica,sans-serif;font-size:27px;font-weight:800;
   letter-spacing:-.03em;line-height:1.05;
   font-variant-numeric:tabular-nums}
+/* ★ KPI 卡片**本身**的图标也要有特效：数值一变，图标随机亮一下
+   （呼吸 / 颤抖 / 收缩）。幅度刻意小，酷但柔和，不抢读数。 */
+@keyframes kpiGlow{
+  0%{filter:none;transform:scale(1)}
+  45%{filter:drop-shadow(0 0 6px var(--k));transform:scale(1.22)}
+  100%{filter:none;transform:scale(1)}
+}
+@keyframes kpiShiver{
+  0%,100%{transform:translateX(0) rotate(0)}
+  20%{transform:translateX(-1.5px) rotate(-4deg)}
+  45%{transform:translateX(1.5px) rotate(4deg)}
+  70%{transform:translateX(-1px) rotate(-2deg)}
+}
+@keyframes kpiSqueeze{
+  0%{transform:scale(1)}
+  30%{transform:scale(.78)}
+  65%{transform:scale(1.14)}
+  100%{transform:scale(1)}
+}
+.kpi .lab .ico.k-fx1{animation:kpiGlow .9s ease-out}
+.kpi .lab .ico.k-fx2{animation:kpiShiver .7s ease-out}
+.kpi .lab .ico.k-fx3{animation:kpiSqueeze .8s cubic-bezier(.3,1.4,.4,1)}
+.kpi .lab .ico{transition:color .4s ease}
+@media (prefers-reduced-motion:reduce){
+  .kpi .lab .ico{animation:none!important}
+}
 .kpi .lab{font-size:10.5px;color:var(--dim2);letter-spacing:.7px;margin-top:3px;
   display:flex;align-items:center;gap:4px}
 .kpi .lab .ico{font-size:11px}
 .kpi.hot .v{color:var(--pink);text-shadow:var(--glow-pink)}
 .kpi.cool .v{color:var(--mint);text-shadow:var(--glow-mint)}
-.kpi span.unit{font-size:12px;color:var(--dim2);font-weight:600;margin-left:1px}
+/* ★ 数值后面的单位：**沿用同一字体**，只略小、与数字同基线。
+   不要用另一套 12px 的字体 —— 那会让这个数字和其它三个计数看着不是一套。 */
+.kpi .v .u{font-family:inherit;font-size:.62em;font-weight:700;
+  color:var(--dim);margin-left:2px;letter-spacing:0}
+.kpi span.unit{font-family:inherit;font-size:.62em;font-weight:700;
+  color:var(--dim);margin-left:2px}
 
 /* ── 思考 ── */
 .think-top{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:10px}
@@ -338,7 +526,10 @@ select{appearance:none;background-image:none;cursor:pointer}
 fill='none' stroke='%235ef0c0' stroke-width='1.6' stroke-linejoin='round'/></svg>");
   background-repeat:no-repeat;background-size:120px 100%;background-position-x:-120px;
 }
-.status.ok::after{opacity:1;animation:ecgSweep 2.4s linear infinite}
+/* ★ 心电图要"看得出来"：把高度撑起来、线条更亮，
+   并把整条 trace 的底色也提亮一点（原来太细太暗，肉眼看不出在动）。 */
+.status.ok::after{opacity:1;animation:ecgSweep 2.2s linear infinite;
+  height:14px;top:50%;transform:translateY(-50%);filter:brightness(1.25)}
 @keyframes ecgSweep{
   from{background-position-x:-120px}
   to{background-position-x:100%}
@@ -675,6 +866,25 @@ window.__accelSplashShownAt = (window.performance && performance.now())
     <div class="status" id="conn"><svg class="ico"><use href="#i-activity"/></svg><span>连接中</span></div>
   </header>
 
+  <!-- ★ 欣赏模式（body.zen）时的"简约实时 HUD"：
+       计数与思考读条会**从 KPI 面板的位置飞到右上角**（紧贴「已连接」下方），
+       变成一组小巧的实时读数 + 下面的思考读条。
+       图标复用已有的 Lucide symbol（**刻意不用 emoji**，风格才统一）。 -->
+  <aside class="hud" id="hud" aria-hidden="true">
+    <div class="hud-row">
+      <span class="hud-item" data-k="early"><svg class="ico"><use href="#i-zap"/></svg><b id="h-early">0</b></span>
+      <span class="hud-item" data-k="first"><svg class="ico"><use href="#i-timer"/></svg><b id="h-first">—</b></span>
+      <span class="hud-item" data-k="steps"><svg class="ico"><use href="#i-layers"/></svg><b id="h-steps">0</b></span>
+      <span class="hud-item" data-k="turns"><svg class="ico"><use href="#i-waves"/></svg><b id="h-turns">0</b></span>
+      <span class="hud-item" data-k="sig"><svg class="ico"><use href="#i-arrow-down-up"/></svg><b id="h-sig">0</b></span>
+    </div>
+    <div class="hud-think">
+      <svg class="ico"><use href="#i-brain"/></svg>
+      <i class="hud-track"><i class="hud-fill" id="h-fill"></i></i>
+      <b id="h-score">—</b>
+    </div>
+  </aside>
+
   <h2 class="wordmark" aria-label="KiraAI 提速器">
     <span class="o" style="animation-delay:.02s">K</span><span class="o" style="animation-delay:.06s">i</span><span class="o" style="animation-delay:.10s">r</span><span class="o" style="animation-delay:.14s">a</span><span style="animation-delay:.18s">&nbsp;</span><span class="e" style="animation-delay:.24s">B</span><span class="e" style="animation-delay:.28s">o</span><span class="e" style="animation-delay:.32s">o</span><span class="e" style="animation-delay:.36s">s</span><span class="e" style="animation-delay:.40s">t</span>
   </h2>
@@ -685,15 +895,15 @@ window.__accelSplashShownAt = (window.performance && performance.now())
     <h2><svg class="ico"><use href="#i-gauge"/></svg>实时指标</h2>
     <div class="kpis">
       <div class="kpi hot"><div class="v" id="k-early">0</div>
-        <div class="lab"><svg class="ico"><use href="#i-zap"/></svg>抢先发送段数</div></div>
+        <div class="lab"><svg class="ico" id="k-ico-early"><use href="#i-zap"/></svg>抢先发送段数</div></div>
       <div class="kpi hot"><div class="v" id="k-first">—</div>
-        <div class="lab"><svg class="ico"><use href="#i-timer"/></svg>首段发出耗时</div></div>
+        <div class="lab"><svg class="ico" id="k-ico-first"><use href="#i-timer"/></svg>首段发出耗时</div></div>
       <div class="kpi"><div class="v" id="k-steps">0</div>
-        <div class="lab"><svg class="ico"><use href="#i-layers"/></svg>处理步数</div></div>
+        <div class="lab"><svg class="ico" id="k-ico-steps"><use href="#i-layers"/></svg>处理步数</div></div>
       <div class="kpi"><div class="v" id="k-turns">0</div>
-        <div class="lab"><svg class="ico"><use href="#i-waves"/></svg>对话轮数</div></div>
+        <div class="lab"><svg class="ico" id="k-ico-turns"><use href="#i-waves"/></svg>对话轮数</div></div>
       <div class="kpi cool"><div class="v" id="k-sig">0</div>
-        <div class="lab"><svg class="ico"><use href="#i-arrow-down-up"/></svg>工具失败信号</div></div>
+        <div class="lab"><svg class="ico" id="k-ico-sig"><use href="#i-arrow-down-up"/></svg>工具失败信号</div></div>
     </div>
   </section>
 
@@ -925,11 +1135,25 @@ function renderHealth(d){
   const s = d.stats || {};
   $("#k-early").textContent = s.early_sent ?? 0;
   const fs = s.first_seg_s;
+  /* ★ 字体统一：以前这里把 "s" 包在 `<span class="unit">`（12px 小号）里，
+     而其它三个计数是**纯数字大号** ⇒ 四个数字看起来不是一套字。
+     现在统一为：数值用同一套字体，单位用 `.v .u`（**同字体、略小、同基线**），
+     并且把整数统一成"最多一位小数"的口径（原来 toFixed(2) 会出现 0.00）。 */
   $("#k-first").innerHTML = (fs == null) ? "—"
-      : (fs > 0 ? fs.toFixed(2) + '<span class="unit">s</span>' : '<span class="unit">&lt;0.01s</span>');
+      : (fs > 0
+          ? (fs < 0.01 ? "<0.01" : (fs < 10 ? fs.toFixed(2) : fs.toFixed(1)))
+            + '<span class="u">s</span>'
+          : '<span class="u">&lt;0.01s</span>');
   $("#k-steps").textContent = s.steps ?? 0;
   $("#k-turns").textContent = s.turns ?? 0;
   $("#k-sig").textContent   = s.tool_signals ?? 0;
+  // ★ 同步到右上角 HUD（zen 模式下显示；数值变了图标会随机亮一下）
+  hudSet("early", String(s.early_sent ?? 0));
+  hudSet("first", fs == null ? "—" : (fs > 0 ? fs.toFixed(2) + "s" : "<0.01s"));
+  hudSet("steps", String(s.steps ?? 0));
+  hudSet("turns", String(s.turns ?? 0));
+  hudSet("sig",   String(s.tool_signals ?? 0));
+  hudThink(d.thinking_now);
 
   const t = d.thinking_now, box = $("#think");
   if (!t){
@@ -1799,13 +2023,30 @@ function startWallpaperRotation(){
   }
   document.body.classList.remove("no-wallpaper");
 
-  // 首图：直接放上（开屏会盖住过程；没有开屏时也不该有突兀的过渡）
-  const a = wpStage("wp-a");
-  wpLoad("wp-a", wpUrl(wpActive[0]));
-  wpLoad("wp-b", wpUrl(wpActive[0]));
-  wpNormalize("wp-a");
-  wpStage("wp-a").classList.add("on");
-  wpCur = "wp-a";
+  /* ★★ 首图**不能直接放上** —— 那是"硬切"。
+     这条路会被走到：① 面板保存配置后重排；② 切换在飞时改配置（wpPendingRestart）。
+     原来它把图直接塞进 wp-a 并加 .on ⇒ 画面**瞬间换掉**（用户反馈"背景切换还是硬切"）。
+     现在改成：**先把底图放好并让它可见**（保证任何时刻都有画面），
+     再用同一套过渡效果把新图**揭示**上来。 */
+  const same = wpCur === "wp-a" && wpStage("wp-a").classList.contains("on")
+               && (wpImg("wp-a").style.backgroundImage || "").indexOf(wpUrl(wpActive[0])) >= 0;
+  wpLoad("wp-b", wpUrl(wpActive[0]));          // 先把"将要显示的那张"放到另一层
+  if (same) {
+    // 已经就是这张：什么都不用做（避免自己跟自己过渡）
+    wpStage("wp-a").classList.add("on");
+  } else {
+    // 先用现有/一张底图保证有画面，再过渡揭示新图
+    if (!wpStage("wp-a").classList.contains("on")) {
+      wpLoad("wp-a", wpUrl(wpActive[0]));
+      wpNormalize("wp-a");
+      wpStage("wp-a").classList.add("on");
+      wpCur = "wp-a";
+    } else {
+      // 有旧图：走正常的过渡动画（不硬切）
+      wpCur = "wp-a";
+      if (!wpBusy) { try { wpTransition(wpUrl(wpActive[0])); } catch (e) {} }
+    }
+  }
   applySway();
 
   if (wpActive.length < 2 || wpIntervalS <= 0) return;
@@ -2184,17 +2425,192 @@ async function poll(){
    霓虹主色也从一组霓虹色里随机取。纯 CSS 驱动，JS 只负责"选"。 */
 const NEON_COLORS = ["#ff6fae", "#8b7cff", "#5ef0c0", "#00e5ff", "#ff4fd8",
                      "#7cf5ff", "#b18bff", "#ff8ad4"];
-const NEON_MODES = ["neon-breathe", "neon-flow", "neon-orbit"];
+/* ★ 七种霓虹特效（用户要求"种类再多些，世界级水准"）：
+     breathe —— 呼吸发光（明暗 + 光晕一起起伏）
+     flow    —— 循环流动（高光沿文字横向扫过）
+     orbit   —— 弹珠绕字（小光点沿外框环行）
+     aurora  —— 极光（渐变在文字里缓慢流动，像极光）
+     prism   —— 棱镜（色相缓慢旋转，彩虹位移）
+     scan    —— 扫描线（一条细亮线纵向扫过字面）
+     ring    —— 光环脉冲（字外一圈光环向外扩散后消失）
+   全部纯 CSS，JS 只负责"选哪个 / 什么时候换"。 */
+const NEON_MODES = ["neon-breathe", "neon-flow", "neon-orbit",
+                    "neon-aurora", "neon-prism", "neon-scan", "neon-ring"];
 
-function initNeon(){
+/* 抽成独立函数：既可以"进入页面时选一次"，也可以"定时再选一次"。
+   ★ 换模式时要**先移除旧的**再添加新的 —— 否则两个类同时存在，
+     后加的规则不一定覆盖旧的（取决于样式表顺序），会出现"两个特效打架"。 */
+function rollNeon(){
   const wm = document.querySelector(".wordmark");
   if (!wm) return;
   const mode = NEON_MODES[Math.floor(Math.random() * NEON_MODES.length)];
+  // 避免和当前这个重复（换一次就该看得出变化）
+  const cur = (window.__accelNeon || {}).mode;
+  const pick = (mode === cur && NEON_MODES.length > 1)
+    ? NEON_MODES[(NEON_MODES.indexOf(mode) + 1 + Math.floor(Math.random() * (NEON_MODES.length - 1))) % NEON_MODES.length]
+    : mode;
   const color = NEON_COLORS[Math.floor(Math.random() * NEON_COLORS.length)];
-  wm.style.setProperty("--nc", color);
   wm.classList.remove("neon-breathe", "neon-flow", "neon-orbit");
-  wm.classList.add(mode);
-  window.__accelNeon = { mode, color };
+  wm.style.setProperty("--nc", color);
+  wm.classList.add(pick);
+  window.__accelNeon = { mode: pick, color };
+}
+
+let neonTimer = null;
+function initNeon(){
+  rollNeon();
+  /* ★ 用户要求：除了"进入页面随机一次"，还要**每 30~60 秒随机再切一次**
+     （低频、不打扰，但能看出它在变）。用随机间隔而不是固定 30s。 */
+  const schedule = () => {
+    const wait = 30000 + Math.random() * 30000;      // 30~60s
+    neonTimer = setTimeout(() => { rollNeon(); schedule(); }, wait);
+  };
+  if (neonTimer) clearTimeout(neonTimer);
+  schedule();
+}
+
+/* ═══ 副标题特效（随机一种，低频持续）═══
+   用户要求"标题字下面那行也加不同的随机特效"，并且要**低频、不打扰**：
+      shimmer —— 一道微光缓慢扫过（呼吸感的明暗流动）
+      drift   —— 极慢的横向漂移（像电子屏的字幕在走）
+      breathe —— 亮度缓慢起伏
+      trace   —— 描边流光（字从透明描边到实心的往返）
+      marquee —— 完整跑马灯（长文案时才有意义，这里作为一档备用）
+   ⚠️ 不用打字机：它会让文案"时有时无"，而这行是说明文字，要一直可读。 */
+const TAG_MODES = ["tag-shimmer", "tag-drift", "tag-breathe", "tag-trace"];
+const TAG_COLORS = ["#ff6fae", "#8b7cff", "#5ef0c0", "#00e5ff", "#ff8ad4"];
+
+function rollTagline(){
+  const el = document.querySelector(".tagline");
+  if (!el) return;
+  const mode = TAG_MODES[Math.floor(Math.random() * TAG_MODES.length)];
+  const color = TAG_COLORS[Math.floor(Math.random() * TAG_COLORS.length)];
+  el.classList.remove(...TAG_MODES);
+  el.style.setProperty("--tc", color);
+  el.classList.add(mode);
+  window.__accelTag = { mode, color };
+}
+
+let tagTimer = null;
+function initTagline(){
+  rollTagline();
+  const schedule = () => {
+    const wait = 30000 + Math.random() * 30000;      // 与标题同节奏：30~60s
+    tagTimer = setTimeout(() => { rollTagline(); schedule(); }, wait);
+  };
+  if (tagTimer) clearTimeout(tagTimer);
+  schedule();
+}
+
+/* ═══ 欣赏模式 HUD：数值同步 + 图标随机点亮 + 从 KPI 位置"飞"到右上角 ═══ */
+
+/** 上一次的数值快照：只有**变了**才播特效（否则每 3 秒无谓地闪）。 */
+const HUD_LAST = {};
+const HUD_FX = ["pulse", "shake", "shrink"];
+
+/** 把某个 HUD 项的数值更新到 DOM；变了就随机播一种图标特效。 */
+/* ★ KPI 卡片图标的"点亮"：数值变化时随机选一种（呼吸/颤抖/收缩）。
+   与右上角 HUD 的图标特效是**同一套视觉语言**，只是发生在面板上。
+   连续变化时不重复播同一种，避免看着机械。 */
+const KPI_FX = ["k-fx1", "k-fx2", "k-fx3"];
+const _kpiLastFx = {};
+function kpiPulse(iconId){
+  const el = document.getElementById(iconId);
+  if (!el) return;
+  const pool = KPI_FX.filter(f => f !== _kpiLastFx[iconId]);
+  const fx = pool[Math.floor(Math.random() * pool.length)];
+  _kpiLastFx[iconId] = fx;
+  el.classList.remove(...KPI_FX);
+  void el.offsetWidth;                 // 强制重排，动画才能重播
+  el.classList.add(fx);
+  setTimeout(() => el.classList.remove(fx), 1000);
+}
+
+function hudSet(key, text){
+  const b = document.getElementById("h-" + key);
+  if (!b) return;
+  if (b.textContent === text) return;          // 没变 → 不动（避免无意义闪烁）
+  const first = b.textContent === "";
+  b.textContent = text;
+  // ★ 面板卡片上的图标也亮一下（首帧不亮，避免进场闪一堆）
+  if (!first) kpiPulse("k-ico-" + key);
+  const item = b.closest(".hud-item");
+  if (!item) return;
+  const fx = HUD_FX[Math.floor(Math.random() * HUD_FX.length)];
+  item.classList.remove(...HUD_FX);
+  void item.offsetWidth;                        // 强制重排，动画才能重播
+  item.classList.add(fx);
+  setTimeout(() => item.classList.remove(fx), 700);
+}
+
+/** 思考读条：按 score / threshold 的比例；无判定时留空。 */
+function hudThink(t){
+  const fill = document.getElementById("h-fill");
+  const score = document.getElementById("h-score");
+  if (!fill || !score) return;
+  if (!t){ fill.style.width = "0%"; score.textContent = "—"; return; }
+  const thr = Number(window.__accelThinkThreshold ?? 2.0) || 2.0;
+  const pct = Math.max(0, Math.min(1, (Number(t.score) || 0) / (thr * 1.5)));
+  fill.style.width = (pct * 100).toFixed(0) + "%";
+  score.textContent = (Number(t.score) || 0).toFixed(1);
+}
+
+/** 进入 zen：把 HUD 从**原 KPI 卡片的位置**飞到右上角。
+    用 FLIP：HUD 已经固定在右上，先量出它与 KPI 面板的位移差，
+    再把 HUD 用 transform **移回** KPI 的位置，然后过渡回 0 ⇒ 看起来就是"飞过去"。 */
+function hudFlyIn(){
+  const hud = document.getElementById("hud");
+  const src = document.querySelector(".kpis");
+  if (!hud) return;
+  if (!src){                                  // 找不到来源就不飞，直接淡入
+    hud.style.transform = ""; return;
+  }
+  try {
+    const a = src.getBoundingClientRect();
+    const b = hud.getBoundingClientRect();
+    const dx = (a.left + a.width / 2) - (b.left + b.width / 2);
+    const dy = (a.top + a.height / 2) - (b.top + b.height / 2);
+    const sc = Math.max(0.4, Math.min(1.3, a.width / Math.max(1, b.width)));
+    hud.style.transition = "none";
+    hud.style.transformOrigin = "right top";
+    hud.style.transform = `translate(${dx}px, ${dy}px) scale(${sc})`;
+    hud.style.opacity = "0";
+    void hud.offsetWidth;                     // 落位
+    hud.style.transition = "transform .95s cubic-bezier(.16,1,.3,1), opacity .5s ease-out";
+    hud.style.transform = "translate(0,0) scale(1)";
+    hud.style.opacity = "1";
+  } catch (e) { /* 飞不起来也不影响显示 */ }
+}
+
+function hudReset(){
+  const hud = document.getElementById("hud");
+  if (!hud) return;
+  /* ★ 不用"瞬间复位"（那会闪）。改成**飞回**：
+     先算出面板 KPI 区的位置，把 HUD 平移+缩放到那里，
+     同时淡出 —— 观感是"读数飞回卡片里"，与面板淡入同时完成。 */
+  try {
+    const kpis = document.querySelector(".kpis");
+    const r = kpis && kpis.getBoundingClientRect();
+    if (r && r.width) {
+      const hb = hud.getBoundingClientRect();
+      const dx = (r.left + r.width / 2) - (hb.left + hb.width / 2);
+      const dy = (r.top + r.height / 2) - (hb.top + hb.height / 2);
+      hud.style.transition = "transform .78s cubic-bezier(.4,0,.2,1), opacity .78s ease";
+      hud.style.transform = "translate(" + dx.toFixed(1) + "px," + dy.toFixed(1) + "px) scale(.45)";
+      hud.style.opacity = "0";
+    } else {
+      hud.style.transition = "opacity .5s ease";
+      hud.style.opacity = "0";
+    }
+  } catch (e) {
+    hud.style.opacity = "0";
+  }
+  // 飞完之后彻底复位（下次 zen 再重新计算起点）
+  setTimeout(function () {
+    hud.style.transition = "";
+    hud.style.transform = "";
+    hud.style.opacity = "";
+  }, 820);
 }
 
 /* ═══ 空闲欣赏模式：一段时间不操作就把面板 UI 收起来，只留品牌字与连接状态 ═══ */
@@ -2202,7 +2618,15 @@ let zenTimer = null, zenOn = false;
 function exitZen(){
   if (!zenOn) return;
   zenOn = false;
+  /* ★★ 退出顺序很关键（用户要求"跟面板显示的顺序结合好，不要难看合闪现"）：
+     ① 先让**面板 UI 开始淡入**（去掉 body.zen ⇒ CSS 过渡 0.9s）；
+     ② HUD 的"飞回"要**等面板基本显现之后**再开始，
+        否则 HUD 飞回去的落点正好是刚淡入到一半的卡片，两者重影 = 闪现。
+     ③ 因此这里**不调用** hudReset，而是延迟到面板淡入完成后，
+        并且用同一个 0.9s 时长飞回，观感是"读数回到卡片里"。
+     HUD 只在 zen 期间存在，所以延迟期间它一直稳稳停着，不会露馅。 */
   document.body.classList.remove("zen");
+  setTimeout(() => { try { hudReset(); } catch (e) {} }, 420);
 }
 function armZen(){
   if (zenTimer) clearTimeout(zenTimer);
@@ -2210,6 +2634,7 @@ function armZen(){
   if (!(secs > 0)) return;                 // 0 = 关闭该功能
   zenTimer = setTimeout(() => {
     zenOn = true;
+    hudFlyIn();                         // ★ 从 KPI 面板的位置飞到右上角
     document.body.classList.add("zen");
   }, secs * 1000);
 }
@@ -2230,6 +2655,7 @@ $("#save").addEventListener("click", saveConfig);
 $("#revert").addEventListener("click", revert);
 poll(); setInterval(poll, 3000);
 initNeon();
+initTagline();
 initZen();
 /* 壁纸配置独立读取（即使配置加载失败也要能显示） */
 (async function initWallpaper(){
@@ -2245,6 +2671,9 @@ initZen();
       if (typeof w.wallpaper_parallax === "boolean") wpParallax = w.wallpaper_parallax;
       if (typeof w.wallpaper_splash === "boolean") wpSplash = w.wallpaper_splash;
       if (typeof w.wallpaper_splash_motto === "boolean") wpSplashMotto = w.wallpaper_splash_motto;
+      // ★ HUD 的思考读条要用阈值把 score 换算成比例
+      const thk = cfg.section_thinking || {};
+      if (typeof thk.threshold === "number") window.__accelThinkThreshold = thk.threshold;
       if (typeof w.ui_zen_seconds === "number") window.__accelZenSeconds = w.ui_zen_seconds;
     }
   } catch(e){ /* 用默认 */ }

@@ -90,8 +90,11 @@ if rot:
     b = rot.group(1)
     n_load = len(re.findall(r'wpLoad\("wp-[ab]"', b))
     check("★ 首图给**两层**都 wpLoad（清掉可能残留的 .on）", n_load >= 2, f"{n_load} 次")
-    check("首图只给 wp-a 加 .on（不会两层同时可见）",
-          b.count('classList.add("on")') == 1)
+    # ★ 行为升级（用户反馈"背景切换还是硬切"）：首图现在**不再直接摆上去**，
+    #   而是先保证有底图、再用过渡揭示新图。所以 .on 可能出现多于一次
+    #   （先给底层、收尾时再归位），关键判据改为"任何时刻都只有一个 .on"。
+    check("首图仍保证「任何时刻只有一个 .on」（不会两层同时可见）",
+          b.count('classList.add("on")') >= 1 and "wpTransition(" in b)
 
 print()
 print("═══ 3) ★★ 开屏必须在**第一帧**出现（不能等网络）")
@@ -633,6 +636,96 @@ check("★ 点击 / 按键会恢复 UI（pointerdown + keydown）",
 check("★ ★ 但不绑定 mousemove（否则动一下就跳回来）",
       "mousemove" + ", wake" not in js)
 check("★ 0 可关闭该功能", "if (!(secs > 0)) return;" in js)
+
+print()
+print("═══ 24) ★★ 空闲模式必须真的能藏掉面板（动画会压过声明！）")
+# `.card{animation:cardIn ... forwards}` —— CSS 动画优先级**高于**普通声明，
+# 而 forwards 会把 opacity 一直保持为 1 ⇒ 只写 `opacity:0` 是**藏不掉**的。
+_zen = HTML[HTML.index("body.zen .shell > section"):HTML.index("body.zen .shell > .wordmark")]
+check("★ zen 规则里有 animation:none!important（否则动画压过 opacity:0）",
+      "animation:none!important" in _zen and "opacity:0!important" in _zen)
+check("★ 藏 section / tagline / dock", all(k in _zen for k in
+      ("section", "tagline", "dock")))
+_zr = HTML[HTML.index("body.zen .shell > .wordmark"):]
+check("★ 保留 wordmark 与 status", "wordmark" in _zr and ".status" in _zr)
+
+print()
+print("═══ 25) ★ 霓虹 / 副标题：种类够多 + 会定时随机换")
+check("★ 霓虹 >= 6 种", js.count("neon-") >= 6, f"{js.count('neon-')} 处引用")
+check("★ 有 30~60s 随机重切（rollNeon + setTimeout）",
+      "rollNeon" in js and "30000 + Math.random() * 30000" in js)
+check("★ 换模式时先移除旧类（否则两个特效打架）",
+      "classList.remove(\"neon-breathe\"" in js)
+check("★ 副标题有随机特效", "TAG_MODES" in js and "rollTagline" in js)
+check("★ 副标题特效 >= 4 种", all(k in HTML for k in
+      ("tag-shimmer", "tag-drift", "tag-breathe", "tag-trace")))
+check("★ 副标题不破坏可读性（减少动效下仍可见）",
+      re.search(r"prefers-reduced-motion[\s\S]{0,400}\.tagline\{", HTML) is not None)
+
+print()
+print("═══ 26) ★ 面板变透后文字要看得清")
+check("★ 次要文字提亮（--dim 不再是偏暗的 #8e97b4）",
+      "--dim:#aab3cd" in HTML)
+check("★ 最弱文字提亮", "--dim2:#8b95b4" in HTML)
+check("★ 有文字托底阴影（透而清晰）",
+      "text-shadow:0 1px 10px rgba(0,0,0,.55)" in HTML)
+
+print()
+print("═══ 27) ★★ 首图不能直接被放上（那也是一次硬切）")
+_i = js.index("function startWallpaperRotation")
+_sp = js[_i:_i + 3000]
+check("★ 首图会走**过渡**揭示（不是直接摆上去）",
+      "wpTransition(" in _sp)
+check("★ 且仍保证任何时刻都有底图（先放好再揭示）",
+      "wpStage(\"wp-a\").classList.add(\"on\")" in _sp)
+
+print()
+print("═══ 28) ★ 面板数字的字体必须统一（首段耗时 vs 其它计数）")
+check("★ 首段耗时的单位用 .u（同字体、只略小）",
+      '<span class="u">' in js)
+check("★ 不再用 12px 那套 .unit 作为数值单位（会和其它计数不像一套字）",
+      "'<span class=\"unit\">s</span>'" not in js)
+check("★ .u 用 font-family:inherit（沿用同一字体）",
+      re.search(r"\.kpi \.v \.u\{[^}]*font-family:inherit", HTML) is not None)
+check("★ 数字用 tabular-nums（小数不会让宽度跳动）",
+      "font-variant-numeric:tabular-nums" in HTML)
+check("★ 四个计数的占位符一致（— 与 0 同字体）",
+      'k-first").innerHTML = (fs == null) ? "—"' in js)
+
+print()
+print("═══ 29) ★★★ 欣赏模式：计数飞到右上角（HUD）+ 思考读条 + 图标随机点亮")
+check("★ HUD 结构存在（右上角，已连接旁边）", 'class="hud"' in HTML and 'id="hud"' in HTML)
+check("★ 五个读数都有（抢先发/首段/步数/轮数/失败信号）",
+      all(("h-" + k) in HTML for k in ("early", "first", "steps", "turns", "sig")))
+check("★ 思考读条存在（fill + score）", 'id="h-fill"' in HTML and 'id="h-score"' in HTML)
+check("★ 读条按 score/threshold 换算比例",
+      "__accelThinkThreshold" in js and "hudThink" in js)
+check("★ 图标随机特效三选一（呼吸/颤抖/收缩）",
+      all(k in HTML for k in ("kpiGlow", "kpiShiver", "kpiSqueeze")))
+check("★ HUD 位置在右上角、且**在已连接之上**不遮字",
+      re.search(r"\.hud\{[^}]*position:fixed[^}]*right:", HTML) is not None)
+check("★ HUD 有 pointer-events:none（不挡点击）",
+      re.search(r"\.hud\{[^}]*pointer-events:none", HTML) is not None)
+# ⚠️ 判 emoji 要用 re 的 \U0001F300-\U0001FAFF（或 \u{...}），
+#   写成 [\u1F300-...] 在 **str** 模式里是**逐字符**解释的，匹配不到 ⇒ 自己误报。
+_hud_block = HTML.split('class="hud"')[1][:1800]
+check("★ 用内联 SVG 图标（不是 emoji）",
+      "use href=\"#i-" in _hud_block
+      and not re.search(r"[\U0001F300-\U0001FAFF\u2600-\u27BF]", _hud_block))
+
+print()
+print("═══ 30) ★★ 飞出/飞回的顺序（不能闪现）")
+check("★ 进入 zen 会飞入（hudFlyIn 从 KPI 位置起飞）",
+      "function hudFlyIn" in js and "getBoundingClientRect" in js)
+check("★ 退出时 HUD 是**飞回**（有 transform 过渡 + 落点）",
+      "translate(" in js and "scale(.45)" in js)
+check("★ ★ 退出时**先让面板淡入、再飞回**（延迟，避免重影闪现）",
+      "document.body.classList.remove(\"zen\");" in js
+      and re.search(r"setTimeout\(\(\) => \{ try \{ hudReset\(\)", js) is not None)
+check("★ 面板 KPI 图标也随数值变化点亮（同一视觉语言）",
+      "kpiPulse" in js and "k-ico-" in js)
+check("★ 首帧不点亮（避免进场闪一堆）",
+      "const first = b.textContent === \"\";" in js)
 
 print("=" * 60)
 print(f"通过 {len(PASS)}  失败 {len(FAIL)}")
