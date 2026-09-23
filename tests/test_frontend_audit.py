@@ -381,6 +381,58 @@ check("★ 提示不被 jsfx 关掉（它始终要闪）", "html.jsfx .sp-hint" 
 check("★ 减少动效下提示不闪但仍可见（不消失）",
       re.search(r"prefers-reduced-motion[\s\S]{0,400}\.sp-hint\{[^}]*animation:none", HTML) is not None)
 
+print()
+print("═══ 11) ★ 开屏字特效：不能太快，且必须自带停留")
+_wm = js[js.index("const WM_FX_FN"):js.index("\n};", js.index("const WM_FX_FN"))]
+# 每条动画的 duration 都应 >= 1000ms（原来 820~1050 偏快）
+_durs = [int(x) for x in re.findall(r"duration:\s*(\d+)", _wm)]
+check("★ 字特效每条动画都不低于 1s（原来偏快）",
+      bool(_durs) and min(_durs) >= 1000, f"最短 {min(_durs) if _durs else '?'}ms")
+check("★ 字特效用 fill:\"both\"（backwards 会让字母播完消失）",
+      'fill:"backwards"' not in _wm and _wm.count('fill:"both"') >= 6,
+      f"both={_wm.count(chr(34)+'fill:'+chr(34))}")
+# 至少一半的特效在时间线里显式写了"保持"（末帧不透明）
+check("★ 字特效整体不会太快（单条 <=1500ms，否则等太久）",
+      max(_durs) <= 1500, f"最长 {max(_durs) if _durs else '?'}ms")
+
+print()
+print("═══ 12) ★★ 箴言必须装进起点→收尾的窗口（否则被截断=看着像消失）")
+_motto = js[js.index("const MOTTO_FX_FN"):js.index("\n};", js.index("const MOTTO_FX_FN"))]
+_mdur = [int(x) for x in re.findall(r"duration:\s*(\d+)", _motto)]
+_m_start = re.search(r"after\((\d+),\s*\(\)\s*=>\s*\{\s*try\s*\{\s*MOTTO_FX_FN", js)
+_fin = re.search(r"after\((\d+), finishSplash\)", js)
+_m_begin = re.search(r"after\((\d+),\s*\(\)\s*=>", js)
+# 取箴言那条 after 的起点
+_motto_at = None
+for m in re.finditer(r"after\((\d+),", js):
+    seg = js[m.end():m.end() + 160]
+    if "MOTTO_FX_FN" in seg:
+        _motto_at = int(m.group(1))
+if _motto_at and _mdur and _fin:
+    _latest = max(_mdur)
+    _window = int(_fin.group(1)) - _motto_at
+    check("★ 箴言时长 <= 窗口（起点→收尾）⇒ 不会被截断",
+          _latest <= _window,
+          f"箴言 {_latest}ms vs 窗口 {_window}ms（起点 {_motto_at} → 收尾 {_fin.group(1)}）")
+    check("★ 窗口内留有可见的停留（>=100ms）",
+          _window - _latest >= 100, f"余量 {_window - _latest}ms")
+else:
+    check("★ 能定位箴言起点/时长/收尾", False,
+          f"at={_motto_at} durs={_mdur} fin={bool(_fin)}")
+check("★ 箴言每条都有「停住」（时间线里有保持不透明的 offset）",
+      _motto.count("offset:.84") >= 3, f"{_motto.count('offset:.84')} 处")
+
+print()
+print("═══ 13) ★★ 开屏收尾必须用显式 Web Animation（CSS 同帧加类可能被跳过）")
+check("★ finishSplash 用 sp.animate([...]) 做收尾",
+      re.search(r"sp\.animate\(\[", js) is not None)
+check("★ 收尾动画覆盖 opacity + transform + filter（化开而非单纯透明）",
+      "scale(1.045)" in js and "blur(12px)" in js and "opacity:0" in js[js.index("const OUT_MS"):js.index("const OUT_MS") + 400])
+check("★ 隐藏等待按 OUT_MS 计算（不再硬编码 1200）",
+      "OUT_MS + 180" in js or "OUT_MS +" in js)
+check("CSS 里仍保留 .splash.out 作为极老环境的后备",
+      re.search(r"\.splash\.out\{", HTML) is not None)
+
 print("=" * 60)
 print(f"通过 {len(PASS)}  失败 {len(FAIL)}")
 if FAIL:

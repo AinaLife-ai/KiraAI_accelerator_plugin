@@ -60,6 +60,7 @@ run "★抢发兼容AFTER_XML_PARSE" tests/test_after_xml_parse.py
 run "★文本被改写后的剥离"     tests/test_strip_when_text_rewritten.py
 run "★前端审计（层级/开屏/墨渗）" tests/test_frontend_audit.py
 run "★日志行为（不误导/不误报）" tests/test_log_behaviour.py
+run "★媒体描述不计入评分"     tests/test_thinking_media.py
 
 
 run "前端URL前缀守卫"         tests/test_frontend_api.py

@@ -366,7 +366,99 @@ class AutoThinkingController:
         return any(h in low for h in COMPLEX_HINTS)
 
     @staticmethod
-    def _user_text(request: Any) -> str:
+    def _typed_text_from_event(event: Any) -> str | None:
+        """从事件的消息链里取出**用户真正打的字**（结构判据，最可靠）。
+
+        `event.messages[*].chain` 是框架解析好的 MessageChain；
+        里面的 `Text` 元素就是用户输入的原始文本，
+        而 `Image` / `Sticker` 等媒体的**描述**根本不在其中
+        ⇒ 天然把描述排除在外，不用去猜字符串边界。
+
+        这也与 s 版聊天插件的做法一致（它判断媒体看的是元素类型，不是字符串）。
+        取不到返回 None，交给调用方走兜底。
+        """
+        try:
+            from core.chat.message_elements import Text
+        except Exception:  # noqa: BLE001
+            return None
+        try:
+            msgs = getattr(event, "messages", None) or []
+            parts = []
+            for m in msgs:
+                chain = getattr(m, "chain", None)
+                if chain is None:
+                    continue
+                for ele in chain:
+                    if isinstance(ele, Text):
+                        parts.append(getattr(ele, "text", "") or "")
+            if not parts:
+                return None
+            return "\n".join(parts)
+        except Exception:  # noqa: BLE001
+            return None
+
+    #: 框架在 message_format_to_text 里给媒体元素加的**固定前缀**。
+    #  按这些前缀剥掉"描述"，只留用户真正打的字。
+    #  （core/message_manager.py：`[Image {caption}]`、`[Sticker {caption}]`、
+    #    `[Emoji {emoji_desc} (ID: …)]`、`[Image attached]`）
+    #  ⚠️ 注意：[Emoji …] 是**用户自己选的表情**（不是模型生成的描述），
+    #    不该剥 —— 它短、且是用户的表达。只剥模型生成的媒体描述。
+    _MEDIA_PREFIX = ("[Image ", "[Sticker ", "[Record ", "[Video ", "[File ")
+    #: 剥掉描述后留下的占位（说明"这里有媒体"，但字数不参与计分）
+    _MEDIA_PLACEHOLDER = "[图]"
+
+    @classmethod
+    def _strip_media_desc(cls, text: str) -> str:
+        """**兜底路径**：从已格式化的字符串里去掉媒体描述。
+
+        ★ 只在拿不到结构化消息链时使用 —— 因为字符串剥离本质上是"猜边界"：
+          描述里可能含**不平衡的方括号**（实测会把用户打的字也吃掉）。
+        所以这里**保守**处理：只有"方括号能配平、且整段确实是媒体标记"才剥，
+        否则原样返回（宁可多算几分，也不要误删用户的话）。
+
+        为什么还要留着：万一框架改了事件结构（拿不到 chain），
+        至少不会把"发一张图 = 触发思考"的问题完全暴露回来。
+        """
+        if not text:
+            return text
+        out = []
+        i = 0
+        n = len(text)
+        while i < n:
+            hit = None
+            for pfx in cls._MEDIA_PREFIX:
+                if text.startswith(pfx, i):
+                    hit = pfx
+                    break
+            if hit is None:
+                out.append(text[i])
+                i += 1
+                continue
+            # 方括号配对；**配不平就整段放弃剥离**（保守）
+            depth = 0
+            j = i
+            ok = False
+            while j < n:
+                if text[j] == "[":
+                    depth += 1
+                elif text[j] == "]":
+                    depth -= 1
+                    if depth == 0:
+                        j += 1
+                        ok = True
+                        break
+                j += 1
+            if not ok:
+                # 配不平 ⇒ 不动它，原样保留（宁可不剥，也不误伤）
+                out.append(text[i])
+                i += 1
+                continue
+            out.append(cls._MEDIA_PLACEHOLDER)
+            i = j
+        return "".join(out)
+
+    @classmethod
+    def _user_text(cls, request: Any) -> str:
         """只取**用户这一轮真正说的话**。
 
         ★★ 不能把整个 `user_prompt` 当用户消息（2026-09-23 用户实测：每轮都触发思考）
@@ -390,7 +482,21 @@ class AutoThinkingController:
             # 但把长度报出去，日志里能一眼看出异常。
             parts = [getattr(p, "content", "") or ""
                      for p in (getattr(request, "user_prompt", None) or [])]
-        return "\n".join(parts)
+        text = "\n".join(parts)
+        # ★ 图片/表情包描述不算入计分（默认开）—— 描述通常很长，
+        #   算进来会"光发一张图就触发思考"（用户实测 281 字描述 +0.5 分）。
+        if getattr(cls, "exclude_media_desc", True):
+            # ① 首选**结构判据**：直接从事件的消息链取用户打的字（最可靠）
+            typed = cls._typed_text_from_event(
+                getattr(request, "__dict__", {}).get("_accel_event"))
+            if typed is not None and typed.strip():
+                return typed
+            # ② 兜底：字符串剥离（保守，拿不准就不剥）
+            try:
+                text = cls._strip_media_desc(text)
+            except Exception:  # noqa: BLE001
+                pass
+        return text
 
     @staticmethod
     def _context_chars(request: Any) -> int:
