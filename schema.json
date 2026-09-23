@@ -394,6 +394,20 @@
             "hint": "缓存客户端，避免每个模型步都新建连接池与 TLS 握手。默认：开。"
           }
         }
+      },
+      "compact_memory_dump": {
+        "type": "switch",
+        "default": true,
+        "locales": {
+          "zh": {
+            "name": "记忆落盘去掉缩进（提速）",
+            "hint": "框架每轮都会把**全部会话**的记忆重新序列化并整文件重写，而且是同步执行（会卡住事件循环）。实测去掉缩进后**序列化快约 6 倍、文件小约 3 倍**，而解析出来的内容完全一样 —— 任何读这个文件的代码都不受影响。唯一的代价是 chat_memory.json 不再是给人看的排版。"
+          },
+          "en": {
+            "name": "Compact memory dump (faster)",
+            "hint": "Every turn the framework re-serialises the memory of *all* sessions and rewrites the whole file, synchronously, which stalls the event loop. Dropping the indentation makes serialisation about 6x faster and the file about 3x smaller, and the parsed content is identical, so nothing that reads the file is affected. The only cost is that chat_memory.json is no longer pretty-printed."
+          }
+        }
       }
     }
   },

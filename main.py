@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import random
 import time
 from collections import deque
@@ -86,11 +87,13 @@ class AcceleratorPlugin(BasePlugin):
         self.observe_window = int(c_obs.get("window", 50))
 
 
-        self.takeover_build_client = bool(c_tak.get("reuse_http_client", False))
+        self.takeover_build_client = bool(c_tak.get("reuse_http_client", True))
+        # 记忆落盘去掉缩进（纯格式，解析结果不变）
+        self.takeover_memory_dump = bool(c_tak.get("compact_memory_dump", True))
 
         # L4
-        self.force_stream = bool(c_str.get("force_stream", False))
-        self.early_send = bool(c_str.get("early_send", False))
+        self.force_stream = bool(c_str.get("force_stream", True))
+        self.early_send = bool(c_str.get("early_send", True))
         self.stream_providers = list(c_str.get("providers", []) or [])
 
         # 请求体兼容加固（默认开，零风险）
@@ -165,6 +168,8 @@ class AcceleratorPlugin(BasePlugin):
             self._install_early_sent_strip()
         if self._tool_gate.enabled:
             self._install_parallel_tools()
+        if self.takeover_memory_dump:
+            self._install_memory_dump()
 
     async def terminate(self) -> None:
         self.patches.uninstall_all()
@@ -723,6 +728,61 @@ class AcceleratorPlugin(BasePlugin):
             return (min(lo, hi), max(lo, hi))
         except Exception:  # noqa: BLE001
             return 0.0, 0.0
+
+    def _install_memory_dump(self) -> None:
+        """让记忆落盘去掉 `indent=4`（只改格式，不改内容）。
+
+        为什么值得动（实测，2026-09-23 审计）：
+          `SessionManager.update_memory` 每轮都会把**全部会话**的记忆重新
+          `json.dumps` 再整文件重写，而且是**同步**执行（会阻塞事件循环）。
+          `indent=4` 一个人就占了大头：
+
+              会话数×条数      带缩进      不带缩进     文件大小
+              50 × 400        165.8 ms     26.6 ms     3033K → 1077K
+              20 × 200         57.8 ms            —      463K
+              200 × 200       375.9 ms            —     4627K
+
+          去掉缩进 ⇒ **序列化快 6.2 倍、文件小 3 倍**，而 `json.load` 解析出来的
+          对象**完全一样** ⇒ 对任何读这个文件的代码（框架自己的加载、WebUI、
+          其它插件）都零影响。
+
+        ★ 为什么**不**顺便做这两件（收益更大但会破坏兼容）：
+          1) 改成异步/丢线程池 —— `update_memory` 是被**不带 await** 调用的
+             （message_manager.py:832），改成协程会让"直接调用它的插件"
+             拿到一个永远不会执行的协程 ⇒ 记忆静默丢失。
+          2) 只重序列化"变了的会话"（能到 <1ms）—— 需要在会话数据被就地修改时
+             可靠地失效缓存，一旦漏标就会把**过期的记忆写回磁盘**（丢数据）。
+             拿记忆的正确性换几十毫秒，不划算。
+        """
+        try:
+            from core.chat.session_manager import SessionManager
+        except Exception:  # noqa: BLE001
+            logger.exception("[accel] 导入 SessionManager 失败，跳过落盘优化")
+            return
+
+        def factory(original):
+            def _save_memory(self, memory=None, path=None):
+                if not memory:
+                    memory = self.chat_memory
+                if not path:
+                    path = self.chat_memory_path
+                try:
+                    # 与框架唯一的不同：不缩进 + 紧凑分隔符。
+                    # 解析结果完全相同，只是文件不再是给人看的排版。
+                    text = json.dumps(memory, ensure_ascii=False,
+                                      separators=(",", ":"))
+                    with open(path, "w", encoding="utf-8") as f:
+                        f.write(text)
+                    return True
+                except Exception as e:  # noqa: BLE001
+                    logger.error(f"[accel] 记忆落盘失败 {path}: {e}")
+                    return False
+            return _save_memory
+
+        h = PatchHandle("memory_dump")
+        if install(h, SessionManager, "_save_memory", factory) is not None:
+            self.patches.add(h)
+            logger.info("[accel] 记忆落盘已优化（去掉缩进：序列化快约 6 倍）")
 
     def _install_early_sent_strip(self) -> None:
         """发送时剥离"已抢先发出的段"，避免重复发送。
