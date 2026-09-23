@@ -71,13 +71,16 @@ SIMPLE_HINTS = (
 class ThinkingDecision:
     """一次思考判定的结果。"""
 
-    __slots__ = ("enabled", "score", "signals", "effort")
+    __slots__ = ("enabled", "score", "signals", "effort", "scanned_chars")
 
-    def __init__(self, enabled: bool, score: float, signals: list[str], effort: str):
+    def __init__(self, enabled: bool, score: float, signals: list[str], effort: str,
+                 scanned_chars: int = 0):
         self.enabled = enabled
         self.score = score
         self.signals = signals
         self.effort = effort
+        #: 本轮判定的"用户消息"有多少字 —— 用来发现"扫到了不该扫的文本"
+        self.scanned_chars = scanned_chars
 
     def __repr__(self):
         return (f"ThinkingDecision(enabled={self.enabled}, score={self.score:.1f}, "
@@ -174,6 +177,7 @@ class AutoThinkingController:
         score = 0.0
 
         text = self._user_text(request)
+        scanned_chars = len(text)
 
         # 1) 简单寒暄优先（避免"你好"也被送去思考）
         if self._is_simple(text):
@@ -216,7 +220,8 @@ class AutoThinkingController:
             signals.append("超预算")
 
         effort = self._pick_effort(score)
-        decision = ThinkingDecision(enabled, score, signals, effort)
+        decision = ThinkingDecision(enabled, score, signals, effort,
+                                    scanned_chars=scanned_chars)
         self._last_decision[sid] = decision
         self._trim_sessions()
         return decision
@@ -362,9 +367,29 @@ class AutoThinkingController:
 
     @staticmethod
     def _user_text(request: Any) -> str:
-        parts = []
-        for p in getattr(request, "user_prompt", None) or []:
-            parts.append(getattr(p, "content", "") or "")
+        """只取**用户这一轮真正说的话**。
+
+        ★★ 不能把整个 `user_prompt` 当用户消息（2026-09-23 用户实测：每轮都触发思考）
+          `user_prompt` 里混着**别的插件注入的内容**：
+            · 长期记忆-Z：`req.user_prompt.insert(Prompt(记忆, name="alife_memory"))`
+            · 会话合并：  插入时间提示
+            · SubAgent：  `Prompt(task_text, name="task")`
+          把注入的记忆/摘要当用户消息扫 ⇒
+            · 它们**很长** ⇒ 命中「消息长」(+0.5)
+            · 里面常有"分析/计划/步骤"这类词 ⇒ 命中「复杂意图词」(+2.0)
+          ⇒ 2.5 ≥ 阈值 2.0 ⇒ **每轮都开思考**，而且和用户实际说了什么无关。
+
+          框架给真正的 IM 消息打的标记是 `name="message"`
+          （core/message_manager.py:654 `Prompt(message.message_str, name="message")`）。
+        """
+        parts = [getattr(p, "content", "") or ""
+                 for p in (getattr(request, "user_prompt", None) or [])
+                 if getattr(p, "name", None) == "message"]
+        if not parts:
+            # 兜底：万一框架改了标记名，退回"取全部" —— 至少不会静默失效，
+            # 但把长度报出去，日志里能一眼看出异常。
+            parts = [getattr(p, "content", "") or ""
+                     for p in (getattr(request, "user_prompt", None) or [])]
         return "\n".join(parts)
 
     @staticmethod
