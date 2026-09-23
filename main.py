@@ -419,6 +419,27 @@ class AcceleratorPlugin(BasePlugin):
 
         return StreamEngine(force_stream=self.force_stream, emit=emit, on_complete=_remember)
 
+    @staticmethod
+    def _has_sendable(xml_data: str) -> bool:
+        """剥离后的剩余文本里，有没有**真会发出去**的段。
+
+        只是空占位符（<msg/>）就不需要为它补间隔 —— 什么都没发，等它没有意义。
+        """
+        try:
+            from .early_sent import _MSG_CLOSED
+        except Exception:  # noqa: BLE001
+            _MSG_CLOSED = None
+        if not xml_data:
+            return False
+        chunks = _MSG_CLOSED.findall(xml_data) if _MSG_CLOSED else []
+        if not chunks:
+            return False
+        for c in chunks:
+            c = c.strip()
+            if c not in ("<msg/>", "<msg />") and len(c) > len("<msg></msg>"):
+                return True
+        return False
+
     async def _pace(self, ctx: "SendCtx") -> None:
         """发送**前**等够 min/max_message_delay（第一段不等，保证首字快）。
 
@@ -849,6 +870,20 @@ class AcceleratorPlugin(BasePlugin):
                     xml_data = strip_early_sent(xml_data, n)
                     # 记录一下：本条只发剩余部分（纯观测用）
                     plugin._stats["strip_calls"] = plugin._stats.get("strip_calls", 0) + 1
+
+                    # ★★ 交接处也要守住用户设置的"消息间隔"。
+                    #   现在有**两套时钟**：抢发段由我们的 _pace 控制，剩余段由框架
+                    #   自己的循环控制 —— 而框架的循环是"每段之后才 sleep"，
+                    #   所以**它发的第一段是立即发的**，并不知道我们刚刚才发过一段。
+                    #   实测（min=max=0.30）：抢发段之间的间隔是 0.301，
+                    #   但交接到框架第一段时变成 **0.001s** —— 两条消息挤在一起，
+                    #   用户有意设置的节奏被破坏了。
+                    #   所以交出去之前，先把"距上次发送"补足。
+                    if early and plugin._has_sendable(xml_data):
+                        ctx_now = SendCtx(sid_now, event, tag_set)
+                        await plugin._pace(ctx_now)
+                        # 框架立刻就会发第一段 ⇒ 现在这个时刻就等于它的发送时刻
+                        plugin._mark_sent(ctx_now)
                 try:
                     rest = await original(self, event, xml_data, tag_set)
                     # ★ 把抢先发出的结果按【顺序】拼回去：

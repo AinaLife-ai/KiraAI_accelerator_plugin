@@ -178,78 +178,76 @@ cancellationToken = chatBreakSource.Token;
 
 ---
 
-## ⑥ 等待不塞进会话锁 ★ 本轮最值钱的发现
+## ⑥ 消息间隔与"等待在锁里" ★ 需要先纠正我的一个错误表述
 
-**KiraAI 的问题**
+> **⚠️ 更正**：我最初把这条写成"省下 1.1~4.1 秒的浪费"，这个表述是**错的**。
+> 用户指出：`min/max_message_delay` 是**有意为之的显示节奏**
+> —— LLM 已经把回复生成完了，这段是"让 bot 像人一样一条条说"，
+> **根本不是 LLM 的处理成本**。把有意设计的行为算成"可以省掉的浪费"，
+> 是把产品意图当成了性能缺陷。
+
+那真正该问的是什么？是**我的抢先发送有没有把这个有意为之的节奏搞乱**。
+
+**KiraAI 的发送链路**
 
 ```python
 # core/message_manager.py:764-766
-session_lock = self.get_session_lock(sid)
-async with session_lock:                                   # ← 抱着会话锁
+async with session_lock:
     message_results = await self.send_xml_messages(event, text.strip(), tag_set)
 
-# 而 send_xml_messages 的循环里（:930）每段之后无条件 sleep：
+# send_xml_messages 的循环（:930）每段之后 sleep：
 await asyncio.sleep(random.uniform(self.min_message_delay, self.max_message_delay))
 ```
 
-**⇒ 一段 N 段的回复，锁被占 ≈ N × 平均间隔。** 这期间**同一会话的新消息进不来**。
+**★★ 实测：我确实把节奏搞坏了（已修）**
 
-**实测（`tests/measure_lock_hold.py`）**
+抢发段走我的 `_pace`，剩余段走框架自己的循环 ——
+而框架的循环是"**每段之后**才 sleep"，所以**它发的第一段是立即发的**，
+并不知道我们刚发过一段。两套时钟没接上：
 
 ```
-一段 5 段的回复，框架在【会话锁内】占多久：
+修复前（min=max=0.30，一段 5 段的回复）
+  5 段发出时刻: [0.0, 0.301, 0.602, 0.603, 0.903]
+  段间间隔:     [0.301, 0.301, 0.001, 0.301]
+                                ↑ 交接处挤成一条（用户设的间隔被破坏）
 
-  默认 0.8~1.5s：
-    没有抢先发送        5.46s   （框架发 5 段 ⇒ 睡 5 次）
-    有抢先发送（全发完）  1.10s   （框架只发 1 段占位 <msg/>）
-    ⇒ 锁少占 4.36s（80%）
-
-  用户配的 2~5s：
-    没有抢先发送       16.37s
-    有抢先发送          4.08s
-    ⇒ 锁少占 12.30s（75%）
+修复后
+  5 段发出时刻: [0.0, 0.302, 0.602, 0.904, 1.204]
+  段间间隔:     [0.302, 0.301, 0.301, 0.301]
+                                ↑ 守护住了
 ```
 
-**⇒ 我的抢先发送已经把锁占用砍掉 75~80%。** 这是意外收获：抢先发出的段走的是
-流式路径，**不在那个锁里**；框架只需要发剩下的。
+修法：交出剩余段之前，先把"距上次发送"补足；
+且**只在剩余段真会发东西时才补**（只有空占位符就不必等）。
+回归测试：`tests/test_pacing_handoff.py`。
 
-**剩余的那 1 次 sleep（1.10s / 4.08s）是纯浪费**：即使 action 是空占位符
-（`<msg/>`，什么都不发）框架也照睡。
+**顺带修正：锁占用的测量怎么看**
 
-**判定：❌ 剩余部分插件做不安全，建议上游改。**
+同一批测量还得到（`tests/measure_lock_hold.py`）：
 
-插件为什么不能修：那个 `async with` 在 `send_llm_text` **闭包**里，从外面 patch 不到；
-唯一的"歪招"是临时把 `mp.min_message_delay` 改成 0 —— 但 `MessageProcessor` 是**跨会话单例**，
-并发时会把别的会话的节奏一起抹掉，**不能这么干**。
-
-**给上游的补丁建议（二选一）**
-
-```python
-# 方案 A（更干净）：锁只保护"记账"，发送放到锁外
-async with session_lock:
-    pending = ...                      # 取出待发内容
-# 出锁再发、再等
-message_results = await self.send_xml_messages(event, text.strip(), tag_set)
-async with session_lock:
-    ...                                # 只把结果记回去
-
-# 方案 B（最小改动）：对一个字都没发的占位符跳过 sleep
-for action in actions:
-    if isinstance(action, MessageChain):
-        if not action.is_empty():
-            result = await self.send_message_chain(event.sid, action)
-        else:
-            result = KiraIMSentResult(ok=False, err="Blank message list detected")
-        message_results.append(result)
-        ...
-        if not action.is_empty():                       # ← 只加这一行判断
-            await asyncio.sleep(random.uniform(self.min_message_delay, self.max_message_delay))
+```
+默认 0.8~1.5s：5.46s → 1.10s
+配 2~5s：     16.37s → 4.08s
 ```
 
-> 提醒：方案 A 要先确认 `send_xml_messages` 是否被别处依赖"锁内执行"；
-> 方案 B 改动一行、语义清晰（**什么都没发就没必要等**），更稳。
+**但这不该被解读成"省下了 X 秒"** —— 那 X 秒是**有意为之的显示时间**，
+无论锁占不占，用户看到的节奏都一样。抢占发真正改变的是：
+**框架需要"亲自发"的段数从 N 降到 1**，于是**锁被持有的时间**变短了。
 
----
+**那么锁被持有一件事，本身是问题吗？**
+
+值得往下想一层：
+
+- **支持现状**：用户在 bot 一条条说话时再发消息，**先让 bot 把话说完**再处理新的
+  —— 这保证了对话的顺序感；否则旧回复的后半段会和新回复交错，观感更乱。
+  而且 KiraAI 本来就有 `SessionBufferManager` + `max_message_interval` 把连发消息合并，
+  新消息并不会"丢"，只是等这一轮说完。
+- **反对现状**：如果用户连发，下一轮的**生成**要等旧回复**显示完**才开始，
+  端到端等待时间变长。
+
+**⇒ 这是一个产品/设计取舍，不是 bug。** 我不该擅自把它当缺陷。
+真要动，也是明确的选择题：*"bot 还在说话时收到新消息：① 说完再接（现状）
+② 立刻打断并改口（Alife 的做法）③ 边说边在后台开始想新消息"*。
 
 ## ⑦ 隐式工具文档（省 token）
 
@@ -297,8 +295,8 @@ async void OnChatHistoryAdd(ChatMessageContent content) { ... }
 
 | 项 | 收益 | 谁能做 | 我的建议 |
 |---|---|---|---|
-| **会话锁包住节流等待（⑥ 剩余部分）** | 每次多段回复省 1.1~4.1s 的锁占用 | **上游**（改 1~10 行） | ★ **首选，值得提 PR** |
-| **新消息打断旧回答（⑤）** | 连发消息时不必等旧回答说完 | **上游** | ★ 次选，改动面较大 |
+| **新消息打扰旧回答的处理策略（⑤⑥）** | 对话连贯性 vs 响应速度 | **上游 / 产品决策** | ⚠️ **先想清楚要哪种，再动** |
+| ~~锁内等待~~ | ~~省 1.1~4.1s~~ **错误表述**：那是**有意为之的显示时间**，不是浪费 | — | ✗ 撤回 |
 | 工具文档隐式化（⑦） | 每请求省 ~13KB | 需改框架 + 有兼容风险 | ✗ 不做 |
 | 后台上下文压缩（⑧） | TTFT 更短 | 需改框架 + 改变模型所见 | ✗ 不做 |
 | 流内执行工具（③） | native tool_calls 下≈0 | — | ✗ 不值得 |
@@ -332,6 +330,8 @@ async void OnChatHistoryAdd(ChatMessageContent content) { ... }
 
 ## 一句话回答
 
-> **Alife 没有"我们还没做到的黑科技"。它快在架构取向——流式一等公民、等待不塞进锁。**
-> **这两条里，流式我补上了；锁的问题我顺带解决了 80%，剩下的 1 次空等要上游改一行。**
+> **Alife 没有"我们还没做到的黑科技"。它快在架构取向——流式一等公民。**
+> **这条我补上了。至于消息间隔：那是你有意为之的显示节奏，不是成本 ——
+> 我一度把它当成浪费来算，是错的。真正的收获是发现我的抢发把这个节奏搞坏了，
+> 已经修好。**
 > **其余几条要么在 KiraAI 的协议下收益为零，要么得拿兼容性/模型所见去换——不建议做。**
