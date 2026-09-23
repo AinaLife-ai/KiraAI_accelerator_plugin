@@ -43,6 +43,8 @@ run "插件兼容性 compat"       tests/test_compat.py
 run "装载与还原 load"         tests/test_load.py
 run "★会话路由不串"           tests/test_session_routing.py
 run "★消息间隔"               tests/test_message_pacing.py
+run "★客户端复用缓存"         tests/test_client_cache.py
+run "★接管点精确还原"         tests/test_patch_restore.py
 run "前端URL前缀守卫"         tests/test_frontend_api.py
 run "★真框架API集成"          tests/test_real_api.py
 run "★代理类型透传"           tests/test_proxy_isinstance.py

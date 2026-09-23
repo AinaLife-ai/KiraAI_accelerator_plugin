@@ -164,6 +164,43 @@ async def main():
     check("按 sid 存响应", p3._resp_by_sid.get("SA") is not None
           and p3._resp_by_sid.get("SB") is None)
 
+    print("\n7) ★ 按会话存的表必须有上限（长期运行不能越用越大）")
+    # 直接调私有方法，不走真实发送 ⇒ 不产生等待，跑得很快
+    p7 = main_mod.AcceleratorPlugin(ctx=None, cfg={})
+    p7._resp_by_sid = {}
+    p7._last_seg_ts = {}
+    p7.early_send = True
+    p7.thinking_enabled = True
+    p7._frame_delay = lambda: (0.001, 0.002)      # 强制启用节奏记录
+
+    N = 1500
+    for i in range(N):
+        sid = "s%d" % i
+        ctx = main_mod.SendCtx(sid, None, None)
+        p7._mark_sent(ctx)
+        p7._resp_by_sid[sid] = object()
+        if len(p7._resp_by_sid) > 32:
+            p7._resp_by_sid.clear()
+            p7._resp_by_sid[sid] = object()
+
+    check("★ 节奏时间戳表有上限（%d 个会话后仍受控）" % N,
+          len(p7._last_seg_ts) <= main_mod.MAX_PACING_SIDS,
+          f"{len(p7._last_seg_ts)} 条，上限 {main_mod.MAX_PACING_SIDS}")
+    check("★ 待剥离响应表有上限", len(p7._resp_by_sid) <= 32,
+          f"{len(p7._resp_by_sid)} 条")
+
+    # 自动思考那一侧：decide 会触发 _trim_sessions
+    from core.provider.llm_model import LLMRequest as _LR
+    tk = p7.thinking
+    for i in range(N):
+        r = _LR(messages=[{"role": "user", "content": "x"}])
+        tk.decide("t%d" % i, r)
+    sizes = {k: len(getattr(tk, k)) for k in
+             ("_last_decision", "_ctx_warmup", "_last_turn_tool", "_ctx_long")}
+    check("★ 自动思考的 per-sid 表受 max_sessions 约束",
+          all(v <= tk.max_sessions for v in sizes.values()),
+          f"{sizes}（上限 {tk.max_sessions}）")
+
     print("\n" + "=" * 58)
     print(f"通过 {len(PASS)}  失败 {len(FAIL)}")
     if FAIL:

@@ -40,6 +40,9 @@ from .auto_thinking import (
 
 PLUGIN_ID = "kira_accelerator"
 
+#: "上次发送时刻"这张表最多记多少个会话（超出整体清空，防长期运行内存累积）
+MAX_PACING_SIDS = 512
+
 
 class SendCtx:
     """一轮请求的发送上下文（会话 / 事件 / 标签集）。
@@ -286,12 +289,23 @@ class AcceleratorPlugin(BasePlugin):
 
         def factory(original):
             def make(self):
-                key = (self.model.provider_config.get("base_url", ""),
-                       self.model.provider_config.get("api_key", ""),
-                       id(self.model.provider_config))
+                # ★ 键必须覆盖 _build_client 真正用到的一切：
+                #   api_key / base_url / default_headers。
+                #
+                #   以前键里有 `id(self.model.provider_config)`：既不可靠
+                #   （id 会被解释器复用），又**漏了 headers** ——
+                #   用户改了提供商的自定义 header 后，base_url 与 api_key 没变就会
+                #   命中旧客户端，新 header 一直不生效（要等插件重载才恢复）。
+                pc = self.model.provider_config or {}
+                adv = pc.get("section_advanced") or {}
+                hdr = adv.get("headers") if isinstance(adv, dict) else None
+                key = (pc.get("base_url", ""), pc.get("api_key", ""),
+                       repr(sorted(hdr.items())) if isinstance(hdr, dict) else "")
                 c = cache.get(key)
                 if c is None:
                     c = original(self)
+                    if len(cache) > 32:          # 防着配置反复变更把缓存撑大
+                        cache.clear()
                     cache[key] = c
                 return c
             return make
@@ -408,6 +422,11 @@ class AcceleratorPlugin(BasePlugin):
     def _mark_sent(self, ctx: "SendCtx") -> None:
         """记下"刚刚发出"的时刻（下一段据此计算还要等多久）。"""
         if self._frame_delay()[1] > 0:
+            # ★ 上限：长期运行的机器人会积累很多会话，这条映射不能无限长。
+            #   超了就整体清掉重建 —— 代价只是"下一次发送不等待"，
+            #   不会出错（比留着一堆死会话的条目更划算）。
+            if len(self._last_seg_ts) > MAX_PACING_SIDS:
+                self._last_seg_ts.clear()
             self._last_seg_ts[ctx.sid] = time.monotonic()
 
     async def _emit_segment(self, seg: str, ctx: "SendCtx" = None) -> None:
@@ -732,11 +751,14 @@ class AcceleratorPlugin(BasePlugin):
 
         def factory(original):
             async def send_xml_messages(self, event, xml_data, tag_set):
-                # ★ 按 sid 取"本轮响应"：并发会话下用实例变量会拿错响应，
-                #   要么重复发送、要么把没发过的内容丢掉。
+                # ★ 按 sid 取"本轮响应"。
+                #   ⚠️ 刻意**不**回退到 self._current_resp：那是实例级的，
+                #   并发会话下可能是**别的会话**的响应，拿它去剥离就会
+                #   把本会话还没发过的内容剪掉（丢消息）。
+                #   查不到就按"没抢发过"处理（n=0，全部交给框架发）——
+                #   最坏是重复一条，而不是丢内容。
                 sid_now = getattr(event, "sid", None)
-                resp = (plugin._resp_by_sid.get(sid_now) if sid_now else None) \
-                    or getattr(plugin, "_current_resp", None)
+                resp = plugin._resp_by_sid.get(sid_now) if sid_now else None
                 n = early_sent_count(resp) if resp is not None else 0
                 if n > 0:
                     xml_data = strip_early_sent(xml_data, n)
