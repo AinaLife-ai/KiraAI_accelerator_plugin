@@ -281,9 +281,10 @@ async def main() -> None:
     await plugin.initialize()
 
     check("get_model_client 已被包装", PM.get_model_client is not orig_get)
-    # 记忆落盘现在默认优化（去掉缩进：序列化快约 6 倍，解析结果不变）
-    check("_save_memory 已被优化（紧凑落盘）", SM._save_memory is not orig_save)
-    check("  且带上了接管标记", getattr(SM._save_memory, "__kira_accel__", False) is True)
+    # ★ compact_memory_dump 是「待验证」功能，代码里锁死 ——
+    #   即使配置写成 true 也不生效（面板上该开关也是置灰的）。
+    check("★ 待验证功能被锁死：配置 true 也不接管 _save_memory",
+          SM._save_memory is orig_save)
     check("_build_client 已被包装", CC._build_client is not orig_build)
     health = {h["name"]: h for h in plugin.patches.health()}
     check("接管点 stream_engine 生效", health.get("stream_engine", {}).get("active"))
@@ -303,17 +304,9 @@ async def main() -> None:
     check("其中包含 OpenAI 兼容系注入点",
           bool(th_points.get("auto_thinking:openai")), str(sorted(th_points)))
 
-    print("\n1b) 开关关掉时不该装（配置真的生效）")
+    print("\n1b) 锁死状态与热重载")
     await plugin.terminate()
-    check("terminate 已还原 _save_memory", SM._save_memory is orig_save)
-    Cfg2 = dict(Cfg)
-    Cfg2["section_takeover"] = {"reuse_http_client": True, "compact_memory_dump": False}
-    plugin2 = m_main.AcceleratorPlugin(ctx, Cfg2)
-    await plugin2.initialize()
-    check("★ compact_memory_dump=False ⇒ 记忆落盘保持框架原样",
-          SM._save_memory is orig_save, "未被接管")
-    await plugin2.terminate()
-
+    check("terminate 后 _save_memory 仍是框架原实现", SM._save_memory is orig_save)
     plugin = m_main.AcceleratorPlugin(ctx, Cfg)
     await plugin.initialize()          # 恢复主流程用的实例
 

@@ -89,7 +89,15 @@ class AcceleratorPlugin(BasePlugin):
 
         self.takeover_build_client = bool(c_tak.get("reuse_http_client", True))
         # 记忆落盘去掉缩进（纯格式，解析结果不变）
-        self.takeover_memory_dump = bool(c_tak.get("compact_memory_dump", True))
+        # ⚠️ 待验证功能：**代码里锁死**，配置写成 true 也不生效。
+        #   为什么锁：实测收益只在多群大规模时才明显（单会话约 0.7ms），
+        #   而且它发生在回复发出【之后】、与事件循环的交互尚未充分验证。
+        #   等验证清楚了再放开（面板上这个开关同样是置灰的）。
+        #   想临时验证：把下面这行改成读配置即可。
+        self.takeover_memory_dump = False
+        if bool(c_tak.get("compact_memory_dump", False)):
+            logger.warning("[accel] compact_memory_dump 已配置为开，"
+                           "但该功能仍在待验证状态，本次不启用")
 
         # L4
         self.force_stream = bool(c_str.get("force_stream", True))
@@ -732,19 +740,27 @@ class AcceleratorPlugin(BasePlugin):
     def _install_memory_dump(self) -> None:
         """让记忆落盘去掉 `indent=4`（只改格式，不改内容）。
 
-        为什么值得动（实测，2026-09-23 审计）：
+        实测（2026-09-23 审计）——**先说结论：默认关**。
+          它发生在 agent loop 结束【之后】（回复已经发出），所以**不拖慢回复**，
+          只占事件循环、影响其它并发会话与下一轮。而且真实规模下收益很小：
+              1 会话 × 50 条   0.9ms → 0.2ms   （约省 0.7ms，无感）
+              3 会话 × 100 条  2.9ms → 0.7ms   （约省 2ms）
+              10 会话 × 300 条 22.3ms → 4.2ms  （约省 18ms）
+              50 会话 × 300 条 126ms → 23ms    （约省 100ms，这种规模才值得开）
+          所以默认**关**（保住 chat_memory.json 的可读性），
+          只有多群大规模部署才建议打开。
+
+        它的成本（框架侧的现状）：
           `SessionManager.update_memory` 每轮都会把**全部会话**的记忆重新
           `json.dumps` 再整文件重写，而且是**同步**执行（会阻塞事件循环）。
-          `indent=4` 一个人就占了大头：
+          缩进在其中占大头：50 会话 × 400 条时 165.8ms vs 26.6ms（6.2 倍）。
 
-              会话数×条数      带缩进      不带缩进     文件大小
-              50 × 400        165.8 ms     26.6 ms     3033K → 1077K
-              20 × 200         57.8 ms            —      463K
-              200 × 200       375.9 ms            —     4627K
-
-          去掉缩进 ⇒ **序列化快 6.2 倍、文件小 3 倍**，而 `json.load` 解析出来的
-          对象**完全一样** ⇒ 对任何读这个文件的代码（框架自己的加载、WebUI、
-          其它插件）都零影响。
+          去掉缩进后 `json.load` 解析出来的对象**完全一样** ⇒ 对任何读这个文件的
+          代码都零影响。已实测确认：
+            · 框架自己的 `_load_memory` 读紧凑文件正常
+            · WebUI 的会话历史走 `get_existing_memory_snapshot`（**内存快照**，
+              根本不读文件）—— 取回的 50 条历史与原始数据逐字段相同
+            · 新旧两种格式读回来的对象深度相等
 
         ★ 为什么**不**顺便做这两件（收益更大但会破坏兼容）：
           1) 改成异步/丢线程池 —— `update_memory` 是被**不带 await** 调用的

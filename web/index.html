@@ -53,6 +53,12 @@ body{
 .wp-layer.on{opacity:1}
 /* 跟随鼠标的微位移：由 JS 写 inline transform（幅度约 ±16px，几乎察觉不到但"活"了） */
 .wp-layer{backface-visibility:hidden}
+/* 待验证功能：置灰 + 徽标 */
+.sw.locked{opacity:.45;cursor:not-allowed;filter:grayscale(1)}
+.sw.locked input{cursor:not-allowed}
+.badge-pending{display:inline-block;margin-left:8px;padding:1px 7px;border-radius:999px;
+  font-size:11px;letter-spacing:.4px;color:#ffd9a8;background:rgba(255,170,60,.16);
+  border:1px solid rgba(255,170,60,.35);vertical-align:middle}
 /* 遮罩：既保证 UI 可读，又让壁纸透出来（不是把图盖死） */
 .wp-scrim{position:absolute;inset:0;
   background:
@@ -519,6 +525,16 @@ function txtOf(field, kind){
 /* ═══ 状态 ═══ */
 let SCHEMA = null, SAVED = {}, DRAFT = {}, dirty = false;
 const SECTIONS = [];
+
+/* ⚠️ 待验证功能：界面上**置灰、点不动**，保存时还会被强制回默认值。
+   为什么放在这里而不是 schema：框架的 create_field_from_schema 只认
+   type/name/hint/default/options/locales，自定义键（disabled…）会被丢掉，
+   面板根本收不到。所以这份清单由面板自己维护。 */
+const PENDING_VERIFICATION = {
+  "section_takeover.compact_memory_dump":
+    "待验证：实测收益只在多群大规模时才明显（单会话约 0.7ms、50 会话约 100ms），"
+    + "且它与事件循环的交互尚未充分验证，故暂不开放。",
+};
 // 当前停留的页签（保存后 loadConfig 会重渲染整个表单，
 // 不记住就会把用户弹回第一个页签「说明」——观感像页面被刷新了）
 let ACTIVE_SECTION = null;
@@ -591,15 +607,18 @@ function renderHealth(d){
 
 /* ═══ 渲染：配置表单 ═══ */
 function makeControl(field, key, value, onChange){
+  const pending = PENDING_VERIFICATION[key];
   const type = field.type;
   const box = el("div", "f-ctl");
-  const on = v => { DRAFT[key] = v; onChange(); };
+  // 待验证字段：一律锁掉（下面各分支统一按 pending 处理）
+  const on = v => { if (pending) return; DRAFT[key] = v; onChange(); };
 
   if (type === "switch"){
-    const w = el("label", "sw");
+    const w = el("label", "sw" + (pending ? " locked" : ""));
     const inp = el("input"); inp.type = "checkbox";
     inp.checked = !!value;
-    inp.addEventListener("change", ()=> on(inp.checked));
+    if (pending){ inp.disabled = true; }        // ★ 点不动
+    else inp.addEventListener("change", ()=> on(inp.checked));
     w.appendChild(inp); w.appendChild(el("span", "rail"));
     box.appendChild(w);
 
@@ -745,6 +764,9 @@ function buildForm(){
         head.appendChild(ctl.firstChild);
       }
       row.appendChild(head);
+      if (PENDING_VERIFICATION[full]){
+        head.appendChild(el("span", "badge-pending", "待验证"));
+      }
       const hint = txtOf(f, "hint");
       if (hint) row.appendChild(el("div", "f-hint", hint));
 
@@ -850,6 +872,14 @@ async function saveConfig(){
   const msg = $("#msg"), btn = $("#save");
   btn.disabled = true; msg.className = "status";
   msg.innerHTML = icon("rotate-cw") + "<span>保存并热重载中…</span>";
+
+  // ★ 待验证字段一律按 schema 默认值提交 —— 即使有人手改了配置文件、
+  //   或绕过面板直接调 API，也不会被启用。
+  Object.keys(PENDING_VERIFICATION).forEach(k => {
+    const [sk, fk] = k.split(".");
+    const f = (SCHEMA[sk] && SCHEMA[sk].fields) ? SCHEMA[sk].fields[fk] : null;
+    if (f && "default" in f) DRAFT[k] = f.default;
+  });
 
   // 按 section 重新组装成嵌套结构
   const payload = {};
