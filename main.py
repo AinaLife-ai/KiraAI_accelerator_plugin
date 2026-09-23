@@ -158,8 +158,6 @@ class AcceleratorPlugin(BasePlugin):
         #   （响应标记丢失时的兜底；存原文而不是只存个数，
         #     这样兜底时也能按内容剥离，对文本被改写同样稳健）
         self._sent_ledger: dict[str, list] = {}
-        # ★ 记下"这一轮的响应"被发送层消费过没有 —— 用来发现"同一轮被发两次"
-        self._sent_once: set[str] = set()
         self._proxy_cache: dict[tuple, LLMClientProxy] = {}
         self._stats = {
             "turns": 0, "steps": 0,
@@ -221,14 +219,25 @@ class AcceleratorPlugin(BasePlugin):
             # 把"本轮有没有用工具"记为"上一轮"，供下一轮判定使用
             self.thinking.commit_turn(sid)
             d = self.thinking.last_decision(sid)
-            # ★ 文案要让"这不是全局开关"看得明白：
-            #   以前自动思考没开时也打「思考=关」⇒ 用户（尤其自己已在提供商
-            #   那边开了思考的人）会以为插件把思考关掉了，看着吓人。
-            #   现在：没启用的功能就说「未启用」，启用后不打光秃秃的「关」，
-            #   而是把得分带上，明确这是**本轮判定结果**。
+            # ★★ 自动思考**没开**时，日志里**完全不出现**"思考"这个字段。
+            #
+            #   为什么不是"换个委婉的说法"：用户**可能自己在提供商那边开了思考**
+            #   （那就与我们无关）。日志里出现"思考=未启用"会让人以为
+            #   **插件把思考关掉了** —— 既吓人又误导。
+            #   所以：功能没开 ⇒ 这个字段**根本不出现**，不留任何能误读的字样。
+            #
+            #   启用之后才显示，而且不写光秃秃的"关"，带上得分与信号，
+            #   明确这是**本轮判定结果**、不是全局开关。
             if not self.thinking_enabled:
-                think_txt = "未启用"
-            elif d is None:
+                logger.info(
+                    "[accel] 一轮结束 sid=%s steps=%d 抢先发=%d 首段=%.2fs",
+                    sid, len(getattr(final_result, "step_results", []) or []),
+                    self._stats["early_sent"],
+                    self._stats["first_seg_s"] or 0.0,
+                )
+                return
+
+            if d is None:
                 think_txt = "—"
             elif d.enabled:
                 think_txt = "开(%s,%s)" % (d.effort, "/".join(d.signals))
@@ -1005,19 +1014,14 @@ class AcceleratorPlugin(BasePlugin):
                     # 标记在但段原文不在（理论上不该发生）⇒ 用台账补上原文
                     segs = list(ledger)
 
-                # ★ 结构性异常检测：框架正常只把一轮交给 send_xml_messages **一次**。
-                #   真被调第二次时标记已消费，n=0 ⇒ 会把已发过的段**再发一遍**。
-                #   这不该发生，但发生了必须留下明确线索（原来会静默重复）。
-                if sid_now:
-                    if sid_now in plugin._sent_once:
-                        logger.error(
-                            "[accel] 同一轮（%s）被再次交给发送层 —— "
-                            "已抢发的内容可能被重复发送。请把这条日志反馈给插件作者。",
-                            sid_now,
-                        )
-                    plugin._sent_once.add(sid_now)
-                    if len(plugin._sent_once) > 64:
-                        plugin._sent_once.clear()
+                # ⚠️ 这里曾经有个"同一 sid 被交给发送层两次"的检测 —— **已删除，它误报**。
+                #   为什么误报：sid 是**会话** ID，同一会话的**下一轮**不会变，
+                #   而记录集从不清空 ⇒ 从第二条消息起每条都命中"重复"。
+                #   而框架的多步 agent loop 本来就会在一轮里多次调用本函数（每步一次），
+                #   所以它必然狂报。用户实测："每句都报重复发送，但实际没有重复"。
+                #   ⇒ 误报的是检测器，发送逻辑是对的。
+                #   现在改成**按内容核对**（剥离之后那段）：只有"剥离完仍然整段
+                #   包含已抢发内容"才是真的会重复。
 
                 early = plugin._early_results.pop(sid_now, []) if sid_now else []
                 if n > 0:
@@ -1026,6 +1030,23 @@ class AcceleratorPlugin(BasePlugin):
                     #   （补 <msg> / 拆分消息块 / 合并块 / 转义实体），
                     #   按序号切会少切（重复）或多切（丢内容）。
                     xml_data = strip_early_sent_smart(xml_data, n, segs)
+
+                    # ★★ 事后核对（**唯一有意义的重复判据**）：
+                    #   剥离之后，剩余文本里若**仍然整段包含**某个已抢发段的内容，
+                    #   那才是真的会把同一段再发一次 —— 这时才报。
+                    #   与"同一 sid 出现两次"那种结构判据不同，这个只在真有重叠时触发。
+                    try:
+                        from .early_sent import _norm_seg
+                        rest_norm = _norm_seg(xml_data)
+                        for _s in segs:
+                            _piece = _norm_seg(_s)
+                            if _piece and _piece in rest_norm:
+                                logger.warning(
+                                    "[accel] 剥离后剩余文本里仍含已抢发的段"
+                                    "（这一段可能被重复发送）：%s", _piece[:48])
+                                break
+                    except Exception:  # noqa: BLE001
+                        logger.exception("[accel] 重复发送核对失败（不影响发送）")
                     # 记录一下：本条只发剩余部分（纯观测用）
                     plugin._stats["strip_calls"] = plugin._stats.get("strip_calls", 0) + 1
 

@@ -89,7 +89,6 @@ plugin._resp_by_sid = {}
 plugin._early_results = {}
 plugin._last_seg_ts = {}
 plugin._sent_ledger = {}
-plugin._sent_once = set()
 
 mp = FakeMP(plugin)
 
@@ -166,7 +165,6 @@ plugin3._resp_by_sid = {}
 plugin3._early_results = {}
 plugin3._last_seg_ts = {}
 plugin3._sent_ledger = {}
-plugin3._sent_once = set()
 mp3 = FakeMP(plugin3)
 
 

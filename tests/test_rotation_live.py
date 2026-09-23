@@ -69,6 +69,7 @@ hook = """
   wpTick, fxStrips, wpOther, playSplash, finishSplash, buildWordmark,
   MOTTOES, WP_EFFECTS, WM_FX, MOTTO_FX, WM_FX_FN, MOTTO_FX_FN,
   get _wpLastFx(){return _wpLastFx},
+  get WP_DUR(){return WP_DUR},
 };
 """
 main = main + "\n" + hook
@@ -193,7 +194,9 @@ if (!H) { console.log('HOOK_MISSING'); process.exit(4); }
     };
   }
   catch (e) { transitionError = e.constructor.name + ': ' + e.message; }
-  await new Promise(r => setTimeout(r, 3400));   // 一次切换 2.62s，留足余量
+  // ★ 等待必须**跟着 WP_DUR 走**：WP_DUR 一改（2200 → 3200），
+  //   固定等 3.4s 就不够了 ⇒ 读出来等。切换总时长 = WP_DUR + 420 收尾。
+  await new Promise(r => setTimeout(r, (H.WP_DUR || 3200) + 900));
   out.transitionError = transitionError;
   out.justAfterCall = justAfterCall;
   out.consoleErrors = (global.__errs || []).slice();
