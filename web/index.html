@@ -344,12 +344,44 @@ select{appearance:none;background-image:none;cursor:pointer}
   <div class="wp-rim" id="wpRim"></div>
 </div>
 
-<!-- 墨渗特效用的"有机边缘"扰动（SVG 湍流 + 位移贴图） -->
+<!-- ══ 墨渗：像墨晕在宣纸上散开 ══
+     原理——「分形噪声 + 阈值扩散」：
+       feTurbulence ×2      → 两层不同频率/种子的分形噪声相加 ⇒ 粗纹 + 细丝
+       feColorMatrix        → 取亮度做 alpha，并叠加一个**可动画的偏置 bias**
+       feComponentTransfer  → discrete 三级量化（0 / 0.55 / 1）⇒ 浓淡层次
+
+     ★ 关键：`discrete` 的**断点固定在 (i+1)/n**（三级时是 1/3、2/3），
+       tableValues 只决定"输出成什么值"，**不能用来移动阈值**。
+       所以阈值是靠 `feColorMatrix` 的 **bias** 来动的：
+
+         bias = -0.45 ⇒ alpha 中心 ≈0.05 ⇒ 几乎没有像素过阈 ⇒ **一粒墨**
+         bias 逐渐升 ⇒ 噪声里较高的斑块先过阈 ⇒ **随机纹路往外散开**
+         bias = +0.55 ⇒ alpha 中心 ≈1.00 ⇒ 全部过阈      ⇒ **新图铺满**
+
+       （踩过的坑：上一版把 tableValues 从 0.92 调到 -0.06，以为在"降阈值"，
+         实际离散断点不动、调的是输出值 ⇒ v=0.92 时输入<0.5 的像素输出 0.92
+         = 几乎不透明 ⇒ **开场就满屏墨**，极性正好反了。）-->
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
-  <filter id="wpInk" x="-20%" y="-20%" width="140%" height="140%">
-    <feTurbulence type="fractalNoise" baseFrequency="0.013" numOctaves="3" seed="9" result="n"/>
-    <feDisplacementMap in="SourceGraphic" in2="n" scale="46"
-                       xChannelSelector="R" yChannelSelector="G"/>
+  <mask id="wpInkMask" maskUnits="objectBoundingBox"
+        x="0" y="0" width="1" height="1">
+    <rect x="0" y="0" width="100%" height="100%"
+          fill="#fff" filter="url(#wpInkF)"/>
+  </mask>
+  <filter id="wpInkF" x="0" y="0" width="100%" height="100%"
+          color-interpolation-filters="sRGB">
+    <feTurbulence id="wpInkN1" type="fractalNoise" baseFrequency="0.009 0.011"
+                  numOctaves="4" seed="7" result="n1"/>
+    <feTurbulence id="wpInkN2" type="fractalNoise" baseFrequency="0.023 0.019"
+                  numOctaves="3" seed="23" result="n2"/>
+    <feComposite in="n1" in2="n2" operator="arithmetic"
+                 k1="0" k2="0.62" k3="0.38" k4="0" result="n"/>
+    <!-- ★ 这一行的最后一个系数（bias）由 JS 逐帧改写 ⇒ 墨量增长 -->
+    <feColorMatrix id="wpInkCM" in="n" type="matrix"
+      values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0.55 0.35 0.10 0 -0.45"
+      result="a"/>
+    <feComponentTransfer in="a">
+      <feFuncA type="discrete" tableValues="0 0.55 1"/>
+    </feComponentTransfer>
   </filter>
 </svg>
 
@@ -369,6 +401,39 @@ select{appearance:none;background-image:none;cursor:pointer}
   </div>
   <div class="sp-hint">点击任意处跳过</div>
 </div>
+<script>
+/* ★★ 开屏必须**立刻**出现，不能等网络。
+   踩过的坑（用户实测："没有显示开屏动画"）：
+     原来 playSplash() 写在 initWallpaper 里、排在**两个 await fetch() 之后**
+     （配置 + 壁纸列表）。等它们回来时主内容早就渲染完了，
+     开屏盖上去只是"闪一下"，慢一点或 fetch 失败就基本看不到。
+
+   现在分两步，各管一件事：
+     ① **这里**（解析到开屏元素的正下方、同步执行）立刻加 .show
+        ⇒ 浏览器**第一帧**就有开屏，体感像原生启动页；
+     ② 页面末尾的 main 脚本拿到数据后再**填内容**
+        （随机壁纸 / 名称随机特效 / 随机箴言），并负责收尾。
+
+   为什么放在元素正下方而不是 <head>：<head> 解析时 body 还不存在，
+   拿不到 #splash，只能挂 DOMContentLoaded —— 多一层时序不确定性。
+   放在元素之后是同步的，确定无疑。 */
+window.__accelSplash = true;
+(function () {
+  var sp = document.getElementById("splash");
+  if (sp && window.__accelSplash) sp.classList.add("show");
+  /* ★ 硬兜底：万一主脚本整个没跑起来（语法错误、被拦、执行到一半抛异常），
+     开屏自己也得会消失 —— 它绝不能在没人负责收尾时永远挡着页面。
+     主脚本正常运行时会在 finishSplash 里 clearTimeout 掉它。 */
+  window.__accelSplashFailsafe = setTimeout(function () {
+    var e = document.getElementById("splash");
+    if (e) {
+      e.classList.remove("show", "out");
+      e.style.opacity = "";
+    }
+    window.__accelSplash = false;
+  }, 8000);
+})();
+</script>
 
 <div class="aurora"><i class="a1"></i><i class="a2"></i><i class="a3"></i></div>
 <div class="grid"></div>
@@ -1029,7 +1094,9 @@ let wpCur = "wp-a", wpBusy = false;   // wpBusy = 切换互斥锁，结束必须
 let baseX = 0, baseY = 0;       // 自动漂移位移
 let aimX = 0, aimY = 0;         // 鼠标/触摸的目标位移
 let curX = 0, curY = 0;         // 鼠标位移的缓动当前值
-const WP_DUR = 2200;            // 过渡时长（旧版 1.8s 太快，人还没注意到就结束了）
+const WP_DUR = 3200;            // 过渡时长。
+                          // 2200 时用户反馈"太快、还没看清就过去了"；
+                          // 3200 让"覆盖/吃掉"的过程看得清（可以再调）。
 
 function wpUrl(name){ return PAPI + "/wallpapers/" + encodeURIComponent(name); }
 
@@ -1148,11 +1215,22 @@ function wpNormalize(id){
   const im = wpImg(id);
   const bg = im.style.backgroundImage, sz = im.style.backgroundSize,
         pos = im.style.backgroundPosition;
-  im.style.cssText = "";
-  if (bg) im.style.backgroundImage = bg;      // 背景保留（要显示的那张）
+  im.style.cssText = "";                      // 清掉特效残留（clip-path/filter/transform/opacity）
+  if (bg) im.style.backgroundImage = bg;      // 背景保留（下一次轮换还要用）
   im.style.backgroundSize = sz || "cover";
   im.style.backgroundPosition = pos || "center";
-  im.style.opacity = "1";                     // 明确可见
+  /* ★★ 这里**绝不能**写 inline opacity！
+     可见性只能由 `.wp-stage.on` 这一个来源决定（CSS: `.wp-stage.on .wp-img{opacity:1}`）。
+
+     踩过的坑（用户实测："自动切换时重叠、旧图闪现"）：
+       原来这里写了 `im.style.opacity = "1"` 想让画面"确保可见"，
+       但 inline 样式**压过 CSS 的 opacity:0** ⇒ **旧层永远不透明**。
+       而 DOM 里 wp-b 排在 wp-a 之后 ⇒ wp-b 永远画在 wp-a 上面，于是：
+         · 新层是 wp-b  ⇒ 在最上层，正常
+         · 新层是 wp-a  ⇒ **被还留着的 wp-b（旧图）盖住，看到的是旧图** ✗
+       症状就是"切了像没切 / 旧图闪现"。
+
+     正确做法：`wpNormalize` 只负责"清干净"，可见性交给 settle 里的 `.on`。 */
 }
 
 /* 把新图装进目标层（先彻底复位，避免上一轮残留） */
@@ -1200,7 +1278,9 @@ function fxIris(to, from, rim){
                {opacity:1, offset:.62},{opacity:0, transform:"scale(2.5)"}],
          {duration:WP_DUR*1.02, easing:"cubic-bezier(.32,0,.68,1)"});
   }
-  anim(from, [{transform:"scale(1)", opacity:1},{transform:"scale(1.07)", opacity:0}],
+  // 旧图"被吃掉"：轻推近 + 模糊 + 降饱和（不是单纯淡出）
+  anim(from, [{opacity:1, transform:"scale(1)", filter:"blur(0px) saturate(1)"},
+              {opacity:0, transform:"scale(1.07)", filter:"blur(7px) saturate(.55)"}],
        {easing:"cubic-bezier(.5,0,.75,0)"});
 }
 
@@ -1221,7 +1301,10 @@ function fxWipe(to, from, rim){
                {opacity:1, offset:.86},{opacity:0, transform:`translateX(${x1})`}],
          {easing:"cubic-bezier(.66,0,.24,1)"});
   }
-  anim(from, [{opacity:1},{opacity:0}]);
+  // 旧图"被吃掉"
+  anim(from, [{opacity:1, transform:"scale(1)", filter:"blur(0px) saturate(1)"},
+              {opacity:0, transform:"scale(1.05)", filter:"blur(7px) saturate(.55)"}],
+       {easing:"cubic-bezier(.4,0,.6,1)"});
 }
 
 /* ── 条带揭示：百叶（横向）／中开（纵向） ──
@@ -1250,12 +1333,17 @@ function fxStrips(to, from, rim, vertical, fromCentre){
     made.push(s);
     const dist = fromCentre ? Math.abs(i - (N - 1) / 2) : i;
     s.animate([{clipPath:fromClip},{clipPath:toClip}], {
-      duration: WP_DUR * .60, delay: dist * (WP_DUR * .34 / N),
-      easing: "cubic-bezier(.2,.9,.25,1)", fill: "forwards"});
+      /* ★ 放慢 + 错峰：原来 60% 时长 + 34% 的延迟范围 ⇒ 条带挤在一起出来，
+         像"一下刷过去"。现在铺满整个时长，能看清是**一条条**展开的。 */
+      duration: WP_DUR * .72, delay: dist * (WP_DUR * .55 / N),
+      easing: "cubic-bezier(.3,.7,.3,1)", fill: "forwards"});
   }
   anim(to, [{transform:"scale(1.09)"},{transform:"scale(1)"}],
        {easing:"cubic-bezier(.16,1,.3,1)"});
-  anim(from, [{transform:"scale(1)", opacity:1},{transform:"scale(1.05)", opacity:0}]);
+  // 旧图"被吃掉"
+  anim(from, [{opacity:1, transform:"scale(1)", filter:"blur(0px) saturate(1)"},
+              {opacity:0, transform:"scale(1.06)", filter:"blur(8px) saturate(.5)"}],
+       {easing:"cubic-bezier(.4,0,.6,1)"});
   return () => made.forEach(s => s.remove());
 }
 
@@ -1271,23 +1359,80 @@ function fxZoom(to, from){
 
 /* ── 墨渗：圆 + SVG 湍流扰动 ⇒ 边缘有机不规则（比纯圆更像墨） ── */
 function fxInk(to, from, rim){
-  const cx = 24 + Math.random() * 52, cy = 24 + Math.random() * 52;
-  const dur = WP_DUR * 1.12;
-  const a = `circle(0% at ${cx}% ${cy}%)`, b = `circle(116% at ${cx}% ${cy}%)`;
-  to.style.clipPath = a;
-  to.style.filter = "url(#wpInk)";
-  anim(to, [{clipPath:a},{clipPath:b}],
-       {duration:dur, easing:"cubic-bezier(.34,0,.66,1)"});
-  anim(to, [{transform:"scale(1.1)"},{transform:"scale(1)"}], {duration:dur});
+  /* 墨渗：像墨滴落在宣纸上，**随机的纹路**往外散开（不是圆）。
+
+     遮罩的 alpha 来自分形噪声，我们逐帧抬高它的**偏置**：
+       bias 低 ⇒ 只有噪声最高的零星几点透出（一滴墨）
+       bias 升 ⇒ 斑块连成片、丝缕散开（墨晕）
+       bias 高 ⇒ 整张透出（新图铺满）
+     不透明区域的形状是**噪声的形状** ⇒ 不规则、有丝缕，不是圆。
+
+     ★ 不能用 CSS transition：feColorMatrix 的 values 不是可插值的 CSS 属性，
+       所以用 rAF 手推。 */
+  const dur = Math.round(WP_DUR * 1.15);
+  const cx = 26 + Math.random() * 48, cy = 26 + Math.random() * 48;
+
+  const cm = document.getElementById("wpInkCM");
+  const n1 = document.getElementById("wpInkN1");
+  const n2 = document.getElementById("wpInkN2");
+
+  // 每次换种子 ⇒ 纹路不重复（用户要的"很随机"）
+  if (n1) n1.setAttribute("seed", String(1 + Math.floor(Math.random() * 999)));
+  if (n2) n2.setAttribute("seed", String(1 + Math.floor(Math.random() * 999)));
+
+  const setBias = (b) => {
+    if (!cm) return;
+    cm.setAttribute("values",
+      "0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0.55 0.35 0.10 0 " + b.toFixed(3));
+  };
+
+  to.style.maskImage = "url(#wpInkMask)";
+  to.style.webkitMaskImage = "url(#wpInkMask)";
+  to.style.maskRepeat = "no-repeat";
+  to.style.webkitMaskRepeat = "no-repeat";
+  to.style.maskPosition = "0 0";
+  to.style.webkitMaskPosition = "0 0";
+  to.style.maskSize = "100% 100%";
+  to.style.webkitMaskSize = "100% 100%";
+
+  const BIAS0 = -0.58, BIAS1 = 0.30;      // 由"一粒墨"到"整张铺满"
+  const ease = p => p * p * (3 - 2 * p);  // smoothstep：起步/收尾都软
+  let raf = 0, stopped = false, t0 = 0;
+  const step = (now) => {
+    if (stopped) return;
+    if (!t0) t0 = now;
+    const p = Math.min(1, (now - t0) / dur);
+    setBias(BIAS0 + (BIAS1 - BIAS0) * ease(p));
+    if (p < 1) raf = requestAnimationFrame(step);
+  };
+  raf = requestAnimationFrame(step);
+
+  anim(to, [{transform:"scale(1.06)"},{transform:"scale(1)"}],
+       {duration:dur, easing:"cubic-bezier(.33,0,.67,1)"});
+
   if (rim){
-    rim.style.background = `radial-gradient(circle at ${cx}% ${cy}%, transparent 40%,`
-      + ` rgba(255,226,244,.9) 47%, rgba(139,124,255,.42) 55%, transparent 64%)`;
-    anim(rim, [{opacity:0, transform:"scale(.4)"},{opacity:1, offset:.4},
-               {opacity:1, offset:.66},{opacity:0, transform:"scale(2.6)"}],
-         {duration:dur, easing:"cubic-bezier(.34,0,.66,1)"});
+    rim.style.background = `radial-gradient(circle at ${cx}% ${cy}%,`
+      + " transparent 30%, rgba(255,232,246,.85) 40%,"
+      + " rgba(139,124,255,.40) 52%, transparent 66%)";
+    anim(rim, [{opacity:0, transform:"scale(.35)"},{opacity:1, offset:.35},
+               {opacity:1, offset:.72},{opacity:0, transform:"scale(3.0)"}],
+         {duration:dur, easing:"cubic-bezier(.33,0,.67,1)"});
   }
-  anim(from, [{opacity:1},{opacity:0}], {duration:dur});
-  return () => { to.style.filter = ""; };
+
+  // 旧图"被吃掉"
+  anim(from, [{opacity:1, transform:"scale(1)", filter:"blur(0px) saturate(1)"},
+              {opacity:0, transform:"scale(1.05)", filter:"blur(7px) saturate(.55)"}],
+       {duration:dur, easing:"cubic-bezier(.4,0,.6,1)"});
+
+  return () => {
+    stopped = true;
+    if (raf) cancelAnimationFrame(raf);
+    to.style.maskImage = to.style.webkitMaskImage = "";
+    to.style.maskRepeat = to.style.webkitMaskRepeat = "";
+    to.style.maskPosition = to.style.webkitMaskPosition = "";
+    to.style.maskSize = to.style.webkitMaskSize = "";
+    setBias(-0.58);                        // 复位，别影响下一次
+  };
 }
 
 let wpCleanup = null;
@@ -1492,7 +1637,15 @@ const MOTTO_FX_FN = {
 
 function playSplash(){
   const sp = document.getElementById("splash");
-  if (!sp || !wpSplash || !WALLPAPERS.length) return;
+  /* ★ 开屏的**显示**已经在 <head> 里的早期脚本做掉了（第一帧就出现）。
+     这里只负责：拿到数据后**填内容**并负责收尾。
+     如果开屏已被跳过（用户点了、或配置关掉），就什么都不做。 */
+  if (!sp || !window.__accelSplash) return;
+  if (!wpSplash || !WALLPAPERS.length) {
+    // 没有开屏（被配置关掉 / 没有壁纸）：直接收掉，别挡着页面
+    finishSplash();
+    return;
+  }
   /* ★★ 兜底：开屏一旦显示，就必须**保证**会被收掉。
      任何异常（特效函数写错、元素缺失、动画 API 不支持……）都不能让
      "特效出问题"升级成"页面不可用"。最坏情况只是这一轮开屏没播好。 */
@@ -1594,6 +1747,8 @@ function _playSplash(){
 
 function finishSplash(){
   clearSplashTimers();
+  clearTimeout(window.__accelSplashFailsafe);   // 主脚本接手了，撤掉早期脚本的硬兜底
+  window.__accelSplash = false;      // ★ 关掉开关：早期脚本的 DOMContentLoaded 回调不会再显示它
   const sp = document.getElementById("splash");
   if (!sp || !sp.classList.contains("show")) return;
   sp.classList.add("out");                 // 交给 CSS 过渡淡出
@@ -1667,6 +1822,8 @@ poll(); setInterval(poll, 3000);
 })();
 $("#splash").addEventListener("click", finishSplash);
 window.addEventListener("keydown", e2 => { if (e2.key === "Escape") finishSplash(); });
+/* ★ 总时长兜底：万一配置/壁纸请求一直不回来，开屏也不能永远挡着页面。 */
+setTimeout(() => { try { finishSplash(); } catch (e) {} }, 6000);
 
 loadConfig().catch(e => {
   $("#form").innerHTML = '<div class="empty">' + icon("triangle-alert")

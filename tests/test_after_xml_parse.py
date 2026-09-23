@@ -178,7 +178,6 @@ plugin._resp_by_sid = {}
 plugin._early_results = {}
 plugin._last_seg_ts = {}
 plugin._sent_ledger = {}
-plugin._sent_once = set()
 plugin._stats = {"early_sent": 0, "first_seg_s": None}
 plugin._frame_delay = lambda: (0.0, 0.0)
 mp = FakeMP()
