@@ -186,6 +186,58 @@ def main() -> None:
     check("未知会话返回 0", c3c.context_baseline("nope") == 0)
 
 
+    print("\n4f) ★★ 别的插件注入的内容不能影响判定（用户实测：每轮都开）")
+    # 背景（2026-09-23 用户报"总是触发自动思考"）：
+    #   _user_text 曾把整个 user_prompt 当用户消息扫，而 user_prompt 里混着
+    #   别的插件注入的内容 —— 长期记忆-Z 注入记忆（name="alife_memory"）、
+    #   会话合并插时间、SubAgent 注入任务文本（name="task"）。
+    #   那些文本又长又常含"分析/计划"这类词 ⇒ 2.5 分 ≥ 阈值 ⇒ **每轮都开**。
+    #   框架给真正的 IM 消息打的标记是 name="message"。
+    MEM = ("记忆：还要分析一下这个方案的步骤和原因，为什么这么做，"
+           "解释清楚设计架构与优缺点") * 4          # 又长又满是"复杂词"
+
+    def _req2(user_text, with_memory=True):
+        r = _Req()
+        r.user_prompt = []
+        if with_memory:
+            r.user_prompt.append(_Prompt(MEM, name="alife_memory"))
+        r.user_prompt.append(_Prompt(user_text, name="message"))
+        return r
+
+    c_mem = Ctrl(threshold=2.0, context_min_samples=5)
+    d = c_mem.decide("s_mem", _req2("再说说话，导员"))
+    check("★ 注入的长记忆**不再**把判定拉满",
+          not d.enabled and d.score == 0.0,
+          f"开={d.enabled} 得分={d.score:.1f} 信号={d.signals}")
+    check("★ 扫描长度只算用户那句话", d.scanned_chars == len("再说说话，导员"),
+          f"扫了 {d.scanned_chars} 字（应为 7）")
+
+    d2 = c_mem.decide("s_mem2", _req2("帮我分析一下这个方案的优缺点"))
+    check("对照：用户**真的**问复杂问题时仍然开",
+          d2.enabled and "复杂意图词" in d2.signals,
+          f"开={d2.enabled} 信号={d2.signals}")
+
+    # 反向验证：把"扫全部"的老行为放回去，必须复现"每轮都开"
+    # ⚠️ 还原时必须重新包成 staticmethod：访问类属性拿到的是**裸函数**，
+    #    直接赋回去会变成实例方法，`self._user_text(request)` 就会多传一个 self
+    _orig_ut = _at.AutoThinkingController.__dict__["_user_text"]
+    _at.AutoThinkingController._user_text = staticmethod(
+        lambda r: "\n".join((p.content or "") for p in (r.user_prompt or [])))
+    c_old = Ctrl(threshold=2.0, context_min_samples=5)
+    d_old = c_old.decide("s_old", _req2("再说说话，导员"))
+    _at.AutoThinkingController._user_text = _orig_ut
+    check("★ 反向验证：扫全部时确实会误判成「要思考」",
+          d_old.enabled and d_old.score >= 2.0,
+          f"开={d_old.enabled} 得分={d_old.score:.1f} 信号={d_old.signals}")
+
+    # 兜底：一个 name="message" 都没有时不能静默失效
+    c_fb = Ctrl(threshold=2.0, context_min_samples=5)
+    r_nom = _Req()
+    r_nom.user_prompt = [_Prompt("分析一下这个方案", name="other")]
+    d_fb = c_fb.decide("s_fb", r_nom)
+    check("兜底：没有 message 标记时退回取全部（不静默失效）",
+          "复杂意图词" in d_fb.signals, f"{d_fb.signals}")
+
     print("\n5) effort 分级（比 Alife 的固定值更细）")
     c4 = Ctrl(threshold=2.0, effort_low=2.0, effort_high=4.0)
     low = c4.decide("s4", _Req("怎么弄"))                       # 2.0 -> medium

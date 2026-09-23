@@ -227,6 +227,11 @@ class AcceleratorPlugin(BasePlugin):
                 think_txt = "开(%s,%s)" % (d.effort, "/".join(d.signals))
             else:
                 think_txt = "关(得分%.1f)" % d.score
+            # 把"这轮扫了多少字"一并打出来 —— 扫错文本时一眼可见
+            # （曾经因为把插件注入的记忆当用户消息扫，导致每轮都触发思考）
+            scanned = getattr(d, "scanned_chars", None)
+            if scanned is not None:
+                think_txt += "[%d字]" % scanned
             logger.info(
                 "[accel] 一轮结束 sid=%s steps=%d 抢先发=%d 首段=%.2fs 思考=%s",
                 sid, len(getattr(final_result, "step_results", []) or []),
@@ -602,6 +607,19 @@ class AcceleratorPlugin(BasePlugin):
         style = resolve_style(self.thinking_style, client_kind)
         if decision.enabled:
             params = build_thinking_extra_body(style, decision.effort)
+            # ★ 首次真正注入时打一条日志：让"到底发了什么参数、走哪个风格"
+            #   成为可见事实 —— 不然用户只能猜自己选的风格对不对
+            #   （provider 类型 与 风格 是两个不同的东西：前者决定参数放哪，
+            #     后者决定用哪套字段名；选错也只会"静默不生效"）。
+            key = (client_kind, style)
+            if key not in getattr(self, "_thinking_logged", set()):
+                if not hasattr(self, "_thinking_logged"):
+                    self._thinking_logged = set()
+                self._thinking_logged.add(key)
+                logger.info("[accel] 思考参数已注入（provider 类型=%s ⇒ %s 位置，"
+                            "风格=%s）：%s", client_kind,
+                            "extra_body" if client_kind != "deepseek" else "混合",
+                            style, params)
             if self.thinking_follow_provider:
                 # 开关打开：只负责"开"，强度完全提供商配的那个值
                 params = follow_provider_effort(

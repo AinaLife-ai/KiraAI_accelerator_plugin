@@ -1031,7 +1031,12 @@ function _wpTransition(url){
   //   现在：只用一个渐变，靠 mask-size 从 0% 长到铺满来"渗"出来。
   const soft = wpEffect === "ink_soft";
   const burn = wpEffect === "burn";
-  const ease = burn ? "cubic-bezier(.3,.7,.2,1)" : "cubic-bezier(.22,.61,.24,1)";
+  // ★ 缓动必须是**接近线性**的。
+  //   之前用 cubic-bezier(.22,.61,.24,1)（强 ease-out）：t=0.2 时进度已 ≈0.55，
+  //   而 16:9 元素的对角半径只有 0.57×宽 —— mask 在 **0.5 秒内就把整个画面盖满**，
+  //   剩下 1.3 秒全在调画面外看不见的柔边 ⇒ 看起来就是一次普通淡入，没有"墨渗"感。
+  //   线性之后，"扩散的小圆"在整个时长里都看得见。
+  const ease = "linear";
 
   b.style.transition =
     "opacity .55s ease-out, " +
@@ -1049,7 +1054,8 @@ function _wpTransition(url){
   const cyN = 18 + Math.random() * 64;
   const cx = cxN.toFixed(1), cy = cyN.toFixed(1);
 
-  const g = "radial-gradient(circle, #000 0%, #000 52%, rgba(0,0,0,.55) 72%, transparent 88%)";
+  // 硬核心 + 一圈柔边（墨滴的边界感），柔边不占太宽，否则"盖满"来得太早
+  const g = "radial-gradient(circle, #000 0%, #000 62%, rgba(0,0,0,.6) 80%, transparent 94%)";
   b.style.maskImage = g;
   b.style.webkitMaskImage = g;
   b.style.maskRepeat = "no-repeat";
@@ -1069,9 +1075,10 @@ function _wpTransition(url){
 
   requestAnimationFrame(()=>{
     b.classList.add("on");
-    // 长到远超容器：既保证四角铺满，也让"扩散"明显可见
-    b.style.maskSize = "320% 320%";
-    b.style.webkitMaskSize = "320% 320%";
+    // ★ 终点收到 240%：四角在这个尺寸下刚好被不透明核心盖住并留一点余量。
+    //   之前写 320% 是"远超容器"—— 结果在动画早期就已经盖满，白给。
+    b.style.maskSize = "240% 240%";
+    b.style.webkitMaskSize = "240% 240%";
     b.style.filter = burn ? "blur(0px) sepia(0) saturate(1) brightness(1)"
                           : "blur(0px) saturate(1)";
   });
