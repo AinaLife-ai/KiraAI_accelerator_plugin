@@ -231,7 +231,7 @@ async def main() -> None:
 
     print("6) 代理类：透传 + 类型判断 + chat_stream 原样")
     c6 = FakeClient(["x"])
-    proxy = LLMClientProxy(c6, lambda: StreamEngine(force_stream=True, emit=None))
+    proxy = LLMClientProxy(c6, lambda _req=None: StreamEngine(force_stream=True, emit=None))
     check("proxy.model 透传", proxy.model.provider_name == "prov")
     check("proxy.model.model_config 透传", proxy.model.model_config == {})
     check("未知属性透传", hasattr(proxy, "pieces"))
@@ -245,7 +245,7 @@ async def main() -> None:
 
     print("7) 每次 chat 用新引擎 ⇒ 统计不串（并发安全）")
     stats = []
-    p7 = LLMClientProxy(FakeClient(["a"]), lambda: _mk(stats))
+    p7 = LLMClientProxy(FakeClient(["a"]), lambda _req=None: _mk(stats))
     await asyncio.gather(p7.chat(_Request()), p7.chat(_Request()))
     check("两次调用各自独立的 stats 对象", len(stats) == 2 and stats[0] is not stats[1])
 

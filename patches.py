@@ -143,12 +143,20 @@ def install(handle: PatchHandle, owner: Any, attr: str, factory: Callable) -> Op
         return None
 
     if getattr(original, MARK, False):
-        # R1 幂等：已经装过 —— 直接沿用现有 handle 信息，不再包第二层
-        logger.debug("[accel] 接管点 %s 已安装，跳过（幂等）", handle.name)
+        # R1 幂等：已经装过（通常是上一次实例留下的）—— 不再包第二层。
+        #
+        # ★ 但仍然**返回 handle**，让本次实例"认领"这个接管点。
+        #   为什么必须认领：框架重载时一般会先 terminate（plugin_registry.py:1900），
+        #   可万一那次 terminate 抛了异常，框架只记一条日志就继续初始化；
+        #   此时旧补丁还在，而新实例如果不认领它，就**再也没人能还原**
+        #   —— 表现为"插件已经关了，行为却还在"，且完全没有报错。
+        #
+        #   认领是安全的：uninstall() 有守卫，当前实现若不是我们装的那个就不碰。
+        logger.info("[accel] 接管点 %s 已存在，本次认领（不重复包装）", handle.name)
         handle.owner, handle.attr = owner, attr
         handle.installed = original
         handle.original = getattr(original, MARK_ORIGINAL, None)
-        return None
+        return handle
 
     wrapper = guard(handle.name, original, factory(original))
     setattr(owner, attr, wrapper)

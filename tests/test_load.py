@@ -264,7 +264,7 @@ async def main() -> None:
         "section_thinking": {"enabled": True, "style": "enable_thinking", "threshold": 2.0},
         "section_request": {"trim_tools": True, "slim_tool_results": True,
                             "tame_send_delay": True, "send_delay_target": 0.2},
-        "section_takeover": {"reuse_http_client": True, "async_save_memory": False},
+        "section_takeover": {"reuse_http_client": True, "compact_memory_dump": True},
     }
 
     ctx = Ctx()
@@ -281,7 +281,10 @@ async def main() -> None:
     await plugin.initialize()
 
     check("get_model_client 已被包装", PM.get_model_client is not orig_get)
-    check("_save_memory 未被改（配置里关了）", SM._save_memory is orig_save)
+    # ★ compact_memory_dump 是「待验证」功能，代码里锁死 ——
+    #   即使配置写成 true 也不生效（面板上该开关也是置灰的）。
+    check("★ 待验证功能被锁死：配置 true 也不接管 _save_memory",
+          SM._save_memory is orig_save)
     check("_build_client 已被包装", CC._build_client is not orig_build)
     health = {h["name"]: h for h in plugin.patches.health()}
     check("接管点 stream_engine 生效", health.get("stream_engine", {}).get("active"))
@@ -300,6 +303,12 @@ async def main() -> None:
           str(th_points))
     check("其中包含 OpenAI 兼容系注入点",
           bool(th_points.get("auto_thinking:openai")), str(sorted(th_points)))
+
+    print("\n1b) 锁死状态与热重载")
+    await plugin.terminate()
+    check("terminate 后 _save_memory 仍是框架原实现", SM._save_memory is orig_save)
+    plugin = m_main.AcceleratorPlugin(ctx, Cfg)
+    await plugin.initialize()          # 恢复主流程用的实例
 
     print("\n2) 端到端：真实走一次 chat，验证强制流式生效")
     pm = PM("db", "cfg")

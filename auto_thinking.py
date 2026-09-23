@@ -468,6 +468,50 @@ def build_nothinking_extra_body(style: str) -> dict:
     return {"enable_thinking": False}
 
 
+#: 强度档位排序（只用于"不降级"比较）
+_EFFORT_RANK = {"low": 0, "medium": 1, "high": 2, "max": 3}
+
+
+def provider_effort(model) -> "Optional[str]":
+    """读提供商那边给这个模型配的思考强度（没配返回 None）。
+
+    两个来源（读框架源码确认）：
+      · DeepSeek 的模型配置里是**顶层** `reasoning_effort`（high/max）
+      · 其它兼容网关一般写在 `section_advanced.extra_body.reasoning_effort`
+    """
+    try:
+        cfg = getattr(model, "model_config", None) or {}
+        v = cfg.get("reasoning_effort")
+        if not isinstance(v, str) or not v:
+            adv = cfg.get("section_advanced") or {}
+            eb = adv.get("extra_body") if isinstance(adv, dict) else None
+            v = eb.get("reasoning_effort") if isinstance(eb, dict) else None
+        return v if isinstance(v, str) and v else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def follow_provider_effort(params: dict, prov_effort: "Optional[str]") -> dict:
+    """【可选行为】判定要思考时，**强度完全用提供商配的那个值**。
+
+    对应面板开关「开思考时跟随提供商的强度」（默认关）。
+
+    实现上就是：把我们要注入的 `reasoning_effort` 去掉 ——
+    提供商自己那份设置（框架会照常发出去）就成了唯一的强度来源。
+    于是"设了 max 就还是 max"，插件不会改成别的值。
+
+    为什么**不**默认这么做：插件按轮次调节强度本来就是它的功能之一
+    （简单轮次用低档更省更快）。想要"只开不动强度"的人再打开这个开关。
+
+    注意：这个函数只管"开思考"这一路；"关思考"（inject_nothinking）不受影响。
+    """
+    if not prov_effort or "reasoning_effort" not in params:
+        return params
+    out = dict(params)
+    out.pop("reasoning_effort", None)
+    return out
+
+
 def _budget_for(effort: str) -> int:
     return {"low": 1024, "medium": 4096, "high": 16384}.get(effort, 4096)
 

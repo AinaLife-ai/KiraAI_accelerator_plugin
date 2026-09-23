@@ -44,7 +44,13 @@ async def main() -> None:
     r1 = P.install(h1, t, "hot", lambda orig: (lambda x: orig(x + 1)))
     r2 = P.install(h1, t, "hot", lambda orig: (lambda x: orig(x + 1)))
     check("首次安装成功", r1 is not None)
-    check("二次安装被幂等拒绝", r2 is None)
+    # ★ 契约变更（2026-09-23 审计）：幂等时不再返回 None，而是**认领**已有补丁。
+    #   原因：框架重载前虽会先 terminate，但那次 terminate 若抛异常，框架只记日志
+    #   就继续初始化；此时旧补丁还在，新实例若不认领就**再也没人能还原**它
+    #   —— 表现为"插件关了行为还在"，且毫无报错。认领安全：uninstall 有守卫。
+    check("二次安装返回 handle（认领）", r2 is not None)
+    check("★ 认领的是同一个实现（没有重复包装）", r2.installed is r1.installed)
+    check("认领后仍带原始实现引用，能还原", r2.original is r1.original)
     check("只有一层包装", await t.hot(1) == "orig:2", f"实际={await t.hot(1)}")
 
     print("R2 精确还原")
