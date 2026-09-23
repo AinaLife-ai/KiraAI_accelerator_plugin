@@ -123,6 +123,22 @@ check("占位符足够短（[图] = 3 字符，不会触发长消息）",
       "占位符应为 [图]")
 
 print()
+print("═══ 6) ★★★ 端到端回归：日志里 `[1021字]` 那个真 bug")
+# 背景（2026-09-24 用户实测日志）：`思考=开(medium,复杂意图词/消息长)[1021字]`
+#   而用户只打了 50 字 ⇒ 扫进去的东西远多于用户输入。
+#   根因：`request._accel_event` **从未被设置** ⇒ 结构判据拿不到 event
+#        ⇒ 落到字符串兜底 ⇒ 把 Z 记忆注入 + 图片/表情包描述一起算进"消息长"。
+_main = pathlib.Path(HERE / "main.py").read_text(encoding="utf-8")
+check("★★ 主插件必须把 event 挂到 request 上（结构判据要用）",
+      '_accel_event' in _main and 'req.__dict__["_accel_event"] = event' in _main)
+check("★ 思考判定确实去取它", '_accel_event' in
+      pathlib.Path(HERE / "auto_thinking.py").read_text(encoding="utf-8"))
+# 反向验证：把这一行去掉，结构判据就永远拿不到 event
+_stripped = _main.replace('req.__dict__["_accel_event"] = event', '')
+check("★ 反向验证：去掉挂载 ⇒ 结构判据拿不到 event（会退回扫描注入内容）",
+      'req.__dict__["_accel_event"] = event' not in _stripped)
+
+print()
 print("=" * 60)
 print(f"通过 {len(PASS)}  失败 {len(FAIL)}")
 if FAIL:

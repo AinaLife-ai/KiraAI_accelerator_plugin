@@ -198,9 +198,13 @@ if (!H) { console.log('HOOK_MISSING'); process.exit(4); }
     };
   }
   catch (e) { transitionError = e.constructor.name + ': ' + e.message; }
-  // ★ 等待必须**跟着 WP_DUR 走**：WP_DUR 一改（2200 → 3200），
-  //   固定等 3.4s 就不够了 ⇒ 读出来等。切换总时长 = WP_DUR + 420 收尾。
-  await new Promise(r => setTimeout(r, (H.WP_DUR || 3200) + 900));
+  // ★★ 不要用"固定等待" —— 每套特效的实际时长不同（条带要 WP_DUR*1.27，
+  //   墨渗 WP_DUR*1.15），收尾还在 wpLastDur 之后再等 260ms。
+  //   固定值必然在某些特效上不够（上一版就是这么失败的）。
+  //   正确做法：**轮询到锁释放**，并留一个足够宽的上限。
+  for (let i = 0; i < 120 && H.wpBusy; i++) {
+    await new Promise(r => setTimeout(r, 100));
+  }
   out.transitionError = transitionError;
   out.justAfterCall = justAfterCall;
   out.consoleErrors = (global.__errs || []).slice();
