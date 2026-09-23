@@ -36,6 +36,10 @@ _js_raw = _js_raw.group(1) if _js_raw else HTML
 js = re.sub(r"/\*[\s\S]*?\*/", "", _js_raw)
 js = re.sub(r"(?m)^\s*//.*$", "", js)
 
+# ★ hudReset 的片段（多处判据要用）——放在这里，避免"先用后定义"
+_hz = js[js.index("function hudReset"):js.index("function armZen")]
+
+
 # ★★ 把墨渗的偏置**从代码里读出来**：后面多处判据要用。
 #    不能写死在测试里 —— 否则代码改了测试照样绿（只验证了"我以为的值"，已踩过）。
 _m = re.search(r"const BIAS0 = (-?[\d.]+), BIAS1 = (-?[\d.]+);", js)
@@ -292,8 +296,9 @@ print("═══ 6) ★ 特效要「慢一点」（用户明确要求）")
 m = re.search(r"const WP_DUR = (\d+)", js)
 check("WP_DUR 至少 3000ms（原来 2200 被反馈太快）", m and int(m.group(1)) >= 3000,
       m.group(1) if m else "未找到")
-check("条带铺满整个时长（不再挤在前 60%）",
-      "WP_DUR * .72" in js and "WP_DUR * .55 / N" in js)
+# ★ 重写后条带用的是局部 dur + coverAt（= dur*.72 + dur*.55）
+check("★ 条带用 coverAt = 最晚一条的延迟 + 时长（含错峰）",
+      "coverAt = dur * .72 + dur * .55" in js and "dur * .55 / N" in js)
 check("墨渗比基准更长（≈1.15×）", "WP_DUR * 1.15" in js)
 
 print()
@@ -304,8 +309,10 @@ eat_ok, eat_missing = [], []
 for f in ["fxIris", "fxWipe", "fxStrips", "fxZoom"]:
     b = _fx_body(f)
     (eat_ok if "eatAway(" in b else eat_missing).append(f)
-check("★ 除墨渗外，每套特效的旧图都被 eatAway 吃掉", not eat_missing,
-      f"缺: {eat_missing}")
+# ★ 重写后：fade 与 strips 的旧图动画是**自写**的（同样含模糊+降饱和/交叉淡化），
+#   不再统一走 eatAway —— 判据允许这两套例外。
+check("★ 每套特效的旧图都被吃掉（eatAway，或自写的模糊/交叉淡化）",
+      set(eat_missing) <= {"fxStrips", "fxFade"}, f"缺: {eat_missing}")
 _ink = _fx_body("fxInk")
 # ⚠️ 不能简单查 "opacity:0" —— fxInk 里有 `to.style.opacity = "0"`
 #    （把**新层本体**藏起来，因为显示由 SVG <image> 负责，这是设计如此）。
@@ -339,7 +346,7 @@ _setters = re.findall(r"wpLastDur = ([^;]+);", js)
 check("★ 每套特效都设置了自己的 wpLastDur", len(_setters) >= 5,
       f"{len(_setters)} 套: {_setters}")
 check("★ 条带的时长含最晚一条的延迟（不只是单条时长）",
-      any("* .72" in s or "*.72" in s for s in _setters), str(_setters))
+      any("coverAt" in s or "* .72" in s or "*.72" in s for s in _setters), str(_setters))
 
 print()
 print("═══ 9) ★★ 开屏时序：一个元素只能有一个驱动者 + 必须有停留")
@@ -543,8 +550,8 @@ for _f in ("fxIris", "fxWipe", "fxStrips", "fxZoom"):
     _b = js[_i:js.index("\nfunction ", _i + 12)]
     _set = re.search(r"wpLastDur = ([^;]+);", _b)
     _eat = re.search(r"eatAway\(from,\s*([^)]+)\)", _b)
-    if _f == "fxZoom":
-        continue                      # zoom 的旧图有自己的推近动画，另有判据
+    if _f in ("fxZoom", "fxStrips"):
+        continue    # 这两套的旧图动画是自写的（含模糊+降饱和），另有判据
     check(f"★ {_f} 的 eatAway 时长 = 本套实际时长（旧图不会提前消失）",
           bool(_set and _eat and _eat.group(1).strip() == "wpLastDur"),
           f"wpLastDur={_set.group(1).strip() if _set else '?'} eatAway={_eat.group(1).strip() if _eat else '?'}")
@@ -722,8 +729,10 @@ print()
 print("═══ 30) ★★ 飞出/飞回的顺序（不能闪现）")
 check("★ 进入 zen 会飞入（hudFlyIn 从 KPI 位置起飞）",
       "function hudFlyIn" in js and "getBoundingClientRect" in js)
-check("★ 退出时 HUD 是**飞回**（有 transform 过渡 + 落点）",
-      "translate(" in js and "scale(.45)" in js)
+# ★ 实现已升级为"逐项飞回"（每项从右上角飞回它**自己的卡片**），
+#   不再是"整体平移 + scale(.45)"。判据改为看逐项 + 弧线中段。
+check("★ 退出时 HUD 是**逐项飞回**（含弧线中段）",
+      "items.forEach" in _hz and "dx * .55" in _hz)
 check("★ ★ 退出时**先让面板淡入、再飞回**（延迟，避免重影闪现）",
       "document.body.classList.remove(\"zen\");" in js
       and re.search(r"setTimeout\(\(\) => \{ try \{ hudReset\(\)", js) is not None)
@@ -742,8 +751,10 @@ check("② 重排不再预先装填目标层（那会造成两图瞬间交替）
       "wpLoad(\"wp-b\", wpUrl(wpActive[0]))" not in js and "hasVisible" in js)
 check("③ 心电图按容器宽 + clip-path 扫动（否则看不出动）",
       "background-size:100% 100%" in HTML and "clip-path:inset(0 100% 0 0)" in HTML)
-check("④ 霓虹切换有柔和过渡（先压暗再换类再浮回）",
-      "function neonSwapTo" in js and "duration:280" in js and "duration:420" in js)
+# ★ 实现已简化为**一条动画**：中间关键帧压暗（offset .42）、结束回到 opacity:1，
+#   换类在最暗那一刻执行 —— 比"两条动画"更稳（不会留下压暗残留）。
+check("④ 霓虹切换有柔和过渡（中间压暗 + 回正，无残留）",
+      "function neonSwapTo" in js and "offset:.42" in js and "setTimeout(apply, 290)" in js)
 check("④ 单击标题随机换特效", "initNeonClick" in js and 'addEventListener("click"' in js)
 check("⑤ 副标题四种特效都加强了（周期 5~8s）",
       all(k in HTML for k in ("tagShimmer", "tagDrift", "tagBreathe", "tagTrace")))
@@ -786,6 +797,67 @@ check("★ 漂移层余量按位移保底（max(72px, 6%)，不能只用百分�
 check("★ 开屏与页面仍保持同构（同一个 inset 值）",
       ".wp-stage{position:absolute;inset:calc(-1 * max(72px, 6%))" in HTML
       and ".sp-sway{position:absolute;inset:calc(-1 * max(72px, 6%))" in HTML)
+
+print()
+print("═══ 34) ★★★ 四个真 bug 的回归判据")
+# ① hud-returning 必须**一定会被移除**（否则面板数字永久消失）
+_hz = js[js.index("function hudReset"):js.index("function armZen")]
+check("★ hudReset 里给 body 加了 hud-returning", 'classList.add("hud-returning")' in _hz)
+check("★★ 且**一定移除**它（否则面板数字永久隐藏）",
+      'classList.remove("hud-returning")' in _hz)
+check("★★ 且不止一条恢复路径（正常计时 + 独立保险）",
+      _hz.count("classList.remove(\"hud-returning\")") >= 1
+      and re.search(r"setTimeout\(restore, \d+\)", _hz) is not None
+      and "setTimeout(restore, 1600)" in _hz)
+check("★ hudReset 是**逐项**飞回（不是整体平移）",
+      "items.forEach" in _hz and "translate(" in _hz)
+# ②③ 霓虹不能把字变透明 / 不能留下压暗残留
+_ni = HTML.index(".wordmark.neon-breathe")
+_nj = HTML.index("/* ═══ 空闲", _ni)
+_neon = HTML[_ni:_nj]
+# ⚠️ 判据要精确：`color:transparent` + `background-clip:text` 是**标准的渐变文字**
+#   写法（flow / aurora 就是），本身没错。
+#   有问题的只有那种"背景是一条窄带、大部分是透明的"——
+#   那会让字**大部分时间不可见**（scan 原来就是这样）。
+_bad_band = []
+for _m in re.finditer(r"\.wordmark\.neon-[\w-]*\s+[^{]*\{[^}]*color:transparent[^}]*\}", _neon):
+    _rule = _m.group(0)
+    _bg = re.search(r"background-image:\s*linear-gradient\(180deg[^;]*", _rule)
+    # 纵向窄带（180deg + 开头透明）⇒ 只露出一小段 ⇒ 字会长期不可见
+    if _bg and re.search(r"transparent\s+0%", _bg.group(0)):
+        _bad_band.append(_rule[:60])
+check("★★ 没有窄带裁剪式霓虹（那会让字大部分时间不可见）",
+      not _bad_band, str(_bad_band))
+check("★ scan 用叠加层（::after + mix-blend-mode），不裁剪字",
+      "neon-scan::after" in _neon and "mix-blend-mode:screen" in _neon)
+check("★ bead 用叠加光点（::after），字保持原色",
+      "neon-bead > span::after" in _neon)
+_ns = js[js.index("function neonSwapTo"):js.index("function rollNeon")]
+check("★★ neonSwapTo 不再用 fill:forwards 定格中间态（否则字永久半暗）",
+      'fill:"forwards"' not in _ns and "offset:.42" in _ns)
+# ④ 心电图盒子尺寸必须明确（inset:0 与 height 冲突过）
+check("★★ 心电图盒子：只给 left/right/top + height（不用 inset:0）",
+      re.search(r"\.status::after\{[^}]*left:0;right:0;top:50%;height:14px", HTML) is not None)
+check("★ 且 .ok 态不再重复定位（只留动画与可见性）",
+      re.search(r"\.status\.ok::after\{[^}]*opacity:1;[^}]*animation:ecgSweep", HTML) is not None
+      and "left:0;right:0;height:14px;top:50%" not in re.search(r"\.status\.ok::after\{[^}]*\}", HTML).group(0))
+# 点击标题不恢复 UI
+check("★ 欣赏模式下点标题只换特效、不恢复 UI",
+      'classList.contains("zen")' in js and "stopPropagation" in js)
+
+print()
+print("═══ 35) ★★ 淡入淡出与条带柔化（用户要求：一定要搞好）")
+check("★ WP_EFFECTS 里有 fade（真正的淡入淡出）", "\"fade\"" in js and "function fxFade" in js)
+check("★ fxFade：新图淡入 + 旧图**略慢**退尽（不出现露底窗口）",
+      "function fxFade" in js
+      and re.search(r"function fxFade[\s\S]{0,700}offset:\.78", js) is not None)
+check("★ fxStrips 主层会淡入（原来完全不淡入 ⇒ 硬边直接出现）",
+      re.search(r"function fxStrips[\s\S]{0,900}anim\(to, \[\{opacity:0\},\{opacity:1\}\]", js) is not None)
+check("★ fxStrips 的条带边缘做了柔化（blur，不再是刀切硬边）",
+      re.search(r"function fxStrips[\s\S]{0,1600}blur\(1\.2px\)", js) is not None)
+check("★ fxStrips 的旧图带模糊+降饱和（被吃掉）",
+      re.search(r"function fxStrips[\s\S]{0,2200}blur\(9px\) saturate\(\.55\)", js) is not None)
+check("★ 下拉里能看到「淡入淡出」选项", "淡入淡出" in HTML)
 
 print("=" * 60)
 print(f"通过 {len(PASS)}  失败 {len(FAIL)}")

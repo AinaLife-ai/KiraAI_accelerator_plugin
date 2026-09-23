@@ -259,13 +259,19 @@ h1{margin:0;font-size:15px;letter-spacing:.3px;font-weight:600}
   0%  {background-position:-140% 50%}
   100%{background-position:240% 50%}
 }
+/* ★ bead 同样不能让字变透明：原来把整段字当"珠子的背景"裁剪，
+   ⇒ 只有珠子附近可见、其余时间字是空的。
+   改为：字**保持原色**，珠子作为**叠加的发光点**在字面上跑。 */
 .wordmark.neon-bead > span{
-  background-image:radial-gradient(circle 5px at 50% 50%, #fff 0%, var(--nc) 40%, transparent 72%);
-  background-size:150% 150%;
-  background-repeat:no-repeat;
-  -webkit-background-clip:text;background-clip:text;
-  animation:beadRun 2.6s linear infinite;
-}
+  position:relative;overflow:hidden}
+.wordmark.neon-bead > span::after{
+  content:"";position:absolute;inset:-18%;
+  pointer-events:none;
+  background:radial-gradient(circle 4px at 50% 50%, #fff 0%, var(--nc) 42%, transparent 74%);
+  mix-blend-mode:screen;
+  animation:beadRun 2.6s linear infinite}
+.wordmark.neon-bead > span:nth-child(2n)::after{animation-delay:-.35s}
+.wordmark.neon-bead > span:nth-child(3n)::after{animation-delay:-.7s}
 .wordmark.neon-bead > span:nth-child(2n){animation-delay:-.35s}
 .wordmark.neon-bead > span:nth-child(3n){animation-delay:-.7s}
 .wordmark.neon-bead{filter:drop-shadow(0 0 9px var(--nc))}
@@ -295,16 +301,27 @@ h1{margin:0;font-size:15px;letter-spacing:.3px;font-weight:600}
 
 /* scan：一条细亮线纵向扫过字面 */
 @keyframes neonScan{
-  0%{background-position:0 -120%}
+  0%  {transform:translateY(-120%)}
+  100%{transform:translateY(120%)}
+}
   100%{background-position:0 220%}
 }
 .wordmark.neon-scan{
-  background-image:linear-gradient(180deg,
-    transparent 0%, rgba(255,255,255,.85) 46%, transparent 54%, transparent 100%);
-  background-size:100% 220%;
-  -webkit-background-clip:text;background-clip:text;
+  /* ★★★ 这条曾经把字"吃掉"：原实现是
+       background-image: 一条白色扫描带 + background-clip:text + .o/.e{color:transparent}
+     ⇒ 只有白带所在的那一小段（46%~54%）能看到字，
+       其余时间整段字都是**透明**的 ⇒ 用户看到的是"字缺失 / 特效很淡"。
+     现在改为：**底色始终可见**（沿用原来的渐变/描边），
+     扫描带作为**叠加层**从字面上扫过 —— 特效在，字也在。 */
+  position:relative}
+.wordmark.neon-scan::after{
+  content:"";position:absolute;left:-6%;right:-6%;top:-10%;bottom:-10%;
+  pointer-events:none;
+  background:linear-gradient(180deg,
+    transparent 0%, rgba(255,255,255,.55) 46%, transparent 56%, transparent 100%);
+  mix-blend-mode:screen;
   animation:neonScan 5.5s linear infinite}
-.wordmark.neon-scan .o,.wordmark.neon-scan .e{color:transparent}
+/* （原来这里把 .o/.e 设成透明 ⇒ 字会大部分时间不可见，已删除） */
 .wordmark.neon-scan .e{-webkit-text-stroke:1.5px var(--nc)}
 
 /* ring：字外一圈光环向外扩散后消失 */
@@ -587,8 +604,14 @@ select{appearance:none;background-image:none;cursor:pointer}
 .status        {font-size:11.5px;color:var(--dim2);display:flex;align-items:center;gap:5px}
 /* ═══ 「已连接」心电图：一条细脉冲线在状态条里循环扫过 ═══ */
 .status{position:relative;overflow:hidden}
+/* ★ 这里原来写的是 `inset:0`（= top/right/bottom/left 全 0），
+   而 .ok 状态里又设了 `height:14px` 与 `top:50%` —— **bottom:0 没被覆盖**，
+   与 height 同时存在 ⇒ 盒子尺寸/位置错乱，`clip-path` 也就扫不出来。
+   现在只给需要的三条边 + 固定高度，盒子尺寸明确。 */
 .status::after{
-  content:"";position:absolute;inset:0;pointer-events:none;opacity:0;
+  content:"";position:absolute;left:0;right:0;top:50%;height:14px;
+  transform:translateY(-50%);
+  pointer-events:none;opacity:0;
   background-image:url("data:image/svg+xml;utf8,\
 <svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 24' preserveAspectRatio='none'>\
 <polyline points='0,12 16,12 21,12 25,4 29,20 34,12 52,12 57,12 61,6 65,18 69,12 120,12' \
@@ -602,9 +625,9 @@ fill='none' stroke='%235ef0c0' stroke-width='1.6' stroke-linejoin='round'/></svg
    并把整条 trace 的底色也提亮一点（原来太细太暗，肉眼看不出在动）。 */
 /* ★ 用 clip-path 做"画出来 → 再擦掉"的循环，肉眼一定看得出在扫。 */
 .status.ok::after{
-  opacity:1;left:0;right:0;height:14px;top:50%;transform:translateY(-50%);
+  opacity:1;
   animation:ecgSweep 2.4s linear infinite;
-  filter:brightness(1.3) saturate(1.2)}
+  filter:brightness(1.35) saturate(1.2)}
 @keyframes ecgSweep{
   0%  {clip-path:inset(0 100% 0 0)}
   55% {clip-path:inset(0 0 0 0)}
@@ -1202,7 +1225,8 @@ const PENDING_VERIFICATION = {
 // 不记住就会把用户弹回第一个页签「说明」——观感像页面被刷新了）
 let ACTIVE_SECTION = null;
 const FX_LABEL = {
-  random: "随机（每次不同）", iris: "虹膜（圆形张开）", wipe: "斜擦（发光前沿横扫）",
+  random: "随机（每次不同）", fade: "淡入淡出（最柔和）",
+  iris: "虹膜（圆形张开）", wipe: "斜擦（发光前沿横扫）",
   blinds: "百叶（横向条带）", shutter: "中开（竖向板从中缝开）",
   zoom: "推镜（镜头推进）", ink: "墨渗（不规则渗开）",
 };
@@ -1708,7 +1732,7 @@ const MOTTOES = [
   "The fastest reply is the one already on its way.",
 ];
 
-const WP_EFFECTS = ["iris","wipe","blinds","shutter","zoom","ink"];
+const WP_EFFECTS = ["fade","iris","wipe","blinds","shutter","zoom","ink"];
 const WM_FX     = ["assemble","glitch","neon","sweep","wave","shatter"];
 const MOTTO_FX  = ["rise","type","blur","track"];
 
@@ -1835,6 +1859,23 @@ function wpRimReset(){
    ★ 半径终点要按几何算：circle(r%) 的 r 相对 √(w²+h²)/√2，而角落距离是
      √(w²+h²)/2 ⇒ 比值 1/√2 ≈ .707，即 **r≈71% 就盖住四角**。
      写 152% 会让"盖满"发生在进度 46%（≈时长 33%），后面 2/3 全白给。 */
+/* ★ 纯淡入淡出（用户明确要的"淡入淡出一定要搞好"）。
+   要点：新旧两层**同时**做透明度交叉，且中间不出现"露底色"的窗口 ——
+   所以旧图的淡出**略慢于**新图的淡入（新图先到位，旧图随后退尽）。
+   这是所有特效里最柔和的一套，也是最不可能出硬切的。 */
+function fxFade(to, from, rim){
+  const dur = WP_DUR;
+  to.style.opacity = "0";
+  anim(to, [{opacity:0},{opacity:1}],
+       {duration: Math.round(dur * 0.78), easing:"cubic-bezier(.4,0,.5,1)"});
+  anim(to, [{transform:"scale(1.03)"},{transform:"scale(1)"}],
+       {duration:dur, easing:"cubic-bezier(.4,0,.5,1)"});
+  // 旧图：保持不透明到新图基本到位（78%），然后才退尽 ⇒ 永远有东西托底
+  anim(from, [{opacity:1},{opacity:1, offset:.78},{opacity:0}],
+       {duration:Math.round(dur * 1.0), easing:"linear"});
+  wpLastDur = dur;
+}
+
 function fxIris(to, from, rim){
   const cx = 22 + Math.random() * 56, cy = 22 + Math.random() * 56;
   const a = `circle(0% at ${cx}% ${cy}%)`, b = `circle(118% at ${cx}% ${cy}%)`;
@@ -1881,51 +1922,62 @@ function fxWipe(to, from, rim){
    因为都是全尺寸 + background-size:cover，各带拼起来正好是完整一张图。
    ★ 条带边界是硬边 ⇒ "扫开"的过程肉眼可见（这是与"纯淡入"最本质的区别）。 */
 function fxStrips(to, from, rim, vertical, fromCentre){
+  /* ★ 条带特效原来是**硬边**（clip-path 矩形），且主层完全不淡入 ⇒
+     条带扫过的地方就是"硬切"（用户反馈"背景切换依然有硬切，还挺多的"）。
+     现在两手一起用：
+       ① 每个条带的边缘加一点**模糊柔化**（filter:blur）⇒ 边不再是刀切；
+       ② 主层在条带铺开的过程中**逐渐淡入**（不是等收尾才突然出现）⇒ 双重保险。
+     注意：主层淡入的**终点时间**要略早于条带铺满，避免"条带还没铺完、主层就全亮"
+     把条带盖住（这个坑之前踩过）。 */
   const host = to.parentElement;
   const N = vertical ? 11 : 9;
   const bg = to.style.backgroundImage;
   const made = [];
-  to.style.opacity = "0";                  // 本体不显示，靠条带拼
-  for (let i = 0; i < N; i++){
+  const dur = WP_DUR;
+  const coverAt = dur * .72 + dur * .55;      // 最晚一条的延迟 + 它的时长
+  wpLastDur = coverAt;
+
+  // ② 主层淡入：铺满前一点就到 1（之后条带已经看不见了，不会互相干扰）
+  to.style.opacity = "0";
+  anim(to, [{opacity:0},{opacity:1}],
+       {duration: Math.round(coverAt * 0.85), easing:"cubic-bezier(.4,0,.5,1)"});
+  anim(to, [{transform:"scale(1.06)"},{transform:"scale(1)"}],
+       {duration: coverAt, easing:"cubic-bezier(.3,0,.5,1)"});
+
+  for (let i2 = 0; i2 < N; i2++){
     const s = document.createElement("div");
     s.className = "s-strip";
     s.style.cssText = "background-image:" + bg;
-    const lo = i / N * 100, hi = (i + 1) / N * 100;
+    const lo = i2 / N * 100, hi = (i2 + 1) / N * 100;
     const fromClip = vertical
-      ? "inset(0 49.9% 0 49.9%)"                             // 零宽竖线（正中）
-      : "inset(" + lo + "% 0 " + (99.9 - lo) + "% 0)";       // 零高横线（该带顶）
+      ? "inset(0 49.9% 0 49.9%)"
+      : "inset(" + lo + "% 0 " + (99.9 - lo) + "% 0)";
     const toClip = vertical
       ? "inset(0 " + (100 - hi) + "% 0 " + lo + "%)"
       : "inset(" + lo + "% 0 " + (100 - hi) + "% 0)";
     s.style.clipPath = fromClip;
-    host.appendChild(s);
-    made.push(s);
-    const dist = fromCentre ? Math.abs(i - (N - 1) / 2) : i;
-    s.animate([{clipPath:fromClip},{clipPath:toClip}], {
-      /* ★ 放慢 + 错峰：原来 60% 时长 + 34% 的延迟范围 ⇒ 条带挤在一起出来，
-         像"一下刷过去"。现在铺满整个时长，能看清是**一条条**展开的。 */
-      duration: WP_DUR * .72, delay: dist * (WP_DUR * .55 / N),
+    host.appendChild(s); made.push(s);
+    const dist = fromCentre ? Math.abs(i2 - (N - 1) / 2) : i2;
+    /* ① 边缘柔化：条带本身带轻微模糊 —— 边界不再是"刀切"的硬边。
+       blur 用很小的值（0.6px 起、展开时收到 0），既柔化又不糊。 */
+    s.animate([
+      {clipPath: fromClip, filter:"blur(1.2px)"},
+      {clipPath: toClip,   filter:"blur(0px)"},
+    ], {
+      duration: dur * .72, delay: dist * (dur * .55 / N),
       easing: "cubic-bezier(.3,.7,.3,1)", fill: "forwards"});
   }
-  /* ★★ 这里**不能**给主层做"整张淡入"。
-     条带本身就是新图的可见载体；若主层同时淡入到 opacity:1，
-     它会把还没展开的条带**整块盖住** ⇒ 观感变成"一次淡入 + 几道条纹"，
-     **等于条带特效没播放**（用户实测："很多切换特效等于没有播放完"）。
-     正确做法：主层保持隐藏（`to.style.opacity` 由 fxStrips 置 0），
-     只做轻微的推近；等 `wpSettle` 加上 `.on` 时才整体可见 ——
-     那时条带已铺满全屏，谁也盖不住谁。 */
-  anim(to, [{transform:"scale(1.09)"},{transform:"scale(1)"}],
-       {duration: WP_DUR, easing:"cubic-bezier(.3,0,.5,1)"});
-  // ★ 实际总时长 = 最后一条的延迟 + 它的时长（条带要这么久才铺满）
-  wpLastDur = WP_DUR * .72 + WP_DUR * .55;
-  /* ★★ 旧图要活到**条带铺满**为止。原来写死 WP_DUR（3200），
-     而条带要到 4064ms 才铺满 ⇒ 3040~4064ms 之间露出页面底色
-     ⇒ 一块会缩小的暗斑 = 用户说的"硬切/闪一下"。 */
-  eatAway(from, wpLastDur);
+
+  // 旧图：保持不透明到铺满（被盖住），之后才退尽 —— 永远有东西托底
+  anim(from, [
+    {opacity:1, transform:"scale(1)", filter:"blur(0px) saturate(1)"},
+    {opacity:1, transform:"scale(1.05)", filter:"blur(9px) saturate(.55)", offset:.86},
+    {opacity:0, transform:"scale(1.06)", filter:"blur(11px) saturate(.5)"},
+  ], {duration: coverAt + 240, easing:"linear"});
+
   return () => made.forEach(s => s.remove());
 }
 
-/* ── 推镜：新图从近处拉回，旧图放大虚化退出（电影感最强） ── */
 function fxZoom(to, from){
   anim(to, [{transform:"scale(1.25)", filter:"blur(9px) saturate(.7)", opacity:0},
             {transform:"scale(1)", filter:"blur(0px) saturate(1)", opacity:1}],
@@ -2041,7 +2093,8 @@ async function _wpTransition(url){
   _wpLastFx = fx;
 
   wpCleanup = null;
-  if (fx === "iris")         fxIris(to, from, rim);
+  if (fx === "fade")         fxFade(to, from, rim);
+  else if (fx === "iris")    fxIris(to, from, rim);
   else if (fx === "wipe")    fxWipe(to, from, rim);
   else if (fx === "blinds")  wpCleanup = fxStrips(to, from, rim, false, false);
   else if (fx === "shutter") wpCleanup = fxStrips(to, from, rim, true, true);
@@ -2521,25 +2574,29 @@ const NEON_MODES = ["neon-breathe", "neon-flow", "neon-orbit", "neon-aurora", "n
    不做这一步的话，`classList` 一换，animation 立刻重置 ⇒ 看着很生硬（用户反馈）。 */
 function neonSwapTo(mode, color){
   const wm = document.querySelector(".wordmark");
-  if (!wm){ return; }
+  if (!wm) return;
   const apply = () => {
     wm.classList.remove("neon-breathe", "neon-flow", "neon-bead", "neon-orbit",
                         "neon-aurora", "neon-prism", "neon-scan", "neon-ring");
     wm.style.setProperty("--nc", color);
     wm.classList.add(mode);
     window.__accelNeon = { mode, color };
-    try {
-      wm.animate([{opacity:.55, transform:"translateY(2px) scale(.985)"},
-                  {opacity:1, transform:"none"}],
-                 {duration:420, easing:"cubic-bezier(.2,.8,.3,1)"});
-    } catch (e) {}
   };
+  /* ★★★ 这里踩过一个致命坑（用户实测："标题特效很淡 / 疑似 Kira 没显示"）：
+     第一段动画写 `fill:"forwards"` ⇒ 它播完会**把字永久停在 opacity:.55 + 微缩**；
+     而第二段"浮回"动画没有 fill ⇒ **播完就失效**，不再覆盖那个残留值
+     ⇒ 字就**永远停在半暗的状态**（看起来像缺字、特效很淡）。
+     正确做法：**压暗与浮回用同一个动画**（中间关键帧压暗即可），
+     并且**不要用 fill:forwards 去定格中间态**，结束时必须回到 opacity:1。 */
   try {
-    wm.animate([{opacity:1, transform:"none"},
-                {opacity:.55, transform:"translateY(2px) scale(.985)"}],
-               {duration:280, easing:"ease-out", fill:"forwards"})
-      .finished.then(apply).catch(apply);
-  } catch (e) { apply(); }
+    wm.animate([
+      {opacity:1,   transform:"none"},
+      {opacity:.55, transform:"translateY(2px) scale(.985)", offset:.42},
+      {opacity:1,   transform:"none"},
+    ], {duration:700, easing:"cubic-bezier(.3,0,.25,1)"});
+  } catch (e) {}
+  // 换类放在"最暗"的那一刻 ⇒ 观感是"呼吸间换了一套光"，且不会有中间定格
+  setTimeout(apply, 290);
 }
 
 function rollNeon(){
@@ -2715,37 +2772,60 @@ function hudFlyIn(){
 
 function hudReset(){
   const hud = document.getElementById("hud");
-  if (!hud) return;
-  /* ★★ 飞回期间**把面板上的数值与图标先留空**（body.hud-returning）。
-     否则卡片上已经有数字在显示、而读数又在飞回来的途中 ⇒ 两者重影。
-     用户原话："KPI 面板上不能先有数字，要等它们飞回来。" */
-  try { document.body.classList.add("hud-returning"); } catch (e) {}
-  /* ★ 不用"瞬间复位"（那会闪）。改成**飞回**：
-     先算出面板 KPI 区的位置，把 HUD 平移+缩放到那里，
-     同时淡出 —— 观感是"读数飞回卡片里"，与面板淡入同时完成。 */
-  try {
-    const kpis = document.querySelector(".kpis");
-    const r = kpis && kpis.getBoundingClientRect();
-    if (r && r.width) {
-      const hb = hud.getBoundingClientRect();
-      const dx = (r.left + r.width / 2) - (hb.left + hb.width / 2);
-      const dy = (r.top + r.height / 2) - (hb.top + hb.height / 2);
-      hud.style.transition = "transform .78s cubic-bezier(.4,0,.2,1), opacity .78s ease";
-      hud.style.transform = "translate(" + dx.toFixed(1) + "px," + dy.toFixed(1) + "px) scale(.45)";
-      hud.style.opacity = "0";
-    } else {
-      hud.style.transition = "opacity .5s ease";
-      hud.style.opacity = "0";
-    }
-  } catch (e) {
-    hud.style.opacity = "0";
+  if (!hud){ try { document.body.classList.remove("hud-returning"); } catch (e) {} return; }
+
+  /* 飞回期间把面板数值与图标**先留空**（用户要求："KPI 面板上不能先有数字，
+     要等它们飞回来"）。注意：**一定要有兜底把它移除**，否则数字会永久消失。 */
+  document.body.classList.add("hud-returning");
+
+  const items = Array.prototype.slice.call(hud.querySelectorAll(".hud-item"));
+  const think = hud.querySelector(".hud-think");
+  let last = 0;
+
+  items.forEach((el, idx) => {
+    const card = document.querySelector('.kpi[data-k="' + el.dataset.k + '"]');
+    if (!card) return;
+    const a = el.getBoundingClientRect();       // 当前（右上角）位置
+    const b = card.getBoundingClientRect();     // 目标（卡片）位置
+    const dx = (b.left + b.width / 2) - (a.left + a.width / 2);
+    const dy = (b.top + b.height / 2) - (a.top + a.height / 2);
+    const sx = Math.max(0.5, Math.min(2.4, b.width  / Math.max(1, a.width)));
+    const sy = Math.max(0.5, Math.min(2.4, b.height / Math.max(1, a.height)));
+    const dur = 700;
+    last = Math.max(last, dur + idx * 45);
+    try {
+      el.animate([
+        {transform:"translate(0,0) scale(1)", borderRadius:"999px", opacity:1},
+        // 中段先"抬"一下再落下 ⇒ 弧线轨迹（与飞入镜像）
+        {transform:`translate(${dx * .55}px, ${dy * .78}px) scale(${(sx + 1) / 2}, ${(sy + 1) / 2})`,
+         borderRadius:"14px", opacity:1, offset:.5},
+        {transform:`translate(${dx}px, ${dy}px) scale(${sx}, ${sy})`,
+         borderRadius:"8px", opacity:0},
+      ], {duration: dur, delay: idx * 45, easing:"cubic-bezier(.45,0,.3,1)", fill:"forwards"});
+    } catch (e) {}
+  });
+
+  if (think){
+    try {
+      think.animate([{opacity:1, transform:"none"},
+                     {opacity:0, transform:"translateY(-10px) scaleX(.7)"}],
+                    {duration:400, easing:"ease-in", fill:"forwards"});
+    } catch (e) {}
   }
-  // 飞完之后彻底复位（下次 zen 再重新计算起点）
-  setTimeout(function () {
+
+  /* ★★ 复位 + **保证移除 hud-returning**。
+     这里以前只复位了 HUD 的样式，**忘了移除 hud-returning**
+     ⇒ 面板数字永久隐藏（用户实测："显示 UI 后面板无数字"）。
+     兜底用两层：正常路径按 last 计时 + 一个独立的超时保险。 */
+  const restore = function () {
     hud.style.transition = "";
     hud.style.transform = "";
     hud.style.opacity = "";
-  }, 820);
+    try { hud.getAnimations({subtree:true}).forEach(a => a.cancel()); } catch (e) {}
+    document.body.classList.remove("hud-returning");     // ★ 关键
+  };
+  setTimeout(restore, last + 120);
+  setTimeout(restore, 1600);                              // ★ 保险：无论如何都恢复
 }
 
 /* ═══ 空闲欣赏模式：一段时间不操作就把面板 UI 收起来，只留品牌字与连接状态 ═══ */
@@ -2801,7 +2881,14 @@ initZen();
   if (!wm) return;
   wm.style.cursor = "pointer";
   wm.title = "点一下换一种光影";
-  wm.addEventListener("click", () => {
+  wm.addEventListener("click", (ev) => {
+    /* ★ 欣赏模式下点标题**只换特效，不恢复 UI**（用户要求）。
+       做法：把事件拦在这里 —— stopPropagation 会挡住冒泡到 window 的那个
+       `pointerdown` 恢复监听；因为恢复监听绑在 window 且用冒泡阶段。 */
+    if (document.body.classList.contains("zen")) {
+      try { ev.stopPropagation(); } catch (e) {}
+      try { ev.preventDefault(); } catch (e) {}
+    }
     const cur = (window.__accelNeon || {}).mode;
     let mode = cur;
     let guard = 0;
