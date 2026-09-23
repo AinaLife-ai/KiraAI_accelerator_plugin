@@ -27,7 +27,8 @@ from core.plugin import BasePlugin, logger, on, Priority, register, PluginPage, 
 from core.provider import LLMRequest, LLMResponse
 from core.chat.message_utils import KiraMessageBatchEvent
 
-from .patches import PatchHandle, PatchRegistry, install, breaker_for
+from .patches import (PatchHandle, PatchRegistry, install, breaker_for,
+                      mark_side_effects)
 from .stream_engine import StreamEngine, LLMClientProxy
 from .auto_thinking import (
     AutoThinkingController,
@@ -153,6 +154,12 @@ class AcceleratorPlugin(BasePlugin):
         self._resp_by_sid: dict[str, Any] = {}      # 每个会话各自的"本轮响应"
         # 本轮抢先发送的结果（按顺序），供发送层拼回 message_results 以对齐 message_id
         self._early_results: dict[str, list] = {}
+        # ★ 旁证台账：sid → 本轮已抢发的**段原文**列表
+        #   （响应标记丢失时的兜底；存原文而不是只存个数，
+        #     这样兜底时也能按内容剥离，对文本被改写同样稳健）
+        self._sent_ledger: dict[str, list] = {}
+        # ★ 记下"这一轮的响应"被发送层消费过没有 —— 用来发现"同一轮被发两次"
+        self._sent_once: set[str] = set()
         self._proxy_cache: dict[tuple, LLMClientProxy] = {}
         self._stats = {
             "turns": 0, "steps": 0,
@@ -470,8 +477,49 @@ class AcceleratorPlugin(BasePlugin):
                 self._last_seg_ts.clear()
             self._last_seg_ts[ctx.sid] = time.monotonic()
 
-    async def _emit_segment(self, seg: str, ctx: "SendCtx" = None) -> None:
+    async def _broadcast_after_xml_parse(self, ctx: "SendCtx", actions: list) -> list:
+        """广播 AFTER_XML_PARSE，并返回**插件改写后**的待发列表。
+
+        为什么必须有：抢先发送绕过了框架的 send_xml_messages，而那个函数里
+        除了 ON_MESSAGE_SENT，还派发 AFTER_XML_PARSE。实测 qq-enhance 的
+        「表情独立成行」就挂在这个钩子上 —— 不广播 ⇒ 功能失效。
+
+        容错原则：钩子出问题**不能拖垮发送**。任何一个 handler 抛异常时，
+        框架自己的 exec_handler 已经会捕获并转成异常事件，这里再兜一层：
+        最坏情况是"这次没被插件改写"，而不是"消息发不出去"。
+        """
+        try:
+            from core.plugin.plugin_handlers import event_handler_reg, EventType
+            if ctx.event is None:
+                return actions
+            for handler in event_handler_reg.get_handlers(EventType.AFTER_XML_PARSE):
+                try:
+                    await handler.exec_handler(ctx.event, actions)
+                except Exception:  # noqa: BLE001
+                    logger.exception("[accel] AFTER_XML_PARSE 的某个处理器出错（继续发送）")
+                if getattr(ctx.event, "is_stopped", False):
+                    logger.info("[accel] AFTER_XML_PARSE 阶段事件被停止")
+                    break
+        except Exception:  # noqa: BLE001
+            logger.exception("[accel] 广播 AFTER_XML_PARSE 失败（按未改写的内容发送）")
+        return actions
+
+    async def _emit_segment(self, seg: str, ctx: "SendCtx" = None) -> bool:
         """把一段已闭合的 <msg> 真正发出去，并补广播 ON_MESSAGE_SENT。
+
+        ★★ 投递契约（修「重复发送」的关键）：
+           **返回值 True = 这一段确实投递出去了；False = 没投递。**
+           而且**绝不向上抛异常**。
+
+        为什么要有这个契约：
+          发送是**不可撤销**的副作用，但原来它被当成普通调用 ——
+          `_emit_segment` 在投递成功之后还要记账、补广播、写统计，
+          这些只要抛异常，异常就冒到 StreamEngine 的 except ⇒ `mark_failed()`
+          ⇒ **那一段不计入 emitted** ⇒ 已发出去的内容被当成没发
+          ⇒ 框架剥离少切一段 ⇒ **用户看到最后一段重复**（线上截图就是这样）。
+
+          记账/补广播属于"投递之后的杂事"，失败只该告警，绝不该改变
+          "这一段到底发出去没有"这个事实。
 
         ctx 必须来自**这一次**请求（request 上挂的 SendCtx）——
         用实例变量会在并发会话下把消息发到别的会话去。
@@ -480,9 +528,38 @@ class AcceleratorPlugin(BasePlugin):
 
         mp = getattr(self.ctx, "message_processor", None)
         if ctx is None or mp is None or not ctx.sid or ctx.tag_set is None:
-            raise RuntimeError("抢先发送上下文不完整")
+            logger.error("[accel] 抢先发送上下文不完整，本段交回框架发送")
+            return False
 
-        actions = await mp._parse_xml_msg(seg, ctx.tag_set)
+        # 解析失败 ⇒ 没投递过任何东西，交回框架（由它统一报错/处理）
+        try:
+            actions = await mp._parse_xml_msg(seg, ctx.tag_set)
+        except Exception:  # noqa: BLE001
+            logger.exception("[accel] 抢先发送：解析失败，本段交回框架")
+            return False
+
+        # ★★ 必须广播 AFTER_XML_PARSE —— 否则「表情独立成行」这类功能会失效。
+        #
+        #   实测（qq-enhance 插件）：
+        #       @on.after_xml_parse(priority=Priority.HIGH)
+        #       async def process_stickers(self, event, message_chains: list):
+        #           ... 把含表情的链拆成「文字一条 + 每个表情单独一条」
+        #           message_chains.clear()
+        #           message_chains.extend(new_chains)     # ← 就地改写
+        #
+        #   框架正是靠这个列表的**可变性**生效：
+        #       actions = await self._parse_xml_msg(...)
+        #       for handler in AFTER_XML_PARSE handlers: await handler.exec_handler(event, actions)
+        #       for action in actions: await self.send_message_chain(...)
+        #
+        #   我们抢先发送时绕过了 send_xml_messages，如果只补 ON_MESSAGE_SENT、
+        #   不补 AFTER_XML_PARSE，插件就**完全看不到**这次发送
+        #   ⇒ 表情被塞在文字里一起发出去（用户实测的功能失效）。
+        #
+        #   语义与框架一致：**让钩子改写列表，然后按改写后的内容发送**。
+        actions = await self._broadcast_after_xml_parse(ctx, actions)
+
+        delivered = False
         from core.chat import MessageChain
 
         for action in actions:
@@ -497,14 +574,28 @@ class AcceleratorPlugin(BasePlugin):
             #     这正是用户报的"最小/最大间隔没生效"。
             await self._pace(ctx)
 
-            result = await mp.send_message_chain(ctx.sid, action)
-            # ★ 记下这一段的结果：发送层的剥离会把"已抢先发出的段"从文本里去掉，
-            #   而框架的 _add_message_ids 是**按位置**把 message_results 贴到 <msg> 上的。
-            #   只还回"剩余段"的结果 ⇒ 位置全错 ⇒ 模型在自己历史里读到**错位的
-            #   message_id**（提示词明确说这个 ID 由系统添加，模型会用它引用消息）。
-            #   所以这里按顺序攒起来，稍后拼回结果列表，位置就一一对应了。
-            self._early_results.setdefault(ctx.sid, []).append(result)
-            self._mark_sent(ctx)
+            # ── 投递本身：这一步成功即等于"已经发出去了"，后面任何失败都不改这个事实 ──
+            try:
+                result = await mp.send_message_chain(ctx.sid, action)
+            except Exception:  # noqa: BLE001
+                logger.exception("[accel] 抢先发送失败，本段交回框架发送（不丢内容）")
+                return delivered
+            delivered = True
+
+            # ── 以下都是"投递之后的杂事"，失败只告警，绝不改变 delivered ──
+            try:
+                # ★ 记下这一段的结果：发送层的剥离会把"已抢先发出的段"从文本里去掉，
+                #   而框架的 _add_message_ids 是**按位置**把 message_results 贴到 <msg> 上的。
+                #   只还回"剩余段"的结果 ⇒ 位置全错 ⇒ 模型在自己历史里读到**错位的
+                #   message_id**（提示词明确说这个 ID 由系统添加，模型会用它引用消息）。
+                self._early_results.setdefault(ctx.sid, []).append(result)
+            except Exception:  # noqa: BLE001
+                logger.exception("[accel] 记录抢发结果失败（不影响已投递的事实）")
+
+            try:
+                self._mark_sent(ctx)
+            except Exception:  # noqa: BLE001
+                logger.exception("[accel] 记录发送时刻失败（不影响已投递的事实）")
 
             # ★ 补广播 ON_MESSAGE_SENT（绕过框架发送层就必须补）
             try:
@@ -515,10 +606,24 @@ class AcceleratorPlugin(BasePlugin):
             except Exception:  # noqa: BLE001
                 logger.exception("[accel] 补广播 ON_MESSAGE_SENT 失败")
 
-            self._stats["early_sent"] += 1
-            es = self._stats
-            if es["first_seg_s"] is None:
-                es["first_seg_s"] = 0.0
+            try:
+                self._stats["early_sent"] += 1
+                if self._stats["first_seg_s"] is None:
+                    self._stats["first_seg_s"] = 0.0
+            except Exception:  # noqa: BLE001
+                pass
+
+        # ★ 旁证台账：本轮这个会话一共抢发了几段。
+        #   发送层的剥离优先用响应上的标记；标记万一取不到（字典被清、响应换过、
+        #   sid 不一致），就用这份台账兜底 —— 否则 `n=0` ⇒ 剥离不发生
+        #   ⇒ **整份回复被重新发一遍**（比漏切一段严重得多）。
+        if delivered and ctx is not None and ctx.sid:
+            try:
+                self._sent_ledger.setdefault(ctx.sid, []).append(seg)
+            except Exception:  # noqa: BLE001
+                pass
+
+        return delivered
 
     # ══════════════════════════════════════════════════════════
     # L5 自动思考注入
@@ -865,7 +970,7 @@ class AcceleratorPlugin(BasePlugin):
         """
         try:
             from core.message_manager import MessageProcessor
-            from .early_sent import early_sent_count, strip_early_sent
+            from .early_sent import early_sent_count
         except Exception:  # noqa: BLE001
             logger.exception("[accel] 导入 MessageProcessor 失败，跳过发送层剥离")
             return
@@ -883,9 +988,44 @@ class AcceleratorPlugin(BasePlugin):
                 sid_now = getattr(event, "sid", None)
                 resp = plugin._resp_by_sid.get(sid_now) if sid_now else None
                 n = early_sent_count(resp) if resp is not None else 0
+
+                # ★ 旁证：响应标记取不到时，用本轮台账兜底。
+                #   没有这一层，`n=0` 会让**整份回复被重新发送**（全量重复）。
+                from .early_sent import early_sent_segments, strip_early_sent_smart
+                segs = early_sent_segments(resp) if resp is not None else []
+                ledger = plugin._sent_ledger.get(sid_now, []) if sid_now else []
+                if n <= 0 and ledger:
+                    n = len(ledger)
+                    segs = list(ledger)
+                    logger.warning(
+                        "[accel] 响应标记缺失，改用本轮台账剥离 %d 段（避免重复发送）",
+                        n,
+                    )
+                elif n > 0 and not segs:
+                    # 标记在但段原文不在（理论上不该发生）⇒ 用台账补上原文
+                    segs = list(ledger)
+
+                # ★ 结构性异常检测：框架正常只把一轮交给 send_xml_messages **一次**。
+                #   真被调第二次时标记已消费，n=0 ⇒ 会把已发过的段**再发一遍**。
+                #   这不该发生，但发生了必须留下明确线索（原来会静默重复）。
+                if sid_now:
+                    if sid_now in plugin._sent_once:
+                        logger.error(
+                            "[accel] 同一轮（%s）被再次交给发送层 —— "
+                            "已抢发的内容可能被重复发送。请把这条日志反馈给插件作者。",
+                            sid_now,
+                        )
+                    plugin._sent_once.add(sid_now)
+                    if len(plugin._sent_once) > 64:
+                        plugin._sent_once.clear()
+
                 early = plugin._early_results.pop(sid_now, []) if sid_now else []
                 if n > 0:
-                    xml_data = strip_early_sent(xml_data, n)
+                    # ★ 用"按内容剥离"：count 是按**原始**文本数的，
+                    #   而 xml_tag_fixer 这类插件可能已改写 text_response
+                    #   （补 <msg> / 拆分消息块 / 合并块 / 转义实体），
+                    #   按序号切会少切（重复）或多切（丢内容）。
+                    xml_data = strip_early_sent_smart(xml_data, n, segs)
                     # 记录一下：本条只发剩余部分（纯观测用）
                     plugin._stats["strip_calls"] = plugin._stats.get("strip_calls", 0) + 1
 
@@ -918,7 +1058,12 @@ class AcceleratorPlugin(BasePlugin):
                         resp.__dict__.pop("_accel_early_sent_count", None)
                     if sid_now:
                         plugin._resp_by_sid.pop(sid_now, None)
-            return send_xml_messages
+                        plugin._sent_ledger.pop(sid_now, None)
+            # ★★ 声明「有不可撤销的副作用」：这个函数的调用会**真的把消息发出去**。
+            #   一旦它抛异常，`patches.guard` 默认会"回落原实现"——那等于**再发一遍**
+            #   （用户线上看到的就是同一段回复重复出现）。
+            #   声明之后 guard 不再回退，宁可把异常交给上层。
+            return mark_side_effects(send_xml_messages)
 
         h = PatchHandle("early_sent_strip")
         if install(h, MessageProcessor, "send_xml_messages", factory) is not None:
