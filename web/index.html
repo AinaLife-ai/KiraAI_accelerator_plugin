@@ -13,9 +13,9 @@
 
 :root{
   --ink:#0a0b12;
-  --panel:rgba(16,18,28,.50);
+  --panel:rgba(16,18,28,.30);
   --panel-solid:#161825;
-  --edge:rgba(255,255,255,.08);
+  --edge:rgba(255,255,255,.07);
   --edge-hi:rgba(255,255,255,.18);
   --fg:#eef1fb;
   --dim:#8e97b4;
@@ -101,7 +101,25 @@ body.no-wallpaper .wallpaper{display:none}
   -webkit-mask-image:radial-gradient(120% 80% at 50% 0%,#000 20%,transparent 78%)}
 
 /* ── 布局 ── */
-.shell{position:relative;z-index:2;max-width:880px;margin:0 auto;padding:26px 18px 104px}
+.shell{position:relative;z-index:2;max-width:880px;margin:0 auto;padding:26px 18px 104px;
+  transition:opacity .9s cubic-bezier(.4,0,.2,1)}
+/* ═══ 空闲欣赏模式：面板 UI 完全淡出，**只留品牌字与连接状态** ═══
+   ⚠️ 不能用 `:not(header)` —— 那会把 `.wordmark`（品牌字）也一起藏掉，
+      而它正是要保留的。改成显式列出"要藏"的部分。 */
+body.zen .shell > section,
+body.zen .shell > .tagline,
+body.zen .dock,
+body.zen .shell > header > .brand > div,
+body.zen .shell > header > .brand > .mark{opacity:0;pointer-events:none}
+/* 保留：品牌字 + 连接状态（并强制可见，避免被上面的规则误伤） */
+body.zen .shell > .wordmark,
+body.zen .shell > header > .status{opacity:1!important;pointer-events:auto}
+body.zen .shell > section,
+body.zen .shell > .tagline{transition:opacity .9s cubic-bezier(.4,0,.2,1)}
+.shell > header > .brand > div,
+.shell > header > .brand > .mark,
+.shell > header > .status,
+.shell > .wordmark{transition:opacity .9s cubic-bezier(.4,0,.2,1)}
 header{display:flex;align-items:flex-end;justify-content:space-between;gap:14px;margin-bottom:26px;flex-wrap:wrap}
 .brand{display:flex;align-items:center;gap:11px}
 .brand .mark{width:40px;height:40px;border-radius:13px;display:grid;place-items:center;
@@ -118,6 +136,45 @@ h1{margin:0;font-size:15px;letter-spacing:.3px;font-weight:600}
 .wordmark .o{background:linear-gradient(96deg,var(--pink),var(--violet) 45%,var(--mint));
   -webkit-background-clip:text;background-clip:text;color:transparent}
 .wordmark .e{-webkit-text-stroke:1.5px rgba(255,255,255,.5);color:transparent}
+
+/* ═══ 霓虹呼吸灯：三种模式随机、霓虹色随机 ═══
+   由 JS 给 .wordmark 加上 `neon-breathe` / `neon-flow` / `neon-orbit` 之一，
+   并用 `--nc` 指定本轮的霓虹主色。纯 CSS 驱动 ⇒ 不依赖 JS 的逐帧。 */
+.wordmark{position:relative}
+@keyframes neonBreath{
+  0%,100%{filter:none;opacity:.94}
+  50%{filter:drop-shadow(0 0 10px var(--nc)) drop-shadow(0 0 26px var(--nc));opacity:1}
+}
+.wordmark.neon-breathe{animation:neonBreath 3.4s ease-in-out infinite}
+
+/* 循环流动一圈：一条高光沿文字横向扫过 */
+@keyframes neonFlow{
+  0%{background-position:-160% 0}
+  100%{background-position:260% 0}
+}
+.wordmark.neon-flow .o,
+.wordmark.neon-flow .e{
+  background-image:linear-gradient(100deg,
+    var(--nc) 0%, var(--nc) 34%,
+    #fff 48%, var(--nc) 62%,
+    var(--nc) 100%);
+  background-size:260% 100%;
+  -webkit-background-clip:text;background-clip:text;color:transparent;
+  animation:neonFlow 3.6s linear infinite;
+  filter:drop-shadow(0 0 10px var(--nc));
+}
+.wordmark.neon-flow .e{-webkit-text-stroke:1.5px var(--nc)}
+
+/* 弹珠绕字一圈：一个小发光点沿文字外框环行 */
+@keyframes orbitSpin{from{transform:rotate(0)}to{transform:rotate(360deg)}}
+.wordmark.neon-orbit{filter:drop-shadow(0 0 8px var(--nc))}
+.wordmark.neon-orbit::after{
+  content:"";position:absolute;left:50%;top:50%;
+  width:min(52vw,420px);height:150%;margin-left:calc(min(52vw,420px) / -2);margin-top:-75%;
+  border-radius:50%;pointer-events:none;
+  background:radial-gradient(circle 7px at 100% 50%, #fff 0%, var(--nc) 45%, transparent 70%);
+  animation:orbitSpin 4.2s linear infinite;
+}
 @keyframes rise{to{opacity:1;transform:none}}
 .tagline{margin:0 0 24px;color:var(--dim);font-size:12.5px;letter-spacing:.2px}
 
@@ -270,7 +327,23 @@ select{appearance:none;background-image:none;cursor:pointer}
 .mini{font:inherit;font-size:10px;padding:1px 7px;border-radius:6px;cursor:pointer;
   background:rgba(255,255,255,.06);color:var(--dim);border:1px solid var(--edge);margin-left:6px}
 .mini:hover{color:var(--fg);border-color:var(--violet)}
-.status{font-size:11.5px;color:var(--dim2);display:flex;align-items:center;gap:5px}
+.status        {font-size:11.5px;color:var(--dim2);display:flex;align-items:center;gap:5px}
+/* ═══ 「已连接」心电图：一条细脉冲线在状态条里循环扫过 ═══ */
+.status{position:relative;overflow:hidden}
+.status::after{
+  content:"";position:absolute;inset:0;pointer-events:none;opacity:0;
+  background-image:url("data:image/svg+xml;utf8,\
+<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 24' preserveAspectRatio='none'>\
+<polyline points='0,12 16,12 21,12 25,4 29,20 34,12 52,12 57,12 61,6 65,18 69,12 120,12' \
+fill='none' stroke='%235ef0c0' stroke-width='1.6' stroke-linejoin='round'/></svg>");
+  background-repeat:no-repeat;background-size:120px 100%;background-position-x:-120px;
+}
+.status.ok::after{opacity:1;animation:ecgSweep 2.4s linear infinite}
+@keyframes ecgSweep{
+  from{background-position-x:-120px}
+  to{background-position-x:100%}
+}
+@media (prefers-reduced-motion:reduce){ .status.ok::after{animation:none;opacity:.35} }
 .status.ok{color:var(--mint)}.status.err{color:var(--rose)}
 
 .hint-note{font-size:11px;color:var(--dim2);margin-top:9px;display:flex;gap:6px;align-items:flex-start}
@@ -425,9 +498,13 @@ html.jsfx .sp-rim{animation:none!important}
 </head>
 <body>
 <div class="wallpaper" id="wallpaper" aria-hidden="true">
+  <!-- ★ 顺序即层叠：遮罩(scrim)**必须在两个图层下面**。
+       它只负责"压暗壁纸"；盖在图上时，交接瞬间若下层短暂不可见，
+       就会**透出遮罩的黑** ⇒ 观感是"黑屏弹一下 / UI 弹一弹"。
+       放在最底：任何时刻看到的都是"图 + 遮罩"的合成结果，不会露黑。 -->
+  <div class="wp-scrim"></div>
   <div class="wp-stage" id="wp-a"><div class="wp-img"></div></div>
   <div class="wp-stage" id="wp-b"><div class="wp-img"></div></div>
-  <div class="wp-scrim"></div>
   <div class="wp-rim" id="wpRim"></div>
 </div>
 
@@ -448,7 +525,13 @@ html.jsfx .sp-rim{animation:none!important}
        （踩过的坑：上一版把 tableValues 从 0.92 调到 -0.06，以为在"降阈值"，
          实际离散断点不动、调的是输出值 ⇒ v=0.92 时输入<0.5 的像素输出 0.92
          = 几乎不透明 ⇒ **开场就满屏墨**，极性正好反了。）-->
-<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+<!-- ★★ 这个 SVG 是墨渗的**绘制载体**，必须**全屏**：
+     里面 `<image width="100%" height="100%">` 的百分比是相对**这个 SVG 自身**解析的；
+     SVG 若是 0×0，image 也就是 0×0 ⇒ **什么都画不出来** ⇒ 墨渗的"新图"根本不可见
+     ⇒ 收尾时画面直接跳出来 = 用户说的"硬切"（这是第三个真 bug）。
+     只作载体、不接收指针事件；z-index 与壁纸层同层（在 .wp-scrim 之下）。 -->
+<svg style="position:fixed;inset:0;width:100%;height:100%;z-index:0;pointer-events:none"
+     aria-hidden="true">
   <mask id="wpInkMask" maskUnits="objectBoundingBox"
         x="0" y="0" width="1" height="1">
     <rect x="0" y="0" width="100%" height="100%"
@@ -550,17 +633,17 @@ window.__accelSplashShownAt = (window.performance && performance.now())
       var e2 = document.getElementById("splash");
       if (e2 && !e2.hidden) {
         e2.classList.add("out");
-        setTimeout(function () { e2.hidden = true; }, 1300);
+        setTimeout(function () { e2.hidden = true; }, 1500);
       }
       window.__accelSplash = false;
     } catch (_) {}
-  }, 10400);
+  }, 11600);
   // ③ 跳过
   sp.addEventListener("click", function () {
     if (window.finishSplash) window.finishSplash();
     else {
       sp.classList.add("out");
-      setTimeout(function () { sp.hidden = true; }, 1300);
+      setTimeout(function () { sp.hidden = true; }, 1500);
       window.__accelSplash = false;
     }
   });
@@ -569,7 +652,7 @@ window.__accelSplashShownAt = (window.performance && performance.now())
       if (window.finishSplash) window.finishSplash();
       else {
         sp.classList.add("out");
-        setTimeout(function () { sp.hidden = true; }, 1300);
+        setTimeout(function () { sp.hidden = true; }, 1500);
         window.__accelSplash = false;
       }
     }
@@ -1418,12 +1501,23 @@ function revealIn(to, dur, scaleFrom){
    时长接近新图 ⇒ 新图成为覆盖层之后，旧图才在下面散尽
    ⇒ 真正的"色彩被覆盖"，不会出现两张都半透明的糊感。 */
 function eatAway(from, dur){
-  const d = Math.round(dur * 0.95);
-  anim(from, [{opacity:1},{opacity:1, offset:.22},{opacity:0}],
-       {duration:d, easing:"cubic-bezier(.4,0,.5,1)"});
-  anim(from, [{transform:"scale(1)", filter:"blur(0px) saturate(1)"},
-              {transform:"scale(1.065)", filter:"blur(11px) saturate(.42)"}],
-       {duration:d, easing:"cubic-bezier(.4,0,.6,1)"});
+  /* ★★ 旧图在整个"被覆盖"过程中**保持不透明**。
+     为什么不能中途淡出（这是个真 bug，用户反馈"背景切换还是有几个是硬切"）：
+     揭示的中段，新图只覆盖了一部分，而**未覆盖的那部分**若显示半透明的旧图，
+     后面就是页面底色 ⇒ **那一块会明显变暗** ⇒ 看着就是硬切/闪一下。
+     正确语义是"被后图吃掉"：旧图保持实，只做推近/模糊/降饱和（被压住的质感），
+     等新图**铺满**（即 dur 时刻）之后才淡出 —— 那时它已经被盖住、看不见了。 */
+  anim(from, [
+    {transform:"scale(1)", filter:"blur(0px) saturate(1)"},
+    {transform:"scale(1.06)", filter:"blur(11px) saturate(.45)"},
+  ], {duration:dur, easing:"cubic-bezier(.4,0,.6,1)"});
+
+  // 不透明度：**保持 1 直到新图铺满**，之后才淡出（此时已不可见）
+  anim(from, [
+    {opacity:1},
+    {opacity:1, offset:Math.min(1, dur / (dur + 260))},
+    {opacity:0},
+  ], {duration:dur + 260, easing:"linear"});
 }
 
 /* 复位"揭示光环"（每轮必须清干净，否则上一轮的宽度/背景会残留） */
@@ -1816,43 +1910,39 @@ const WM_FX_FN = {
    还会和 CSS 的入场动画撞车（用户实测："箴言是直接出现的，也没合适停留"）。
    现在每条时间线都显式排：入场 → 保持不透明 → 末尾淡出。 */
 const MOTTO_FX_FN = {
-  /* ★★ 时长必须**装进**"箴言起点(2250ms) → 收尾(4600ms)"这个窗口（2350ms），
-     否则会被收尾**截断** —— 截断看起来就是"箴言直接消失、没有停留"
-     （用户实测反馈过）。所以取 2100~2200ms，末尾留 150~250ms 余量。
-     每条都是"入场 → 停住(offset .20→.86) → 淡出"。 */
+  /* ★★★ 为什么**不再自带淡出**（用户连续反馈"停留太短、很快就消失"）：
+     以前每条时间线是"入场 → 停留 → **淡出**"，而"动画结束"就等于**已经淡没了**。
+     于是收尾那 550ms 里箴言其实**不在画面上** —— 用户感觉到的停留远短于数字。
+     现在改为：**只做入场 + 停留**（`fill:"both"` 让末帧一直保持）
+     ⇒ 箴言一直清晰地留在那里，直到**整场开屏一起化开**。
+     这样"停留"就是真正的停留：从入场完成(2250+~1s) 一直留到收尾(6200)。
+
+     时长也要装进窗口：起点 2.25s → 收尾 6.2s（3950ms 窗口）。 */
   rise: el => el.animate(
-    [{opacity:0, transform:"translateY(12px)"},
-     {opacity:1, transform:"none", offset:.20},
-     {opacity:1, transform:"none", offset:.86},
-     {opacity:0, transform:"none"}],
-    {duration:2400, easing:"cubic-bezier(.16,1,.3,1)", fill:"both"}),
+    [{opacity:0, transform:"translateY(14px)"},
+     {opacity:1, transform:"none", offset:.34},
+     {opacity:1, transform:"none"}],
+    {duration:2600, easing:"cubic-bezier(.16,1,.3,1)", fill:"both"}),
   blur: el => el.animate(
-    [{opacity:0, filter:"blur(9px)"},
-     {opacity:1, filter:"blur(0)", offset:.22},
-     {opacity:1, filter:"blur(0)", offset:.86},
-     {opacity:0, filter:"blur(9px)"}],
-    {duration:2400, easing:"cubic-bezier(.2,0,.4,1)", fill:"both"}),
+    [{opacity:0, filter:"blur(10px)"},
+     {opacity:1, filter:"blur(0)", offset:.36},
+     {opacity:1, filter:"blur(0)"}],
+    {duration:2600, easing:"cubic-bezier(.2,0,.4,1)", fill:"both"}),
   track: el => el.animate(
     [{opacity:0, letterSpacing:"1.4em"},
-     {opacity:1, letterSpacing:".02em", offset:.30},
-     {opacity:1, letterSpacing:".02em", offset:.86},
-     {opacity:0, letterSpacing:".02em"}],
-    {duration:2500, easing:"cubic-bezier(.16,1,.3,1)", fill:"both"}),
+     {opacity:1, letterSpacing:".02em", offset:.42},
+     {opacity:1, letterSpacing:".02em"}],
+    {duration:2800, easing:"cubic-bezier(.16,1,.3,1)", fill:"both"}),
   type: async el => {
     const txt = el.dataset.txt || "";
     el.textContent = "";
     el.style.opacity = "1";
     for (let i = 1; i <= txt.length; i++){
       el.textContent = txt.slice(0, i);
-      // 打字总时长 480ms（不随长度变），后面才有足够的"停住"时间
-      await sleep(Math.max(14, 480 / Math.max(1, txt.length)));
+      await sleep(Math.max(15, 560 / Math.max(1, txt.length)));
     }
-    /* ★ 停留要够久：用户反馈"最后停留太短、消失太快"。
-       整条 = 480(打字) + 1800(停) + 650(淡出) = 2930ms，
-       必须 **装进** 箴言起点(2250) → 收尾(5200) 这个 2950ms 的窗口，
-       否则会被收尾截断（截断看起来就是"突然消失"）。 */
-    await sleep(1800);                                  // ★ 打完停住
-    el.animate([{opacity:1},{opacity:0}], {duration:650, fill:"forwards"});
+    /* ★ 打完就**一直留着**（不再自己淡出）—— 淡出交给整场开屏的收尾。
+       这样"停留"是真实的：从打完到收尾约 2.9s。 */
   },
 };
 
@@ -1994,7 +2084,7 @@ function _playSplash(){
   // 时间轴：0→1.0s 背景渐显 ｜ 0.75→1.6s 字母就位并**停住**
   //         1.85s 副标题 ｜ 2.05s 分隔线 ｜ 2.25→4.3s 箴言（入场后停住）
   //         4.6s 整体化开退场 —— 总时长约 5.8s，留足"看"的时间
-  after(5200, finishSplash);
+  after(6200, finishSplash);
 }
 
 function finishSplash(){
@@ -2026,7 +2116,20 @@ function finishSplash(){
     }
   } catch (e) { /* 对齐失败不影响收尾 */ }
 
-  const OUT_MS = 1200;
+  /* ★ 收尾期间把当前图层**钉住**（inline opacity:1）。
+     开屏正在淡出、页面在它后面；这段时间绝不能出现"图层不可见"的帧 ——
+     一旦有，就会透出遮罩的黑 ⇒ "弹一下"。
+     收尾结束后由 wpNormalize 统一清掉这个 inline 值。 */
+  const OUT_MS = 1400;
+  try {
+    ["wp-a", "wp-b"].forEach(function (id) {
+      const st = document.getElementById(id);
+      if (st && st.classList.contains("on")) {
+        const im = st.querySelector(".wp-img");
+        if (im) im.style.opacity = "1";
+      }
+    });
+  } catch (e) { /* 钉不住也不影响收尾 */ }
   try {
     sp.animate([
       {opacity:1, transform:"scale(1)",     filter:"blur(0px)"},
@@ -2073,10 +2176,61 @@ async function poll(){
   }
 }
 
+/* ═══ 霓虹文字特效（随机模式 + 随机霓虹色）═══
+   三种模式每次进入页面随机选一种：
+     breathe —— 呼吸发光（明暗与光晕一起起伏）
+     flow    —— 循环流动一圈（高光沿文字横向扫过）
+     orbit   —— 弹珠绕字一圈（一个小发光点沿字外框环行）
+   霓虹主色也从一组霓虹色里随机取。纯 CSS 驱动，JS 只负责"选"。 */
+const NEON_COLORS = ["#ff6fae", "#8b7cff", "#5ef0c0", "#00e5ff", "#ff4fd8",
+                     "#7cf5ff", "#b18bff", "#ff8ad4"];
+const NEON_MODES = ["neon-breathe", "neon-flow", "neon-orbit"];
+
+function initNeon(){
+  const wm = document.querySelector(".wordmark");
+  if (!wm) return;
+  const mode = NEON_MODES[Math.floor(Math.random() * NEON_MODES.length)];
+  const color = NEON_COLORS[Math.floor(Math.random() * NEON_COLORS.length)];
+  wm.style.setProperty("--nc", color);
+  wm.classList.remove("neon-breathe", "neon-flow", "neon-orbit");
+  wm.classList.add(mode);
+  window.__accelNeon = { mode, color };
+}
+
+/* ═══ 空闲欣赏模式：一段时间不操作就把面板 UI 收起来，只留品牌字与连接状态 ═══ */
+let zenTimer = null, zenOn = false;
+function exitZen(){
+  if (!zenOn) return;
+  zenOn = false;
+  document.body.classList.remove("zen");
+}
+function armZen(){
+  if (zenTimer) clearTimeout(zenTimer);
+  const secs = Number(window.__accelZenSeconds ?? 10);
+  if (!(secs > 0)) return;                 // 0 = 关闭该功能
+  zenTimer = setTimeout(() => {
+    zenOn = true;
+    document.body.classList.add("zen");
+  }, secs * 1000);
+}
+function initZen(){
+  /* ★ 恢复条件：**点击画面任意处 / 按键**（用户明确要求），
+     不是"移动鼠标就出来" —— 那样手一碰鼠标 UI 就跳回来，没法安静欣赏背景。
+     计时也从"进入页面"起算；点击/按键既恢复 UI、也重新开始计时。 */
+  const wake = () => { exitZen(); armZen(); };
+  window.addEventListener("pointerdown", wake, { passive: true });
+  window.addEventListener("keydown", wake);
+  // 滚轮/触摸滑动也算"用户在操作"（移动端没有 hover，点一下就恢复即可）
+  window.addEventListener("touchstart", wake, { passive: true });
+  armZen();
+}
+
 /* ═══ 启动 ═══ */
 $("#save").addEventListener("click", saveConfig);
 $("#revert").addEventListener("click", revert);
 poll(); setInterval(poll, 3000);
+initNeon();
+initZen();
 /* 壁纸配置独立读取（即使配置加载失败也要能显示） */
 (async function initWallpaper(){
   try {
@@ -2091,6 +2245,7 @@ poll(); setInterval(poll, 3000);
       if (typeof w.wallpaper_parallax === "boolean") wpParallax = w.wallpaper_parallax;
       if (typeof w.wallpaper_splash === "boolean") wpSplash = w.wallpaper_splash;
       if (typeof w.wallpaper_splash_motto === "boolean") wpSplashMotto = w.wallpaper_splash_motto;
+      if (typeof w.ui_zen_seconds === "number") window.__accelZenSeconds = w.ui_zen_seconds;
     }
   } catch(e){ /* 用默认 */ }
   if (!WALLPAPERS.length){

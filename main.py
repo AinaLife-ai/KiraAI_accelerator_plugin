@@ -1024,21 +1024,37 @@ class AcceleratorPlugin(BasePlugin):
                 resp = plugin._resp_by_sid.get(sid_now) if sid_now else None
                 n = early_sent_count(resp) if resp is not None else 0
 
-                # ★ 旁证：响应标记取不到时，用本轮台账兜底。
-                #   没有这一层，`n=0` 会让**整份回复被重新发送**（全量重复）。
+                # ★★★ 台账是**权威来源**，优先用它（不再叫"兜底"，也不再告警）。
+                #
+                #   为什么台账优先：
+                #     · `_sent_ledger` 是在**发送的那一刻**逐段记下的 ——
+                #       它是"确实发出去了"的第一手记录；
+                #     · `_accel_early_sent_count` 只是同一份信息挂在响应对象上的**拷贝**，
+                #       而框架在 ON_LLM_RESPONSE 时已消费/改写它，
+                #       其它插件（如 xml_tag_fixer）还会重写整个响应
+                #       ⇒ **标记取不到是常态，不是异常**。
+                #
+                #   ⚠️ 原来这里打 `响应标记缺失，改用本轮台账剥离` 的 warning，
+                #     暗示"台账只是兜底"，与实际相反 ⇒ 用户实测"一直报 warning"，
+                #     被这条日志误导（以为有故障）。现在拿不到就**安静地用**。
                 from .early_sent import early_sent_segments, strip_early_sent_smart
                 segs = early_sent_segments(resp) if resp is not None else []
                 ledger = plugin._sent_ledger.get(sid_now, []) if sid_now else []
-                if n <= 0 and ledger:
+                if ledger:
+                    # 台账优先（更权威）
+                    if n > 0 and n != len(ledger):
+                        # ★ 两边都有但**不一致** —— 这才是真异常，值得留线索
+                        logger.warning(
+                            "[accel] 已发段数不一致：响应标记 %d 段、台账 %d 段，以台账为准",
+                            n, len(ledger),
+                        )
                     n = len(ledger)
                     segs = list(ledger)
-                    logger.warning(
-                        "[accel] 响应标记缺失，改用本轮台账剥离 %d 段（避免重复发送）",
-                        n,
-                    )
                 elif n > 0 and not segs:
-                    # 标记在但段原文不在（理论上不该发生）⇒ 用台账补上原文
-                    segs = list(ledger)
+                    # 台账没有、标记在但段原文不在（理论上不该发生）
+                    # ⇒ 只能按序号剥离，留一条线索
+                    logger.warning(
+                        "[accel] 有已发标记但拿不到段原文（台账为空），按序号剥离 %d 段", n)
 
                 # ⚠️ 这里曾经有个"同一 sid 被交给发送层两次"的检测 —— **已删除，它误报**。
                 #   为什么误报：sid 是**会话** ID，同一会话的**下一轮**不会变，

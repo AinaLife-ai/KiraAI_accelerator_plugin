@@ -49,9 +49,12 @@ print(f"     墨渗偏置（从代码读到）: BIAS0={B0}  BIAS1={B1}")
 # ⚠️ 正则必须用 `\bim`：只写 `im\.style` 会匹配到 `r`**`im`**`.style.opacity`
 #    （wpRim 的光环有 `rim.style.opacity = "0"`，那是**光环**，不是图片层）。
 #    上一版测试就是这么自己误报的。
+# ★ 收尾时会**有意**把当前图层钉住（写 inline opacity:1）——
+#   那是为了在开屏淡出的那一刻杜绝"图层不可见"的帧（否则会透出遮罩的黑 ⇒ 弹一下）。
+#   所以判据放宽为：**除了收尾钉住那一处**，没有别的地方给图片层写 inline opacity。
 img_opacity_writes = re.findall(r"\bim\.style\.opacity\s*=", js)
-check("★ 没有任何一行给**图片层**（im）写 inline opacity",
-      not img_opacity_writes, f"找到 {len(img_opacity_writes)} 处")
+check("★ 只有收尾钉住那一处给图片层写 inline opacity（其余地方都不写）",
+      len(img_opacity_writes) <= 1, f"找到 {len(img_opacity_writes)} 处")
 
 # ⚠️ **不能删空格**：`.wp-stage.on .wp-img` 里的空格是**后代选择器**，
 #    删掉就变成另一个选择器（上一版测试自己写错、自己报红）。
@@ -260,7 +263,7 @@ m_total = re.search(r"after\((\d+), finishSplash\)", js)
 _tr2 = re.search(r"\.splash\{[^}]*transition:opacity (\d+(?:\.\d+)?)s", HTML, re.S)
 _dis = float(_tr2.group(1)) * 1000 if _tr2 else 0
 _tot = (int(m_total.group(1)) + _dis) if m_total else 0
-check("★ 总时长 ≥5s（收尾起点 + 化开过渡）", _tot >= 5000,
+check("★ 总时长 ≥7s（收尾起点 6.2s + 化开 1.4s）", _tot >= 7000,
       f"{_tot:.0f}ms = {m_total.group(1) if m_total else '?'} + {_dis:.0f}")
 check("★ 收尾过渡 ≥1s（化开而不是硬跳）",
       re.search(r"\.splash\{[^}]*transition:opacity (\d+(?:\.\d+)?)s", HTML) is not None
@@ -354,11 +357,22 @@ check("★ 标题/箴言特效用 fill:both（backwards 会让字母播完消失
 _mfx = js[js.index("const MOTTO_FX_FN"):js.index("\n};", js.index("const MOTTO_FX_FN"))]
 # ⚠️ 不写死 offset 数值（改一次停留就要改测试）；直接数 offset 次数：
 #   每条时间线应有"起点 offset + 停留终点 offset"两处。
+# 新结构：`{opacity:0…} → {opacity:1, offset:.NN} → {opacity:1}`（末帧无 offset = 保持到结束）
 _h_mfx = re.findall(r"offset:\.(\d+)", _mfx)
-check("★ 箴言特效带停住（每条两处 offset = 起点 + 停留终点）",
-      len(_h_mfx) >= 6, f"offset: .{_h_mfx}")
-check("★ 箴言特效结尾会淡出（不再一直亮着）",
-      _mfx.count("opacity:0") >= 4)
+check("★ 箴言每条都有『入场完成点』offset（之后一直保持）",
+      len(_h_mfx) >= 3, f"offset: .{_h_mfx}")
+# ★ 设计变更（用户持续反馈"停留太短、很快消失"）：
+#   箴言现在**不再自己淡出** —— "动画结束 = 已消失"是造成"停留短"的根因。
+#   改为只做「入场 → 保持」，淡出交给**整场收尾**一起化开。
+#   ⇒ 判据从"结尾会淡出"改为"结尾必须是 opacity:1（保持）"。
+# ⚠️ 不能简单查"有没有 opacity:0" —— 那是**入场首帧**，本来就该有。
+#    要查的是**末帧**：三条时间线的最后一帧必须都是 `opacity:1`（保持）。
+_motto_frames = re.findall(r"\{(opacity:[01][^}]*)\}", _mfx)
+_last_ops = [fr.split(",")[0] for fr in _motto_frames]
+# rise/blur/track 各一条时间线，末帧应为 opacity:1；type 是 async 不计
+_ends_ok = _last_ops.count("opacity:1") >= 3
+check("★ 箴言三条时间线都以 opacity:1 收尾（保持可见，不再自己淡出）",
+      _ends_ok, f"各帧首属性: {_last_ops}")
 
 check("★ 标题特效延后到 750ms 才跑（画面先出、字再长出来）",
       re.search(r"after\(750,", js) is not None)
@@ -367,8 +381,9 @@ check("★ 副标题/分隔线有各自的 delay（错峰、有停留）",
 check("★ 箴言延后到 2.25s（前面留出停留）",
       re.search(r"after\(2250,", js) is not None)
 m_fin = re.search(r"after\((\d+), finishSplash\)", js)
-check("★ 整体收尾在 4.6s 左右（化开 1.2s ⇒ 总约 5.8s）",
-      m_fin and 4200 <= int(m_fin.group(1)) <= 5200,
+# ★ 收尾推到 6.2s：给箴言真正的"停留"（原来 5.2s，停留被压得太短）
+check("★ 整体收尾 >= 6s（给箴言留出真实停留）",
+      m_fin and int(m_fin.group(1)) >= 6000,
       m_fin.group(1) + "ms" if m_fin else "找不到")
 
 print()
@@ -423,8 +438,8 @@ else:
     check("★ 能定位箴言起点/时长/收尾", False,
           f"at={_motto_at} durs={_mdur} fin={bool(_fin)}")
 _holds2 = re.findall(r"offset:\.(\d+)", _motto)
-check("★ 箴言每条都有停住（每条两处 offset = 起点 + 停留终点）",
-      len(_holds2) >= 6, f"offset: .{_holds2}")
+check("★ 箴言每条都有入场完成点 offset（之后保持到整场收尾）",
+      len(_holds2) >= 3, f"offset: .{_holds2}")
 
 print()
 print("═══ 13) ★★ 开屏收尾必须用显式 Web Animation（CSS 同帧加类可能被跳过）")
@@ -527,6 +542,97 @@ for _f in ("fxIris", "fxWipe", "fxStrips", "fxZoom"):
     check(f"★ {_f} 的 eatAway 时长 = 本套实际时长（旧图不会提前消失）",
           bool(_set and _eat and _eat.group(1).strip() == "wpLastDur"),
           f"wpLastDur={_set.group(1).strip() if _set else '?'} eatAway={_eat.group(1).strip() if _eat else '?'}")
+
+print()
+print("═══ 17) ★★ 旧图全程不透明（揭示中途露底色 = 硬切）")
+_i = js.index("function eatAway")
+_eat = js[_i:js.index("\n}", _i)]
+check("★ eatAway 有『保持不透明到铺满』的 offset 保持点",
+      "offset:Math.min(1, dur / (dur + 260))" in _eat)
+check("★ eatAway 的淡出发生在**铺满之后**（时长 = dur + 260）",
+      "duration:dur + 260" in _eat)
+check("★ eatAway 的旧图仍保留推近/模糊/降饱和（被压住的质感）",
+      "blur(11px)" in _eat and "saturate(.45)" in _eat)
+
+print()
+print("═══ 18) ★★ 开屏收尾：遮罩必须在图层**之下** + 收尾钉住图层")
+_wi = HTML.index('<div class="wallpaper"')
+_wj = HTML.index('id="wpRim"')
+_sec = HTML[_wi:_wj]
+check("★ .wp-scrim 出现在两个 .wp-stage **之前**（在图层之下）",
+      _sec.index("wp-scrim") < _sec.index('id="wp-a"'),
+      f"scrim@{_sec.index('wp-scrim')} vs stage@{_sec.index('id=' + chr(34) + 'wp-a')}")
+check("★ 收尾时把当前图层钉住（inline opacity:1），杜绝任一帧露黑",
+      'im.style.opacity = "1"' in js and 'classList.contains("on")' in js)
+
+print()
+print("═══ 19) ★★ 墨渗的 SVG 必须**全屏**（0×0 时 image 尺寸为 0 ⇒ 画不出来）")
+# ⚠️ 不能取"第一个 <svg>" —— ECG 的 data-URI 里也有 <svg>（会误伤）。
+#    要定位承载墨渗的那个：它带 id="wpInkImg"。
+_svg = re.search(r"<svg[^>]*>\s*(?:<!--[\s\S]*?-->\s*)*<mask id=\"wpInkMask\"", HTML)
+_svg = re.search(r"<svg[^>]*>(?=[\s\S]{0,2400}?id=\"wpInkMask\")", HTML)
+check("★ SVG 载体是全屏的（不是 width=0 height=0）",
+      _svg is not None and "width:100%" in _svg.group(0) and "height:100%" in _svg.group(0),
+      _svg.group(0)[:90] if _svg else "找不到")
+check("★ 且不接收指针事件（不挡操作）",
+      _svg is not None and "pointer-events:none" in _svg.group(0))
+
+print()
+print("═══ 20) ★★ 箴言不再自带淡出（停留必须是真停留）")
+_mfx2 = js[js.index("const MOTTO_FX_FN"):js.index("\n};", js.index("const MOTTO_FX_FN"))]
+_mf2 = re.findall(r"\{(opacity:[01][^}]*)\}", _mfx2)
+_l2 = [fr.split(",")[0] for fr in _mf2]
+check("★ 箴言三条时间线都以 opacity:1 收尾（不再自己淡出）",
+      _l2.count("opacity:1") >= 3, f"各帧首属性: {_l2}")
+check("★ 停留由整场收尾统一化开（收尾 >= 6s）",
+      re.search(r"after\((\d+), finishSplash\)", js) is not None
+      and int(re.search(r"after\((\d+), finishSplash\)", js).group(1)) >= 6000)
+
+print()
+print("═══ 21) ★ 霓虹文字特效（三模式随机 + 霓虹色随机）")
+check("★ 有三种霓虹模式：呼吸 / 流光 / 弹珠环绕",
+      all(k in HTML for k in ("neon-breathe", "neon-flow", "neon-orbit")))
+check("★ 霓虹色是**一组**随机的（不是写死一个色）",
+      "NEON_COLORS" in js and js.count("#") >= 6)
+check("★ 由 JS 随机选模式并设 --nc（主色）",
+      "NEON_MODES[Math.floor" in js and 'setProperty("--nc"' in js)
+check("★ 弹珠环绕是小发光点沿外框环行（radial + rotate）",
+      "orbitSpin" in HTML and "radial-gradient(circle 7px" in HTML)
+check("★ 流光沿文字横向扫（background-position 动画）",
+      "neonFlow" in HTML and "background-position" in HTML)
+
+print()
+print("═══ 22) ★ 「已连接」心电图")
+check("★ 有 ECG 折线（polyline 脉冲波形）",
+      "polyline" in HTML and "ecgSweep" in HTML)
+check("★ 只在**已连接**时出现（.status.ok::after）",
+      ".status.ok::after" in HTML)
+check("★ 默认不可见（未连接时不闪）",
+      re.search(r"\.status::after\{[^}]*opacity:0", HTML) is not None)
+check("★ 减少动效下不扫但仍可见（不消失）",
+      re.search(r"prefers-reduced-motion[\s\S]{0,600}\.status\.ok::after\{[^}]*animation:none", HTML) is not None)
+
+print()
+print("═══ 23) ★★ 空闲欣赏模式：UI 藏、品牌字与连接状态**必须留**")
+check("★ 有 body.zen 机制", "body.zen" in HTML and "initZen" in js)
+check("★ 配置项 ui_zen_seconds（默认 10）",
+      '"ui_zen_seconds"' in (HERE / "schema.json").read_text(encoding="utf-8"))
+check("★ 空闲秒数从配置读入", "__accelZenSeconds" in js)
+check("★ 藏的是 section / tagline / dock（面板 UI）",
+      "body.zen .shell > section" in HTML and "body.zen .dock" in HTML)
+# ⚠️ 先剥 CSS 注释再查 —— 我自己的说明里提到了 ":not(header)"（举反例），
+#    不剥就会把说明当代码、误报（这个坑踩过好几次了）。
+_css_nc = re.sub(r"/\*[\s\S]*?\*/", "", HTML)
+check("★ ★ 保留 .wordmark（品牌字）—— 不能用 :not(header) 一刀切",
+      "body.zen .shell > .wordmark" in _css_nc and ":not(header)" not in _css_nc)
+check("★ 保留 .status（已连接）", "body.zen .shell > header > .status" in HTML)
+# ★ 用户明确要求：**点击画面任意处**（或按键）才恢复 UI，
+#   而不是"移动鼠标就出来" —— 否则手一碰鼠标 UI 就跳回来，没法安静欣赏背景。
+check("★ 点击 / 按键会恢复 UI（pointerdown + keydown）",
+      "exitZen" in js and "pointerdown" in js and "keydown" in js)
+check("★ ★ 但不绑定 mousemove（否则动一下就跳回来）",
+      "mousemove" + ", wake" not in js)
+check("★ 0 可关闭该功能", "if (!(secs > 0)) return;" in js)
 
 print("=" * 60)
 print(f"通过 {len(PASS)}  失败 {len(FAIL)}")
