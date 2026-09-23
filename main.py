@@ -142,6 +142,8 @@ class AcceleratorPlugin(BasePlugin):
             effort_high=float(c_thk.get("effort_high", 4.5)),
             max_per_minute=int(c_thk.get("max_per_minute", 60)),
         )
+        # ★ 图片/表情包描述不计入评分（默认开）—— 描述长，算进去会"光发图就开思考"
+        self.thinking.exclude_media_desc = bool(c_thk.get("exclude_media_desc", True))
 
         # ── 运行时状态 ──
         self._samples: deque[dict] = deque(maxlen=self.observe_window)
@@ -526,6 +528,14 @@ class AcceleratorPlugin(BasePlugin):
         if sid:
             try:
                 self._sent_ledger.pop(sid, None)
+                # ★★ 必须**一起清掉响应与结果**，否则会用到**上一轮的响应**：
+                #   `_resp_by_sid[sid]` 存的是上一轮的响应，若这一轮先走到发送层，
+                #   拿到的 n / segs 全是旧的 ⇒
+                #     · 按内容匹配必然失败（文本完全不同）⇒ 日志里那条告警
+                #     · n 与实际不符 ⇒ 可能**多切 = 丢内容**（比重复更糟）
+                #   （用户实测日志：`抢先发=46` 是累计值，而本轮 n=1 ⇒ 明显用了旧响应）
+                self._resp_by_sid.pop(sid, None)
+                self._early_results.pop(sid, None)
             except Exception:  # noqa: BLE001
                 pass
 

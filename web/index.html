@@ -1724,49 +1724,55 @@ function buildWordmark(){
 }
 
 const WM_FX_FN = {
+  /* ★★ 三条要求，缺一不可：
+     ① **每条都自带"停住"**（末帧保持不透明）—— 之前用 `fill:"backwards"`
+        会让动画播完**回到基础样式**，而基础样式是 `.wm-main .L{opacity:0}`
+        ⇒ **字母播完就消失**。现在统一 `fill:"both"`。
+     ② **放慢**（原来 420~1050ms 偏快，用户反馈"播放太快"）。
+     ③ 错峰不要太大，否则最后一个字母很晚才停住（停留被压缩）。 */
   assemble: L => L.forEach((s,i) => s.animate(
     [{opacity:0, transform:`translateY(${.55+Math.random()*.35}em) rotate(${-9+Math.random()*18}deg) scale(.85)`},
      {opacity:1, transform:"none"}],
-    {duration:820, delay:i*46, easing:"cubic-bezier(.16,1,.3,1)", fill:"both"})),
+    {duration:1050, delay:i*62, easing:"cubic-bezier(.16,1,.3,1)", fill:"both"})),
   glitch: L => {
     L.forEach((s,i) => s.animate(
       [{opacity:0, transform:"translateX(-14px) skewX(22deg)",
         textShadow:"3px 0 rgba(255,111,174,.9), -3px 0 rgba(94,240,192,.9)"},
-       {opacity:1, offset:.18},
-       {transform:"translateX(9px) skewX(-14deg)", offset:.34},
-       {transform:"translateX(-5px) skewX(7deg)", offset:.5},
-       {transform:"translateX(3px)", offset:.66},
+       {opacity:1, offset:.16},
+       {transform:"translateX(9px) skewX(-14deg)", offset:.30},
+       {transform:"translateX(-5px) skewX(7deg)", offset:.45},
+       {transform:"translateX(3px)", offset:.60},
        {transform:"none", textShadow:"0 0 0 transparent"}],
-      {duration:1050, delay:i*52, easing:"ease-out", fill:"both"}));
+      {duration:1300, delay:i*68, easing:"ease-out", fill:"both"}));
     const sh = document.getElementById("wmSheen");
     if (sh) sh.animate([{opacity:0},{opacity:.85, offset:.5},{opacity:0}],
-      {duration:900, delay:260, easing:"ease-out"});
+      {duration:1150, delay:380, easing:"ease-out", fill:"none"});
   },
   neon: L => L.forEach((s,i) => s.animate(
     [{opacity:.18, filter:"blur(3px)", textShadow:"none"},
      {opacity:1, offset:.55, filter:"blur(0px)", textShadow:"0 0 22px currentColor"},
      {opacity:1, filter:"blur(0px)", textShadow:"0 0 9px rgba(255,255,255,.35)"}],
-    {duration:1000, delay:i*92, easing:"ease-out", fill:"both"})),
+    {duration:1150, delay:i*95, easing:"ease-out", fill:"both"})),
   sweep: L => {
     L.forEach((s,i) => s.animate([{opacity:.15},{opacity:1}],
-      {duration:420, delay:150+i*40, fill:"both"}));
+      {duration:1050, delay:150+i*55, easing:"cubic-bezier(.16,1,.3,1)", fill:"both"}));
     const sh = document.getElementById("wmSheen");
     if (sh) sh.animate(
       [{opacity:0, transform:"translateX(-120%)"},{opacity:1, offset:.5},
        {opacity:0, transform:"translateX(520%)"}],
-      {duration:1250, delay:180, easing:"cubic-bezier(.5,0,.3,1)"});
+      {duration:1450, delay:220, easing:"cubic-bezier(.5,0,.3,1)", fill:"none"});
   },
   wave: L => L.forEach((s,i) => s.animate(
     [{opacity:0, transform:"translateY(.5em)"},
-     {opacity:1, transform:"translateY(-.12em)", offset:.62},
+     {opacity:1, transform:"translateY(-.12em)", offset:.60},
      {opacity:1, transform:"translateY(0)"}],
-    {duration:900, delay:Math.abs(i-(L.length-1)/2)*115,
+    {duration:1100, delay:Math.abs(i-(L.length-1)/2)*105,
      easing:"cubic-bezier(.3,1.3,.4,1)", fill:"both"})),
   shatter: L => L.forEach((s,i) => s.animate(
     [{opacity:0, transform:"scale(2.7)", filter:"blur(15px)"},
      {opacity:1, offset:.45, filter:"blur(0px)"},
      {transform:"scale(1)", filter:"blur(0px)"}],
-    {duration:1000, delay:i*54, easing:"cubic-bezier(.16,1,.3,1)", fill:"both"})),
+    {duration:1200, delay:i*70, easing:"cubic-bezier(.16,1,.3,1)", fill:"both"})),
 };
 
 /* ★ 箴言特效：都必须"**入场 → 停住 → 淡出**"。
@@ -1774,24 +1780,28 @@ const WM_FX_FN = {
    还会和 CSS 的入场动画撞车（用户实测："箴言是直接出现的，也没合适停留"）。
    现在每条时间线都显式排：入场 → 保持不透明 → 末尾淡出。 */
 const MOTTO_FX_FN = {
+  /* ★★ 时长必须**装进**"箴言起点(2250ms) → 收尾(4600ms)"这个窗口（2350ms），
+     否则会被收尾**截断** —— 截断看起来就是"箴言直接消失、没有停留"
+     （用户实测反馈过）。所以取 2100~2200ms，末尾留 150~250ms 余量。
+     每条都是"入场 → 停住(offset .20→.86) → 淡出"。 */
   rise: el => el.animate(
     [{opacity:0, transform:"translateY(12px)"},
      {opacity:1, transform:"none", offset:.20},
      {opacity:1, transform:"none", offset:.84},
      {opacity:0, transform:"none"}],
-    {duration:2600, easing:"cubic-bezier(.16,1,.3,1)", fill:"both"}),
+    {duration:2100, easing:"cubic-bezier(.16,1,.3,1)", fill:"both"}),
   blur: el => el.animate(
     [{opacity:0, filter:"blur(9px)"},
      {opacity:1, filter:"blur(0)", offset:.22},
      {opacity:1, filter:"blur(0)", offset:.84},
      {opacity:0, filter:"blur(9px)"}],
-    {duration:2600, easing:"cubic-bezier(.2,0,.4,1)", fill:"both"}),
+    {duration:2100, easing:"cubic-bezier(.2,0,.4,1)", fill:"both"}),
   track: el => el.animate(
     [{opacity:0, letterSpacing:"1.4em"},
      {opacity:1, letterSpacing:".02em", offset:.30},
      {opacity:1, letterSpacing:".02em", offset:.84},
      {opacity:0, letterSpacing:".02em"}],
-    {duration:2800, easing:"cubic-bezier(.16,1,.3,1)", fill:"both"}),
+    {duration:2200, easing:"cubic-bezier(.16,1,.3,1)", fill:"both"}),
   type: async el => {
     const txt = el.dataset.txt || "";
     el.textContent = "";
@@ -1951,16 +1961,29 @@ function finishSplash(){
   clearTimeout(window.__accelSplashFailsafe);   // 主脚本接手，撤掉内联脚本的兜底
   const sp = document.getElementById("splash");
   if (!sp || sp.hidden) return;
-  sp.classList.add("out");                      // CSS 过渡淡出
+  /* ★★ 用**显式 Web Animation** 收尾，不再靠 CSS transition。
+     为什么换：`.splash.out` 这种"同一帧加类"的写法，浏览器可能把
+     "加类"和"初始样式"**合并成一次样式计算** ⇒ 看不到"从 A 到 B"的变化
+     ⇒ **不产生过渡、直接跳到终值** = 硬切（这正是"结束还是硬切"的根因，
+     与之前切换特效那次是同一类问题）。
+     Web Animations 是命令式的，一定会执行，而且能读回实际状态做自检。 */
+  const OUT_MS = 1100;
+  try {
+    sp.animate([
+      {opacity:1, transform:"scale(1)",     filter:"blur(0px)"},
+      {opacity:0, transform:"scale(1.045)", filter:"blur(12px)"},
+    ], {duration:OUT_MS, easing:"cubic-bezier(.4,0,.2,1)", fill:"forwards"});
+  } catch (e) {
+    sp.classList.add("out");                    // 极老环境退回 CSS 过渡
+  }
   /* 隐藏只靠普通 setTimeout —— 不用 animate().finished：
      动画时钟被节流时那个 promise 可能永远不 resolve，开屏会一直挡着页面。 */
   setTimeout(() => {
     sp.hidden = true;
-    sp.classList.remove("out");
     sp.style.opacity = "";
     try { sp.getAnimations().forEach(x => x.cancel()); } catch (e) {}
     window.__accelSplash = false;
-  }, 1200);
+  }, OUT_MS + 180);
 }
 
 /* ═══ 手动重置熔断 ═══ */
