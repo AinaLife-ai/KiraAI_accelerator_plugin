@@ -98,12 +98,27 @@ i_main = HTML.index("function playSplash")
 check("★ 早期显示脚本在开屏元素**之后**（解析到即同步执行）", i_el < i_early)
 check("★ 且在主脚本之前", i_early < i_main)
 early = HTML[i_early:HTML.index("</script>", i_early)]
-check("★ 早期脚本**同步**加 .show（不依赖任何 await / DOMContentLoaded）",
-      'classList.add("show")' in early and "await" not in early)
-check("★ 早期脚本自带硬兜底定时器（主脚本没跑起来也不会卡住页面）",
-      "__accelSplashFailsafe" in early and "setTimeout" in early)
-check("主脚本的 playSplash 不再自己负责显示，只填内容",
-      "if (!sp || !window.__accelSplash) return;" in js)
+# ★★ 设计反转（学 Z 插件）：开屏**默认可见**（CSS display:grid），
+#    视觉全部由 CSS 完成；JS 只负责"填内容 + 收尾"。
+#    ⇒ 旧判据（"早期脚本要加 .show"）已经过时，且方向相反：
+#      靠 JS 显示才是**脆弱**的 —— JS 任何一步出问题 = 开屏不出现（连续报了两轮）。
+check("★ 开屏基础规则是 display:grid（**默认可见**，不靠 JS 显示）",
+      re.search(r"\.splash\{[^}]*display:\s*grid", HTML) is not None)
+check("★ 只有 [hidden] 才隐藏（一个明确的隐藏来源）",
+      re.search(r"\.splash\[hidden\]\{\s*display:\s*none", HTML) is not None)
+check("★ 没有任何地方用 .show 来显示开屏（旧设计）",
+      'classList.add("show")' not in js)
+check("★ 标题文字**静态写在 HTML** 里（JS 不在也有字，不白屏）",
+      len(re.findall(r'class="L\b', HTML)) >= 9,
+      f'{len(re.findall(chr(34)+"class="+chr(34)+"L", HTML))} 个字母')
+check("★ 箴言静态有默认内容（JS 不在也有话）",
+      re.search(r'<div class="motto" id="motto">[^<]+</div>', HTML) is not None)
+check("★ 基础入场动画由 CSS 直接挂（不靠 JS 加类触发）",
+      len(re.findall(r"\.splash:not\(\[hidden\]\)[^{]*\{[^}]*animation:", HTML)) >= 3)
+check("★ 早期脚本立刻 arm 收尾定时器（不依赖主脚本）",
+      "__accelSplashFailsafe = setTimeout" in early)
+check("主脚本只做增强+收尾（判 hidden，不判要不要显示）",
+      "if (!sp || sp.hidden) return;" in js)
 check("★ 所有「不显示」的路径都会收掉开屏（配置关 / 无壁纸 / 异常 / 超时）",
       js.count("finishSplash()") >= 4, f"{js.count('finishSplash()')} 处")
 check("★ finishSplash 会 clearTimeout 掉早期兜底",
