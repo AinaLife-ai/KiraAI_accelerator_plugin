@@ -437,6 +437,97 @@ check("★ 隐藏等待按 OUT_MS 计算（不再硬编码 1200）",
 check("CSS 里仍保留 .splash.out 作为极老环境的后备",
       re.search(r"\.splash\.out\{", HTML) is not None)
 
+print()
+print("═══ 14) ★★ 关键帧 opacity 必须全写或全不写（否则回落 → 元素消失/硬切）")
+# 先剥模板字符串，否则 `${...}` 里的花括号会把帧切错（上一版检测器就这么误报过）
+_js2 = re.sub(r"`(?:[^`\\]|\\.)*`", "`X`", js)
+
+
+def _frames(kf: str):
+    out, depth, cur = [], 0, ""
+    for ch in kf:
+        if ch == "{":
+            depth += 1
+            if depth == 1:
+                cur = ""
+                continue
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                out.append(cur)
+                continue
+        if depth >= 1:
+            cur += ch
+    return out
+
+
+_calls = []
+for mm in re.finditer(r"(\w[\w.]*)\.animate\(\s*\[([\s\S]*?)\]\s*,", _js2):
+    _calls.append(("animate:" + mm.group(1), mm.group(2)))
+for mm in re.finditer(r"\banim\(\s*(\w+)\s*,\s*\[([\s\S]*?)\]\s*[,)]", _js2):
+    _calls.append(("anim:" + mm.group(1), mm.group(2)))
+for mm in re.finditer(r"\bE\(\s*(\w+)\s*,\s*\[([\s\S]*?)\]\s*[,)]", _js2):
+    _calls.append(("E:" + mm.group(1), mm.group(2)))
+_bad = []
+for _target, _kf in _calls:
+    _fr = _frames(_kf)
+    if len(_fr) < 2:
+        continue
+    _has = [("opacity" in f) for f in _fr]
+    if any(_has) and not all(_has):
+        _bad.append((_target, len(_fr), [i for i, h in enumerate(_has) if not h]))
+check("★ 所有动画的关键帧要么都写 opacity、要么都不写（不会回落到基础值）",
+      not _bad, f"检查 {len(_calls)} 条动画，异常 {_bad}")
+
+print()
+print("═══ 15) ★★ 开屏与页面必须逐层同盒 + 同 origin（否则交接跳变）")
+
+
+def _css(sel):
+    mm = re.search(r"\n" + re.escape(sel) + r"\{([^}]*)\}", HTML)
+    return mm.group(1) if mm else ""
+
+
+def _prop(css, name):
+    mm = re.search(name + r":\s*([^;]+)", css)
+    return mm.group(1).strip() if mm else ""
+
+
+for _page, _sp in ((".wallpaper", ".sp-breathe"), (".wp-stage", ".sp-sway"),
+                   (".wp-img", ".sp-wp")):
+    _a, _b = _css(_page), _css(_sp)
+    check(f"★ {_sp} 的 inset 与 {_page} 一致（同盒）",
+          _prop(_a, "inset") == _prop(_b, "inset"),
+          f"{_prop(_a, 'inset')} vs {_prop(_b, 'inset')}")
+    # transform-origin 未设置 == 默认 50% 50%，也算一致
+    _oa = _prop(_a, "transform-origin") or "50% 50%"
+    _ob = _prop(_b, "transform-origin") or "50% 50%"
+    check(f"★ {_sp} 的 transform-origin 与 {_page} 一致", _oa == _ob, f"{_oa} vs {_ob}")
+
+check("★ 开屏呼吸用与页面**同一条** keyframes、同周期",
+      "wpBreath 22s" in _css(".sp-breathe"),
+      _prop(_css(".sp-breathe"), "animation"))
+check("★ 交接时把页面壁纸的呼吸**相位对齐**（负 animation-delay）",
+      "animationDelay" in js and "__accelSplashShownAt" in js)
+check("★ 漂移同时作用于页面两层与开屏中层（同源）",
+      '"wp-a","wp-b","spSway"' in js)
+
+print()
+print("═══ 16) ★★ 旧图必须「活到新图铺满」（否则中途露底色 = 看着像硬切）")
+# 曾经：eatAway 写死 WP_DUR，而条带要 WP_DUR*1.27 才铺满
+# ⇒ 3040~4064ms 之间旧图已淡没、新图没盖满 ⇒ 露出页面底色 ⇒ 一块会缩小的
+#   暗斑 ⇒ 用户说的"背景切换还是有几个是硬切"。
+for _f in ("fxIris", "fxWipe", "fxStrips", "fxZoom"):
+    _i = js.index("function " + _f)
+    _b = js[_i:js.index("\nfunction ", _i + 12)]
+    _set = re.search(r"wpLastDur = ([^;]+);", _b)
+    _eat = re.search(r"eatAway\(from,\s*([^)]+)\)", _b)
+    if _f == "fxZoom":
+        continue                      # zoom 的旧图有自己的推近动画，另有判据
+    check(f"★ {_f} 的 eatAway 时长 = 本套实际时长（旧图不会提前消失）",
+          bool(_set and _eat and _eat.group(1).strip() == "wpLastDur"),
+          f"wpLastDur={_set.group(1).strip() if _set else '?'} eatAway={_eat.group(1).strip() if _eat else '?'}")
+
 print("=" * 60)
 print(f"通过 {len(PASS)}  失败 {len(FAIL)}")
 if FAIL:
