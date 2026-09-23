@@ -13,13 +13,13 @@
 
 :root{
   --ink:#0a0b12;
-  --panel:rgba(16,18,28,.30);
+  --panel:rgba(14,16,26,.46);
   --panel-solid:#161825;
   --edge:rgba(255,255,255,.07);
   --edge-hi:rgba(255,255,255,.18);
-  --fg:#eef1fb;
-  --dim:#aab3cd;
-  --dim2:#8b95b4;
+  --fg:#f4f7ff;
+  --dim:#c2cade;
+  --dim2:#a8b2cc;
   --pink:#ff6fae;
   --mint:#5ef0c0;
   --violet:#8b7cff;
@@ -53,7 +53,10 @@ body{
      .wp-img   → 过渡特效（缩放/模糊/裁剪）
    旧版把两者都写到**同一个 inline transform** 上，后写的赢，
    所以"过渡动画"和"鼠标位移"经常有一个等于没生效。 */
-.wp-stage{position:absolute;inset:-3%;will-change:transform;backface-visibility:hidden}
+/* ★★ 漂移会产生最大约 34(鼠标) + 30(漂移) ≈ 64px 的位移。
+   原来余量只有 3%（视口宽 1600 时约 96px，够；但窄屏 380px 时只有 11px ⇒ **露黑底**）。
+   改成 min(72px, 6%)：既能覆盖位移，又不会把图放大太多（放大太多会损失细节）。 */
+.wp-stage{position:absolute;inset:calc(-1 * max(72px, 6%));will-change:transform;backface-visibility:hidden}
 .wp-img{position:absolute;inset:0;background-size:cover;background-position:center;
   opacity:0;will-change:transform,opacity,clip-path,filter}
 .wp-stage.on .wp-img{opacity:1}
@@ -116,7 +119,17 @@ body.zen .hud{opacity:1;pointer-events:auto}
   font-variant-numeric:tabular-nums;
   font-family:NimbusDisplay,Helvetica,sans-serif;font-weight:800;
   font-size:15px;line-height:1;color:var(--fg);
-  text-shadow:0 1px 10px rgba(0,0,0,.6)}
+  text-shadow:0 1px 10px rgba(0,0,0,.6)  --kc:var(--violet);
+}
+/* ★ 五项在右上角也要能分辨（用户要求）：各自用与卡片**同一个**颜色变量。
+   卡片上也是 var(--kc)，所以改一处两边同时生效。 */
+.hud-item[data-k="early"]{--kc:var(--pink)}
+.hud-item[data-k="first"]{--kc:var(--mint)}
+.hud-item[data-k="steps"]{--kc:var(--violet)}
+.hud-item[data-k="turns"]{--kc:var(--amber)}
+.hud-item[data-k="sig"]  {--kc:var(--rose)}
+.hud-item .ico{color:var(--kc)}
+.hud-item b{color:var(--kc)}
 .hud-item .ico{font-size:12px;color:var(--dim);stroke-width:2.2}
 .hud-item b{font:inherit}
 /* 数值变化时，图标随机播一种"亮起 / 颤抖 / 收缩"（JS 加类触发一次） */
@@ -210,6 +223,15 @@ h1{margin:0;font-size:15px;letter-spacing:.3px;font-weight:600}
   0%,100%{filter:none;opacity:.94}
   50%{filter:drop-shadow(0 0 10px var(--nc)) drop-shadow(0 0 26px var(--nc));opacity:1}
 }
+/* ★ 会变成"纯色"的那几种，**至少边缘发光**（用户要求）：
+   用 -webkit-text-stroke 描一圈本色 + drop-shadow 双层辉光 ⇒ 有霓虹管的感觉。 */
+.wordmark.neon-breathe > span,
+.wordmark.neon-aurora > span,
+.wordmark.neon-prism > span,
+.wordmark.neon-ring > span{
+  -webkit-text-stroke:1.1px var(--nc);
+  filter:drop-shadow(0 0 6px var(--nc)) drop-shadow(0 0 18px var(--nc));
+}
 .wordmark.neon-breathe{animation:neonBreath 3.4s ease-in-out infinite}
 
 /* 循环流动一圈：一条高光沿文字横向扫过 */
@@ -229,6 +251,24 @@ h1{margin:0;font-size:15px;letter-spacing:.3px;font-weight:600}
   filter:drop-shadow(0 0 10px var(--nc));
 }
 .wordmark.neon-flow .e{-webkit-text-stroke:1.5px var(--nc)}
+
+/* ★ 字内弹珠流动：一颗小光点沿文字内部横向跑（不出界、不画圈）。
+   做法：给每个字母叠一层"只在该字母范围内移动"的 radial 光点，
+   用 background-position 在字母内部扫过 —— 观感是"光珠子在字里游"。 */
+@keyframes beadRun{
+  0%  {background-position:-140% 50%}
+  100%{background-position:240% 50%}
+}
+.wordmark.neon-bead > span{
+  background-image:radial-gradient(circle 5px at 50% 50%, #fff 0%, var(--nc) 40%, transparent 72%);
+  background-size:150% 150%;
+  background-repeat:no-repeat;
+  -webkit-background-clip:text;background-clip:text;
+  animation:beadRun 2.6s linear infinite;
+}
+.wordmark.neon-bead > span:nth-child(2n){animation-delay:-.35s}
+.wordmark.neon-bead > span:nth-child(3n){animation-delay:-.7s}
+.wordmark.neon-bead{filter:drop-shadow(0 0 9px var(--nc))}
 
 /* 弹珠绕字一圈：一个小发光点沿文字外框环行 */
 @keyframes orbitSpin{from{transform:rotate(0)}to{transform:rotate(360deg)}}
@@ -269,62 +309,68 @@ h1{margin:0;font-size:15px;letter-spacing:.3px;font-weight:600}
 
 /* ring：字外一圈光环向外扩散后消失 */
 @keyframes neonRing{
-  0%{opacity:0;transform:scale(.9)}
+  0%  {background-position:-180% 50%}
+  100%{background-position:280% 50%}
+}
   35%{opacity:.85}
   100%{opacity:0;transform:scale(1.25)}
 }
-.wordmark.neon-ring::before{
-  content:"";position:absolute;inset:-8% -4%;pointer-events:none;border-radius:26px;
-  border:1.5px solid var(--nc);
-  box-shadow:0 0 22px var(--nc), inset 0 0 22px var(--nc);
-  animation:neonRing 3.6s ease-out infinite}
+/* ★ 用户不要"往外扩的外圈"（那个 inset:-8% -4% 的发光边框盒子），已删除。
+   ring 改为**字内**的环流：光带在文字内部自左向右绕行一圈。 */
+
 
 .wordmark.neon-orbit{filter:drop-shadow(0 0 8px var(--nc))}
-.wordmark.neon-orbit::after{
-  content:"";position:absolute;left:50%;top:50%;
-  width:min(52vw,420px);height:150%;margin-left:calc(min(52vw,420px) / -2);margin-top:-75%;
-  border-radius:50%;pointer-events:none;
-  background:radial-gradient(circle 7px at 100% 50%, #fff 0%, var(--nc) 45%, transparent 70%);
-  animation:orbitSpin 4.2s linear infinite;
-}
+/* ★ 用户明确不要"往外扩的外圈"，所以这里**不再**画环绕文字的大圆环。
+   改为**字内一颗弹珠流动**（见 .wordmark.neon-bead）—— 同样是"跑动"的感觉，
+   但发生在文字内部，不会多出一个圈。 */
+
 @keyframes rise{to{opacity:1;transform:none}}
 .tagline{margin:0 0 24px;color:var(--dim);font-size:12.5px;letter-spacing:.2px;
-  position:relative;display:inline-block;will-change:transform,opacity,filter}
+  text-shadow:0 1px 3px rgba(0,0,0,.65),0 1px 12px rgba(0,0,0,.45)}
 
 /* ═══ 副标题特效（随机一种，30~60s 再随机换；都刻意做得"低频、不打扰"）═══ */
 
 /* shimmer：一道微光极慢地扫过（明暗流动） */
+/* ★ 四种低频特效：幅度要比"几乎看不见"明显一些（用户反馈看不出），
+   但仍保持**低频、柔和**，不影响阅读。周期控制在 5~8 秒。 */
 @keyframes tagShimmer{
-  0%{background-position:-160% 0}
-  100%{background-position:260% 0}
+  0%{background-position:-180% 0}
+  100%{background-position:280% 0}
+}
+@keyframes tagDrift{
+  0%,100%{transform:translateX(0);letter-spacing:.2px}
+  50%    {transform:translateX(5px);letter-spacing:.5px}
+}
+@keyframes tagBreathe{
+  0%,100%{opacity:.62;filter:drop-shadow(0 0 0 transparent)}
+  50%    {opacity:1;filter:drop-shadow(0 0 9px var(--nc, #8b7cff))}
+}
+@keyframes tagTrace{
+  0%,100%{-webkit-text-stroke:0px transparent;color:var(--dim);opacity:.85}
+  45%,60%{-webkit-text-stroke:.5px var(--nc, #8b7cff);color:var(--fg);opacity:1}
 }
 .tagline.tag-shimmer{
   background-image:linear-gradient(100deg,
-    var(--dim) 0%, var(--dim) 38%, #fff 50%, var(--dim) 62%, var(--dim) 100%);
+    var(--dim) 0%, var(--dim) 34%, #fff 50%, var(--dim) 66%, var(--dim) 100%);
   background-size:260% 100%;
   -webkit-background-clip:text;background-clip:text;color:transparent;
-  animation:tagShimmer 7s linear infinite}
+  animation:tagShimmer 5.5s linear infinite}
 
-/* drift：极慢的横向漂移（像电子屏字幕在走，幅度很小） */
-@keyframes tagDrift{
-  0%,100%{transform:translateX(0);letter-spacing:.2px}
-  50%{transform:translateX(3px);letter-spacing:.5px}
-}
-.tagline.tag-drift{animation:tagDrift 9s ease-in-out infinite}
+.tagline.tag-drift{animation:tagDrift 7s ease-in-out infinite}
 
 /* breathe：亮度缓慢起伏 */
 @keyframes tagBreathe{
   0%,100%{opacity:.72;filter:drop-shadow(0 0 0 transparent)}
   50%{opacity:1;filter:drop-shadow(0 0 9px var(--tc, transparent))}
 }
-.tagline.tag-breathe{animation:tagBreathe 6.5s ease-in-out infinite}
+.tagline.tag-breathe{animation:tagBreathe 5.5s ease-in-out infinite}
 
 /* trace：描边流光（从透明描边到实心，缓慢往返） */
 @keyframes tagTrace{
   0%,100%{-webkit-text-stroke:0px transparent;color:var(--dim)}
   50%{-webkit-text-stroke:.6px var(--tc);color:transparent}
 }
-.tagline.tag-trace{animation:tagTrace 7.5s ease-in-out infinite}
+.tagline.tag-trace{animation:tagTrace 6.5s ease-in-out infinite}
 
 @media (prefers-reduced-motion:reduce){
   .tagline{animation:none!important;color:var(--dim)!important;
@@ -334,7 +380,7 @@ h1{margin:0;font-size:15px;letter-spacing:.3px;font-weight:600}
 /* ── 卡片 ── */
 /* ★ 面板透出壁纸后，正文需要一点"托底"才看得清：
    用极轻的文字阴影（不是不透明背景），既保留通透感又不糊。 */
-.card,.shell>header,.dock{text-shadow:0 1px 10px rgba(0,0,0,.55)}
+.card,.shell>header,.dock{text-shadow:0 1px 3px rgba(0,0,0,.7), 0 1px 14px rgba(0,0,0,.5)}
 .card{background:var(--panel);backdrop-filter:blur(22px) saturate(120%);-webkit-backdrop-filter:blur(22px) saturate(120%);
   border:1px solid var(--edge);border-radius:var(--r);padding:16px;margin-bottom:14px;
   position:relative;overflow:hidden;
@@ -356,6 +402,29 @@ h1{margin:0;font-size:15px;letter-spacing:.3px;font-weight:600}
   font-family:NimbusDisplay,Helvetica,sans-serif;font-size:27px;font-weight:800;
   letter-spacing:-.03em;line-height:1.05;
   font-variant-numeric:tabular-nums}
+/* ★ 飞回期间：面板的数值与图标**先留空**，等读数落回再显示。
+   用 visibility 而不是 display —— 保留占位，布局不跳动。 */
+body.hud-returning .kpi .v,
+body.hud-returning .kpi .lab .ico{visibility:hidden}
+
+/* ★★ 五项各自一个颜色（用户要求：变小飞走后也要能分辨，且与卡片一一对应）。
+   用 CSS 变量 `--kc` 承载：卡片边框、数值、图标、以及右上角 HUD 都读同一个变量
+   ⇒ 颜色天然一致，改一处即可。 */
+.kpi[data-k="early"]{--kc:var(--pink)}
+.kpi[data-k="first"]{--kc:var(--mint)}
+.kpi[data-k="steps"]{--kc:var(--violet)}
+.kpi[data-k="turns"]{--kc:var(--amber)}
+.kpi[data-k="sig"]  {--kc:var(--rose)}
+/* 数值与图标都用本色（但保持足够亮度，不牺牲可读性） */
+.kpi[data-k] .lab .ico{color:var(--kc)}
+.kpi[data-k] .v{color:var(--fg)}
+/* 卡片顶部一道极细的本色光带，进一步区分（很淡，不抢眼） */
+.kpi[data-k]::after{
+  content:"";position:absolute;left:14px;right:14px;top:0;height:1px;
+  background:linear-gradient(90deg,transparent,var(--kc),transparent);
+  opacity:.5;pointer-events:none}
+.kpi{position:relative}
+
 /* ★ KPI 卡片**本身**的图标也要有特效：数值一变，图标随机亮一下
    （呼吸 / 颤抖 / 收缩）。幅度刻意小，酷但柔和，不抢读数。 */
 @keyframes kpiGlow{
@@ -524,15 +593,23 @@ select{appearance:none;background-image:none;cursor:pointer}
 <svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 24' preserveAspectRatio='none'>\
 <polyline points='0,12 16,12 21,12 25,4 29,20 34,12 52,12 57,12 61,6 65,18 69,12 120,12' \
 fill='none' stroke='%235ef0c0' stroke-width='1.6' stroke-linejoin='round'/></svg>");
-  background-repeat:no-repeat;background-size:120px 100%;background-position-x:-120px;
+  /* ★ 扫动的关键：背景图宽度必须按**容器宽度**算。原来固定 120px，
+     而 .status 只有约 70px 宽（一个图标 + "已连接"）⇒ 图大半在容器外，
+     `background-position-x` 从 -120px 到 100% 的变化只有几十像素 ⇒ **看不出在动**。 */
+  background-repeat:no-repeat;background-size:100% 100%;background-position:0 0;
 }
 /* ★ 心电图要"看得出来"：把高度撑起来、线条更亮，
    并把整条 trace 的底色也提亮一点（原来太细太暗，肉眼看不出在动）。 */
-.status.ok::after{opacity:1;animation:ecgSweep 2.2s linear infinite;
-  height:14px;top:50%;transform:translateY(-50%);filter:brightness(1.25)}
+/* ★ 用 clip-path 做"画出来 → 再擦掉"的循环，肉眼一定看得出在扫。 */
+.status.ok::after{
+  opacity:1;left:0;right:0;height:14px;top:50%;transform:translateY(-50%);
+  animation:ecgSweep 2.4s linear infinite;
+  filter:brightness(1.3) saturate(1.2)}
 @keyframes ecgSweep{
-  from{background-position-x:-120px}
-  to{background-position-x:100%}
+  0%  {clip-path:inset(0 100% 0 0)}
+  55% {clip-path:inset(0 0 0 0)}
+  72% {clip-path:inset(0 0 0 0)}
+  100%{clip-path:inset(0 0 0 100%)}
 }
 @media (prefers-reduced-motion:reduce){ .status.ok::after{animation:none;opacity:.35} }
 .status.ok{color:var(--mint)}.status.err{color:var(--rose)}
@@ -626,7 +703,7 @@ html.jsfx .sp-rim{animation:none!important}
    否则呼吸缩放的中心不同 ⇒ 交接瞬间画面位置跳变（"重置闪现"）。 */
 .sp-breathe{position:absolute;inset:0;transform-origin:50% 45%;
   animation:wpBreath 22s ease-in-out infinite}
-.sp-sway{position:absolute;inset:-3%;will-change:transform}
+.sp-sway{position:absolute;inset:calc(-1 * max(72px, 6%));will-change:transform}
 .sp-wp{position:absolute;inset:0;background-size:cover;background-position:center;
   background-image:
     radial-gradient(70% 55% at 32% 28%, rgba(255,111,174,.30), transparent 68%),
@@ -894,15 +971,15 @@ window.__accelSplashShownAt = (window.performance && performance.now())
   <section class="card" style="animation-delay:.30s">
     <h2><svg class="ico"><use href="#i-gauge"/></svg>实时指标</h2>
     <div class="kpis">
-      <div class="kpi hot"><div class="v" id="k-early">0</div>
+      <div data-k="early" class="kpi hot"><div class="v" id="k-early">0</div>
         <div class="lab"><svg class="ico" id="k-ico-early"><use href="#i-zap"/></svg>抢先发送段数</div></div>
-      <div class="kpi hot"><div class="v" id="k-first">—</div>
+      <div data-k="first" class="kpi hot"><div class="v" id="k-first">—</div>
         <div class="lab"><svg class="ico" id="k-ico-first"><use href="#i-timer"/></svg>首段发出耗时</div></div>
-      <div class="kpi"><div class="v" id="k-steps">0</div>
+      <div data-k="steps" class="kpi"><div class="v" id="k-steps">0</div>
         <div class="lab"><svg class="ico" id="k-ico-steps"><use href="#i-layers"/></svg>处理步数</div></div>
-      <div class="kpi"><div class="v" id="k-turns">0</div>
+      <div data-k="turns" class="kpi"><div class="v" id="k-turns">0</div>
         <div class="lab"><svg class="ico" id="k-ico-turns"><use href="#i-waves"/></svg>对话轮数</div></div>
-      <div class="kpi cool"><div class="v" id="k-sig">0</div>
+      <div data-k="sig" class="kpi cool"><div class="v" id="k-sig">0</div>
         <div class="lab"><svg class="ico" id="k-ico-sig"><use href="#i-arrow-down-up"/></svg>工具失败信号</div></div>
     </div>
   </section>
@@ -2028,24 +2105,24 @@ function startWallpaperRotation(){
      原来它把图直接塞进 wp-a 并加 .on ⇒ 画面**瞬间换掉**（用户反馈"背景切换还是硬切"）。
      现在改成：**先把底图放好并让它可见**（保证任何时刻都有画面），
      再用同一套过渡效果把新图**揭示**上来。 */
-  const same = wpCur === "wp-a" && wpStage("wp-a").classList.contains("on")
-               && (wpImg("wp-a").style.backgroundImage || "").indexOf(wpUrl(wpActive[0])) >= 0;
-  wpLoad("wp-b", wpUrl(wpActive[0]));          // 先把"将要显示的那张"放到另一层
-  if (same) {
-    // 已经就是这张：什么都不用做（避免自己跟自己过渡）
+  /* ★★ 不要在这里"预先装填目标层"。
+     原来先 `wpLoad("wp-b", 新图)`，但**没有清掉 wp-a 的 .on** ⇒ 那一刻
+     wp-b 已经是新图、而 wp-a 的旧图**仍然可见**；随后 wpTransition 又切到 wp-b
+     ⇒ 两图在瞬间交替 = 用户看到的"硬切"。
+     正确做法：这里只做**两件事** ——
+       ① 如果当前**一幅图都没有**（首帧 / 刚启用），先安静地放一张底图；
+       ② 否则完全交给 wpTransition 去"过渡揭示"（它内部会处理换层与收尾）。 */
+  const hasVisible = wpStage(wpCur).classList.contains("on")
+                     && !!(wpImg(wpCur).style.backgroundImage);
+  if (!hasVisible) {
+    // 没有任何可见底图：必须先放一张（否则会露底色）
+    wpLoad("wp-a", wpUrl(wpActive[0]));
+    wpNormalize("wp-a");
     wpStage("wp-a").classList.add("on");
-  } else {
-    // 先用现有/一张底图保证有画面，再过渡揭示新图
-    if (!wpStage("wp-a").classList.contains("on")) {
-      wpLoad("wp-a", wpUrl(wpActive[0]));
-      wpNormalize("wp-a");
-      wpStage("wp-a").classList.add("on");
-      wpCur = "wp-a";
-    } else {
-      // 有旧图：走正常的过渡动画（不硬切）
-      wpCur = "wp-a";
-      if (!wpBusy) { try { wpTransition(wpUrl(wpActive[0])); } catch (e) {} }
-    }
+    wpCur = "wp-a";
+  } else if (!wpBusy) {
+    // 有旧图：走正常过渡（不硬切、不预先改另一层）
+    try { wpTransition(wpUrl(wpActive[0])); } catch (e) { /* 失败保持旧图 */ }
   }
   applySway();
 
@@ -2434,12 +2511,37 @@ const NEON_COLORS = ["#ff6fae", "#8b7cff", "#5ef0c0", "#00e5ff", "#ff4fd8",
      scan    —— 扫描线（一条细亮线纵向扫过字面）
      ring    —— 光环脉冲（字外一圈光环向外扩散后消失）
    全部纯 CSS，JS 只负责"选哪个 / 什么时候换"。 */
-const NEON_MODES = ["neon-breathe", "neon-flow", "neon-orbit",
-                    "neon-aurora", "neon-prism", "neon-scan", "neon-ring"];
+const NEON_MODES = ["neon-breathe", "neon-flow", "neon-orbit", "neon-aurora", "neon-prism", "neon-scan", "neon-ring", "neon-bead"];
 
 /* 抽成独立函数：既可以"进入页面时选一次"，也可以"定时再选一次"。
    ★ 换模式时要**先移除旧的**再添加新的 —— 否则两个类同时存在，
      后加的规则不一定覆盖旧的（取决于样式表顺序），会出现"两个特效打架"。 */
+/* ★ 切换霓虹模式时**不要硬切**：先让字整体微微下沉 + 压暗（0.28s），
+   换类之后再浮回来（0.42s）⇒ 观感是"呼吸之间换了一套光"。
+   不做这一步的话，`classList` 一换，animation 立刻重置 ⇒ 看着很生硬（用户反馈）。 */
+function neonSwapTo(mode, color){
+  const wm = document.querySelector(".wordmark");
+  if (!wm){ return; }
+  const apply = () => {
+    wm.classList.remove("neon-breathe", "neon-flow", "neon-bead", "neon-orbit",
+                        "neon-aurora", "neon-prism", "neon-scan", "neon-ring");
+    wm.style.setProperty("--nc", color);
+    wm.classList.add(mode);
+    window.__accelNeon = { mode, color };
+    try {
+      wm.animate([{opacity:.55, transform:"translateY(2px) scale(.985)"},
+                  {opacity:1, transform:"none"}],
+                 {duration:420, easing:"cubic-bezier(.2,.8,.3,1)"});
+    } catch (e) {}
+  };
+  try {
+    wm.animate([{opacity:1, transform:"none"},
+                {opacity:.55, transform:"translateY(2px) scale(.985)"}],
+               {duration:280, easing:"ease-out", fill:"forwards"})
+      .finished.then(apply).catch(apply);
+  } catch (e) { apply(); }
+}
+
 function rollNeon(){
   const wm = document.querySelector(".wordmark");
   if (!wm) return;
@@ -2560,31 +2662,64 @@ function hudThink(t){
     再把 HUD 用 transform **移回** KPI 的位置，然后过渡回 0 ⇒ 看起来就是"飞过去"。 */
 function hudFlyIn(){
   const hud = document.getElementById("hud");
-  const src = document.querySelector(".kpis");
   if (!hud) return;
-  if (!src){                                  // 找不到来源就不飞，直接淡入
-    hud.style.transform = ""; return;
-  }
-  try {
-    const a = src.getBoundingClientRect();
-    const b = hud.getBoundingClientRect();
+
+  /* ★★ 逐项飞出（用户要求"明显的轨迹感和变形组装过程"）：
+     每一项从它**自己的 KPI 卡片**出发，飞到右上角它自己的位置；
+     路径不是直线 —— 用两段关键帧做一点弧线（先上后右），
+     同时从"卡片的宽扁形状"收缩成"HUD 的小圆角胶囊"（尺寸+圆角一起变），
+     观感是"这些读数被吸到右上角重新组装成一行"。
+     颜色用各自的 --kc（与卡片一一对应）。 */
+  const items = Array.prototype.slice.call(hud.querySelectorAll(".hud-item"));
+  const think = hud.querySelector(".hud-think");
+  hud.style.opacity = "1";                    // 容器直接可见，由各子项负责"飞"
+  hud.style.transform = "";
+  hud.style.transition = "";
+
+  // 目标位置：先让 HUD 正常排布，才能量到每一项的落点
+  const targets = items.map(el => el.getBoundingClientRect());
+
+  items.forEach((el, i) => {
+    const card = document.querySelector('.kpi[data-k="' + el.dataset.k + '"]');
+    if (!card) return;
+    const a = card.getBoundingClientRect();
+    const b = targets[i];
     const dx = (a.left + a.width / 2) - (b.left + b.width / 2);
     const dy = (a.top + a.height / 2) - (b.top + b.height / 2);
-    const sc = Math.max(0.4, Math.min(1.3, a.width / Math.max(1, b.width)));
-    hud.style.transition = "none";
-    hud.style.transformOrigin = "right top";
-    hud.style.transform = `translate(${dx}px, ${dy}px) scale(${sc})`;
-    hud.style.opacity = "0";
-    void hud.offsetWidth;                     // 落位
-    hud.style.transition = "transform .95s cubic-bezier(.16,1,.3,1), opacity .5s ease-out";
-    hud.style.transform = "translate(0,0) scale(1)";
-    hud.style.opacity = "1";
-  } catch (e) { /* 飞不起来也不影响显示 */ }
+    const sx = Math.max(0.5, Math.min(2.2, a.width / Math.max(1, b.width)));
+    const sy = Math.max(0.5, Math.min(2.2, a.height / Math.max(1, b.height)));
+    try {
+      el.animate([
+        // 出发点：就在卡片上，尺寸/圆角都像卡片
+        {transform:`translate(${dx}px, ${dy}px) scale(${sx}, ${sy})`,
+         borderRadius:"14px", opacity:0},
+        // 中段：先往右上"抬"，稍微过冲一点 ⇒ 有轨迹感
+        {transform:`translate(${dx * .35}px, ${dy * 1.22}px) scale(${(sx + 1) / 2}, ${(sy + 1) / 2})`,
+         borderRadius:"12px", opacity:1, offset:.45},
+        // 落点：归位到 HUD 自己的位置
+        {transform:"translate(0,0) scale(1)", borderRadius:"999px", opacity:1},
+      ], {duration: 780 + i * 70, easing:"cubic-bezier(.3,1.03,.3,1)",
+          fill:"backwards", delay: i * 55});
+    } catch (e) { /* 飞不了就直接显示 */ }
+  });
+
+  if (think){
+    try {
+      think.animate([{opacity:0, transform:"translateY(-14px) scaleX(.6)"},
+                     {opacity:1, transform:"none"}],
+                    {duration:620, delay:items.length * 55 + 160,
+                     easing:"cubic-bezier(.2,.8,.3,1)", fill:"backwards"});
+    } catch (e) {}
+  }
 }
 
 function hudReset(){
   const hud = document.getElementById("hud");
   if (!hud) return;
+  /* ★★ 飞回期间**把面板上的数值与图标先留空**（body.hud-returning）。
+     否则卡片上已经有数字在显示、而读数又在飞回来的途中 ⇒ 两者重影。
+     用户原话："KPI 面板上不能先有数字，要等它们飞回来。" */
+  try { document.body.classList.add("hud-returning"); } catch (e) {}
   /* ★ 不用"瞬间复位"（那会闪）。改成**飞回**：
      先算出面板 KPI 区的位置，把 HUD 平移+缩放到那里，
      同时淡出 —— 观感是"读数飞回卡片里"，与面板淡入同时完成。 */
@@ -2626,7 +2761,10 @@ function exitZen(){
         并且用同一个 0.9s 时长飞回，观感是"读数回到卡片里"。
      HUD 只在 zen 期间存在，所以延迟期间它一直稳稳停着，不会露馅。 */
   document.body.classList.remove("zen");
-  setTimeout(() => { try { hudReset(); } catch (e) {} }, 420);
+  /* ★ 面板淡入（CSS 0.9s）走完大半之后，再让读数飞回各自的卡片；
+     飞回期间卡片上的数字是**空的**（body.hud-returning），落位后才显示 ——
+     这样两者不会在半透明时重叠成重影。 */
+  setTimeout(() => { try { hudReset(); } catch (e) {} }, 520);
 }
 function armZen(){
   if (zenTimer) clearTimeout(zenTimer);
@@ -2657,6 +2795,22 @@ poll(); setInterval(poll, 3000);
 initNeon();
 initTagline();
 initZen();
+/* ★ 鼠标单击标题 ⇒ 立刻随机换一种霓虹特效（用户要求） */
+(function initNeonClick(){
+  const wm = document.querySelector(".wordmark");
+  if (!wm) return;
+  wm.style.cursor = "pointer";
+  wm.title = "点一下换一种光影";
+  wm.addEventListener("click", () => {
+    const cur = (window.__accelNeon || {}).mode;
+    let mode = cur;
+    let guard = 0;
+    while (mode === cur && NEON_MODES.length > 1 && guard++ < 20)
+      mode = NEON_MODES[Math.floor(Math.random() * NEON_MODES.length)];
+    const color = NEON_COLORS[Math.floor(Math.random() * NEON_COLORS.length)];
+    neonSwapTo(mode, color);
+  });
+})();
 /* 壁纸配置独立读取（即使配置加载失败也要能显示） */
 (async function initWallpaper(){
   try {
