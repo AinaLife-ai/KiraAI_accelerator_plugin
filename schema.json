@@ -529,6 +529,18 @@
             "hint": "从 12 句关于「速度／流式」的英文箴言里随机取一句，配合壁纸显示。关掉则只保留壁纸与名称。默认：开。"
           }
         }
+      },
+      "ui_zen_seconds": {
+        "type": "integer",
+        "name": "Hide panel UI after N seconds idle",
+        "default": 10,
+        "hint": "After this many seconds without any input the panel UI fades out so you can see the wallpaper. The brand wordmark and the connection status stay visible. Any input brings the UI back. 0 disables it.",
+        "locales": {
+          "zh": {
+            "name": "空闲多少秒后隐藏面板 UI",
+            "hint": "这么久没有任何操作后，面板 UI 会淡出，让你欣赏背景；但品牌字（KiraAI 提速器）与「已连接」状态**保持可见**。一动鼠标/键盘就恢复。填 0 关闭该功能。默认：10 秒。"
+          }
+        }
       }
     }
   }

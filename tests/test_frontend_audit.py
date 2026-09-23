@@ -567,7 +567,10 @@ check("★ 收尾时把当前图层钉住（inline opacity:1），杜绝任一�
 
 print()
 print("═══ 19) ★★ 墨渗的 SVG 必须**全屏**（0×0 时 image 尺寸为 0 ⇒ 画不出来）")
-_svg = re.search(r"<svg[^>]*>", HTML)
+# ⚠️ 不能取"第一个 <svg>" —— ECG 的 data-URI 里也有 <svg>（会误伤）。
+#    要定位承载墨渗的那个：它带 id="wpInkImg"。
+_svg = re.search(r"<svg[^>]*>\s*(?:<!--[\s\S]*?-->\s*)*<mask id=\"wpInkMask\"", HTML)
+_svg = re.search(r"<svg[^>]*>(?=[\s\S]{0,2400}?id=\"wpInkMask\")", HTML)
 check("★ SVG 载体是全屏的（不是 width=0 height=0）",
       _svg is not None and "width:100%" in _svg.group(0) and "height:100%" in _svg.group(0),
       _svg.group(0)[:90] if _svg else "找不到")
@@ -584,6 +587,52 @@ check("★ 箴言三条时间线都以 opacity:1 收尾（不再自己淡出）"
 check("★ 停留由整场收尾统一化开（收尾 >= 6s）",
       re.search(r"after\((\d+), finishSplash\)", js) is not None
       and int(re.search(r"after\((\d+), finishSplash\)", js).group(1)) >= 6000)
+
+print()
+print("═══ 21) ★ 霓虹文字特效（三模式随机 + 霓虹色随机）")
+check("★ 有三种霓虹模式：呼吸 / 流光 / 弹珠环绕",
+      all(k in HTML for k in ("neon-breathe", "neon-flow", "neon-orbit")))
+check("★ 霓虹色是**一组**随机的（不是写死一个色）",
+      "NEON_COLORS" in js and js.count("#") >= 6)
+check("★ 由 JS 随机选模式并设 --nc（主色）",
+      "NEON_MODES[Math.floor" in js and 'setProperty("--nc"' in js)
+check("★ 弹珠环绕是小发光点沿外框环行（radial + rotate）",
+      "orbitSpin" in HTML and "radial-gradient(circle 7px" in HTML)
+check("★ 流光沿文字横向扫（background-position 动画）",
+      "neonFlow" in HTML and "background-position" in HTML)
+
+print()
+print("═══ 22) ★ 「已连接」心电图")
+check("★ 有 ECG 折线（polyline 脉冲波形）",
+      "polyline" in HTML and "ecgSweep" in HTML)
+check("★ 只在**已连接**时出现（.status.ok::after）",
+      ".status.ok::after" in HTML)
+check("★ 默认不可见（未连接时不闪）",
+      re.search(r"\.status::after\{[^}]*opacity:0", HTML) is not None)
+check("★ 减少动效下不扫但仍可见（不消失）",
+      re.search(r"prefers-reduced-motion[\s\S]{0,600}\.status\.ok::after\{[^}]*animation:none", HTML) is not None)
+
+print()
+print("═══ 23) ★★ 空闲欣赏模式：UI 藏、品牌字与连接状态**必须留**")
+check("★ 有 body.zen 机制", "body.zen" in HTML and "initZen" in js)
+check("★ 配置项 ui_zen_seconds（默认 10）",
+      '"ui_zen_seconds"' in (HERE / "schema.json").read_text(encoding="utf-8"))
+check("★ 空闲秒数从配置读入", "__accelZenSeconds" in js)
+check("★ 藏的是 section / tagline / dock（面板 UI）",
+      "body.zen .shell > section" in HTML and "body.zen .dock" in HTML)
+# ⚠️ 先剥 CSS 注释再查 —— 我自己的说明里提到了 ":not(header)"（举反例），
+#    不剥就会把说明当代码、误报（这个坑踩过好几次了）。
+_css_nc = re.sub(r"/\*[\s\S]*?\*/", "", HTML)
+check("★ ★ 保留 .wordmark（品牌字）—— 不能用 :not(header) 一刀切",
+      "body.zen .shell > .wordmark" in _css_nc and ":not(header)" not in _css_nc)
+check("★ 保留 .status（已连接）", "body.zen .shell > header > .status" in HTML)
+# ★ 用户明确要求：**点击画面任意处**（或按键）才恢复 UI，
+#   而不是"移动鼠标就出来" —— 否则手一碰鼠标 UI 就跳回来，没法安静欣赏背景。
+check("★ 点击 / 按键会恢复 UI（pointerdown + keydown）",
+      "exitZen" in js and "pointerdown" in js and "keydown" in js)
+check("★ ★ 但不绑定 mousemove（否则动一下就跳回来）",
+      "mousemove" + ", wake" not in js)
+check("★ 0 可关闭该功能", "if (!(secs > 0)) return;" in js)
 
 print("=" * 60)
 print(f"通过 {len(PASS)}  失败 {len(FAIL)}")

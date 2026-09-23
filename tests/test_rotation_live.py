@@ -84,7 +84,11 @@ function mkEl(id){
   const e = {
     id: id || '', tagName: 'DIV', _html: '', textContent: '', disabled: false,
     type: '', value: '', dataset: {},
-    style: new Proxy({cssText:''}, {set(t,k,v){t[k]=v;return true},get(t,k){return t[k]}}),
+    // ★ 桩要跟上真实 DOM：面板会调 style.setProperty（设 CSS 变量 --nc 等）
+    style: new Proxy({cssText:'', setProperty(k,v){ this[k]=v; },
+                      getPropertyValue(k){ return this[k] || ''; },
+                      removeProperty(k){ delete this[k]; }},
+        {set(t,k,v){t[k]=v;return true},get(t,k){return t[k]}}),
     classList: {
       add(...c){ c.forEach(x=>cls.add(x)); },
       remove(...c){ c.forEach(x=>cls.delete(x)); },
