@@ -98,12 +98,27 @@ i_main = HTML.index("function playSplash")
 check("★ 早期显示脚本在开屏元素**之后**（解析到即同步执行）", i_el < i_early)
 check("★ 且在主脚本之前", i_early < i_main)
 early = HTML[i_early:HTML.index("</script>", i_early)]
-check("★ 早期脚本**同步**加 .show（不依赖任何 await / DOMContentLoaded）",
-      'classList.add("show")' in early and "await" not in early)
-check("★ 早期脚本自带硬兜底定时器（主脚本没跑起来也不会卡住页面）",
-      "__accelSplashFailsafe" in early and "setTimeout" in early)
-check("主脚本的 playSplash 不再自己负责显示，只填内容",
-      "if (!sp || !window.__accelSplash) return;" in js)
+# ★★ 设计反转（学 Z 插件）：开屏**默认可见**（CSS display:grid），
+#    视觉全部由 CSS 完成；JS 只负责"填内容 + 收尾"。
+#    ⇒ 旧判据（"早期脚本要加 .show"）已经过时，且方向相反：
+#      靠 JS 显示才是**脆弱**的 —— JS 任何一步出问题 = 开屏不出现（连续报了两轮）。
+check("★ 开屏基础规则是 display:grid（**默认可见**，不靠 JS 显示）",
+      re.search(r"\.splash\{[^}]*display:\s*grid", HTML) is not None)
+check("★ 只有 [hidden] 才隐藏（一个明确的隐藏来源）",
+      re.search(r"\.splash\[hidden\]\{\s*display:\s*none", HTML) is not None)
+check("★ 没有任何地方用 .show 来显示开屏（旧设计）",
+      'classList.add("show")' not in js)
+check("★ 标题文字**静态写在 HTML** 里（JS 不在也有字，不白屏）",
+      len(re.findall(r'class="L\b', HTML)) >= 9,
+      f'{len(re.findall(chr(34)+"class="+chr(34)+"L", HTML))} 个字母')
+check("★ 箴言静态有默认内容（JS 不在也有话）",
+      re.search(r'<div class="motto" id="motto">[^<]+</div>', HTML) is not None)
+check("★ 基础入场动画由 CSS 直接挂（不靠 JS 加类触发）",
+      len(re.findall(r"\.splash:not\(\[hidden\]\)[^{]*\{[^}]*animation:", HTML)) >= 3)
+check("★ 早期脚本立刻 arm 收尾定时器（不依赖主脚本）",
+      "__accelSplashFailsafe = setTimeout" in early)
+check("主脚本只做增强+收尾（判 hidden，不判要不要显示）",
+      "if (!sp || sp.hidden) return;" in js)
 check("★ 所有「不显示」的路径都会收掉开屏（配置关 / 无壁纸 / 异常 / 超时）",
       js.count("finishSplash()") >= 4, f"{js.count('finishSplash()')} 处")
 check("★ finishSplash 会 clearTimeout 掉早期兜底",
@@ -111,8 +126,13 @@ check("★ finishSplash 会 clearTimeout 掉早期兜底",
 
 print()
 print("═══ 4) ★★ 墨渗：必须是「随机纹路」而不是圆，且极性正确")
-check("墨渗用 SVG mask（不是圆形 clip-path）",
-      'id="wpInkMask"' in HTML and 'maskImage = "url(#wpInkMask)"' in js)
+# ★ 必须用**原生 SVG mask**（挂在 SVG 的 <image> 上），
+#   而不是 HTML 元素的 CSS `mask-image: url(#…)` ——
+#   Chromium 对后者支持不完整 ⇒ 遮罩不生效 ⇒ 新图**瞬间全亮**（用户实测过）。
+check("★ 墨渗用原生 SVG mask（<image mask=\"url(#wpInkMask)\">）",
+      re.search(r'<image[^>]*mask="url\(#wpInkMask\)"', HTML) is not None)
+check("★ 不再用不可靠的 HTML CSS mask-image 引 SVG mask",
+      'maskImage = "url(#wpInkMask)"' not in js)
 # 旧的圆实现应已消失
 ink = re.search(r"function fxInk\(to, from, rim\)\{([\s\S]*?)\n\}", js)
 check("fxInk 存在", ink is not None)
@@ -134,6 +154,19 @@ check("结束时会复位 bias 到 BIAS0（不影响下一次）",
       f"BIAS0={B0}")
 
 print()
+print()
+print("═══ 4b) ★★ 响应标记必须真的被写入（否则剥离永远走兜底 + 日志刷屏）")
+_main = pathlib.Path(HERE / "main.py").read_text(encoding="utf-8")
+_eng = pathlib.Path(HERE / "stream_engine.py").read_text(encoding="utf-8")
+check("★ 引擎写入了已抢发段数（主判据）",
+      '_accel_early_sent_count' in _eng)
+check("★ 引擎写入了已抢发段原文（按内容剥离要用）",
+      '_accel_early_sent_segments' in _eng)
+check("★ 且是在 on_complete 之前写入（发送层读得到）",
+      _eng.index('_accel_early_sent_count') < _eng.index("self.on_complete("))
+check("台账每轮开始会清空（否则上一轮残留会让本轮多切=丢内容）",
+      "_reset_turn_ledger" in _main and "self._reset_turn_ledger(sid_now)" in _main)
+
 print("═══ 5) ★ 墨渗的数值校验：极性必须对（开场是一粒墨，不是满屏）")
 # alpha = 0.55R + 0.35G + 0.10B + bias，噪声三通道均值≈0.5
 # discrete(tableValues=[0,.55,1]) 的断点 = 1/3、2/3（固定）
