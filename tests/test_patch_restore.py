@@ -161,6 +161,33 @@ async def main():
     setattr(cls, attr, orig[key])                  # 复原，别污染后续测试
     check("现场已复原", getattr(cls, attr) is orig[key])
 
+    print("\n6) ★ 认领：上一次 terminate 失败时，新实例必须能收拾残局")
+    # 场景：A 装好补丁但 terminate 抛异常/被跳过 ⇒ 补丁留着；
+    # 框架随后初始化 B。若 B 不"认领"，就再也没人能还原这个补丁
+    # —— 表现为"插件关了行为还在"，且毫无报错。
+    key = ("reuse_http_client", id(mc.OpenAICompatibleLLMClient), "_build_client")
+    orig0 = orig[key]
+    setattr(mc.OpenAICompatibleLLMClient, "_build_client", orig0)   # 从干净状态开始
+
+    A = main_mod.AcceleratorPlugin(ctx=None, cfg={})
+    A._client_cache = {}
+    A.takeover_build_client = True
+    A._install_client_cache()
+    check("A 装上补丁", mc.OpenAICompatibleLLMClient._build_client is not orig0)
+
+    B = main_mod.AcceleratorPlugin(ctx=None, cfg={})
+    B._client_cache = {}
+    B.takeover_build_client = True
+    B._install_client_cache()          # 幂等 ⇒ 应当"认领"而不是无视
+    check("★ B 认领了已有补丁（登记进自己的 registry）", len(B.patches._handles) >= 1,
+          f"{len(B.patches._handles)} 个")
+
+    await B.terminate()
+    check("★★ B 的 terminate 能把 A 留下的补丁还原掉",
+          mc.OpenAICompatibleLLMClient._build_client is orig0,
+          f"当前={'已还原' if mc.OpenAICompatibleLLMClient._build_client is orig0 else '仍是补丁'}")
+    check("现场干净", not getattr(mc.OpenAICompatibleLLMClient._build_client, "__kira_accel__", False))
+
     print("\n" + "=" * 58)
     print(f"通过 {len(PASS)}  失败 {len(FAIL)}")
     if FAIL:
