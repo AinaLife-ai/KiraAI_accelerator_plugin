@@ -255,8 +255,13 @@ check("★ CSS 兜底的背景入场也写了 opacity（否则还是硬切）",
 print()
 print("═══ 5d) ★ 开屏时长与停留（用户要求久一点）")
 m_total = re.search(r"after\((\d+), finishSplash\)", js)
-check("★ 总时长 ≥5s", m_total and int(m_total.group(1)) >= 5000,
-      m_total.group(1) + "ms" if m_total else "找不到")
+# ⚠️ 总时长 = 收尾**起点** + **化开过渡**。只看 after(N) 会漏掉那 1.2s，
+#    把本来正确的改动判红（上一版就这么写错了）。
+_tr2 = re.search(r"\.splash\{[^}]*transition:opacity (\d+(?:\.\d+)?)s", HTML, re.S)
+_dis = float(_tr2.group(1)) * 1000 if _tr2 else 0
+_tot = (int(m_total.group(1)) + _dis) if m_total else 0
+check("★ 总时长 ≥5s（收尾起点 + 化开过渡）", _tot >= 5000,
+      f"{_tot:.0f}ms = {m_total.group(1) if m_total else '?'} + {_dis:.0f}")
 check("★ 收尾过渡 ≥1s（化开而不是硬跳）",
       re.search(r"\.splash\{[^}]*transition:opacity (\d+(?:\.\d+)?)s", HTML) is not None
       and float(re.search(r"\.splash\{[^}]*transition:opacity (\d+(?:\.\d+)?)s", HTML).group(1)) >= 1.0)
@@ -307,6 +312,75 @@ check("★ 墨渗不淡出旧图（旧图动画里没有 opacity:0）",
 print(f"     走 eatAway 的: {eat_ok}  |  墨渗: 旧图不淡出（被墨覆盖）")
 
 print()
+print()
+print("═══ 8) ★★ 特效必须播放完（本轮修的三处真 bug）")
+# ① 条带特效不能被自己的"整张淡入"盖住 —— 那会让条带看起来没播放
+_strips = _fx_body("fxStrips")
+check("★ fxStrips 不对主层做整张淡入（否则盖住条带 ⇒ 等于没播放）",
+      "revealIn(" not in _strips)
+check("★ fxStrips 自己把主层设为隐藏（to.style.opacity = \"0\"）",
+      'to.style.opacity = "0"' in _strips)
+
+# ② 收尾必须按**每套特效的实际时长**等，而不是固定值
+check("★ 存在 wpLastDur（记录每套的实际时长，含错峰延迟）",
+      "let wpLastDur" in js)
+check("★ 收尾按 wpLastDur 等待（固定等会截断条带/墨渗）",
+      re.search(r"await sleep\(wpLastDur\s*\+", js) is not None)
+_setters = re.findall(r"wpLastDur = ([^;]+);", js)
+check("★ 每套特效都设置了自己的 wpLastDur", len(_setters) >= 5,
+      f"{len(_setters)} 套: {_setters}")
+check("★ 条带的时长含最晚一条的延迟（不只是单条时长）",
+      any("* .72" in s or "*.72" in s for s in _setters), str(_setters))
+
+print()
+print("═══ 9) ★★ 开屏时序：一个元素只能有一个驱动者 + 必须有停留")
+check("★ 存在 html.jsfx 开关（JS 接管时关掉 CSS 入场动画）",
+      "html.jsfx" in HTML)
+check("★ jsfx 关掉的正是会冲突的那几项（字母/副标题/分隔线/箴言/背景）",
+      all(sel in HTML for sel in ["html.jsfx .wm-main .L", "html.jsfx .wm-sub",
+                                  "html.jsfx .sp-line", "html.jsfx .motto",
+                                  "html.jsfx .sp-wp"]))
+check("★ 主脚本会打上 jsfx 信号",
+      'document.documentElement.classList.add("jsfx")' in js)
+
+# ⚠️ 致命点：CSS 里 .wm-main .L 默认 opacity:0，若 JS 动效用 fill:"backwards"，
+#    播完会**回到 opacity:0 ⇒ 字母全消失**。
+_n_both = js.count('fill:"both"')
+check("★ 标题/箴言特效用 fill:both（backwards 会让字母播完消失）",
+      'fill:"backwards"' not in js and _n_both >= 8,
+      f"both={_n_both}")
+
+# 箴言必须"入场 → 停住 → 淡出"
+_mfx = js[js.index("const MOTTO_FX_FN"):js.index("\n};", js.index("const MOTTO_FX_FN"))]
+check("★ 箴言特效带停住（时间线里有保持不透明的 offset）",
+      _mfx.count("offset:.84") >= 3, f"{_mfx.count('offset:.84')} 处")
+check("★ 箴言特效结尾会淡出（不再一直亮着）",
+      _mfx.count("opacity:0") >= 4)
+
+check("★ 标题特效延后到 750ms 才跑（画面先出、字再长出来）",
+      re.search(r"after\(750,", js) is not None)
+check("★ 副标题/分隔线有各自的 delay（错峰、有停留）",
+      "delay:1850" in js and "delay:2050" in js)
+check("★ 箴言延后到 2.25s（前面留出停留）",
+      re.search(r"after\(2250,", js) is not None)
+m_fin = re.search(r"after\((\d+), finishSplash\)", js)
+check("★ 整体收尾在 4.6s 左右（化开 1.2s ⇒ 总约 5.8s）",
+      m_fin and 4200 <= int(m_fin.group(1)) <= 5200,
+      m_fin.group(1) + "ms" if m_fin else "找不到")
+
+print()
+print("═══ 10) ★ 跳过提示要有微微闪烁（不张扬）")
+check("★ .sp-hint 有闪烁动画", re.search(r"\.sp-hint\{[^}]*animation:spHint", HTML) is not None)
+# ⚠️ 不能只抓 `[^}]*` —— keyframes 里有多个 `}`，那样只截到第一档，
+#    会得出"找不到 .56"的错误结论（上一版就写错了）。
+_hint = re.search(r"@keyframes spHint\{([\s\S]*?)\n\}", HTML)
+check("★ 闪烁幅度小（不张扬）",
+      _hint is not None and ".34" in _hint.group(1) and ".56" in _hint.group(1),
+      _hint.group(1) if _hint else "找不到")
+check("★ 提示不被 jsfx 关掉（它始终要闪）", "html.jsfx .sp-hint" not in HTML)
+check("★ 减少动效下提示不闪但仍可见（不消失）",
+      re.search(r"prefers-reduced-motion[\s\S]{0,400}\.sp-hint\{[^}]*animation:none", HTML) is not None)
+
 print("=" * 60)
 print(f"通过 {len(PASS)}  失败 {len(FAIL)}")
 if FAIL:

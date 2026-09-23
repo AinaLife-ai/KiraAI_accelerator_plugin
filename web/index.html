@@ -316,6 +316,19 @@ select{appearance:none;background-image:none;cursor:pointer}
 /* 用户关掉开屏时，首帧之前就由内联脚本打上 hidden —— 不留闪烁 */
 .splash.off{display:none}
 
+/* ★★ `html.jsfx` = "主脚本已经接管开屏"的信号（由 JS 自己打上）。
+   此时**必须关掉**下面这些 CSS 入场动画 —— 否则同一个元素被两个驱动者控制：
+   字母会先被 CSS 排到 750ms、又被 JS 在 0ms 播一次 ⇒ 重播、时机错乱、
+   看起来"没有停留"；箴言同理（JS 播完，CSS 延迟到点后又从透明重播一次）。
+   一个元素**只能有一个驱动者**：有 JS 就全给 JS，没 JS 才用这套兜底。 */
+html.jsfx .wm-main .L,
+html.jsfx .wm-sub,
+html.jsfx .sp-line,
+html.jsfx .motto,
+html.jsfx .sp-wp,
+html.jsfx .sp-veil,
+html.jsfx .sp-rim{animation:none!important}
+
 /* ── 基础入场动画（纯 CSS，不依赖 JS）──
    背景先"从中间晕开"，标题逐字浮起，箴言淡入。
    JS 不在也照跑；JS 在了再叠随机壁纸/随机特效。 */
@@ -392,7 +405,12 @@ select{appearance:none;background-image:none;cursor:pointer}
   text-shadow:0 1px 14px rgba(0,0,0,.8)}
 .motto::before{content:"— ";color:rgba(255,255,255,.35)}
 .sp-hint{position:absolute;bottom:20px;left:0;right:0;text-align:center;
-  font-size:11px;letter-spacing:.24em;color:rgba(255,255,255,.34);text-transform:uppercase}
+  font-size:11px;letter-spacing:.24em;color:rgba(255,255,255,.34);text-transform:uppercase;
+  animation:spHint 2.6s ease-in-out infinite}
+/* ★ 提示"微微闪烁"：幅度刻意小（.34 → .56），能看出是提示但不张扬。
+   注意它**不在** html.jsfx 的关闭列表里 —— 这条提示与 JS 接管无关，始终要闪。 */
+@keyframes spHint{0%,100%{opacity:.34}50%{opacity:.56}}
+@media (prefers-reduced-motion:reduce){ .sp-hint{animation:none;opacity:.42} }
 </style>
 </head>
 <body>
@@ -1353,6 +1371,13 @@ function wpLoad(id, url){
 const anim = (el, kf, opt) => el.animate(kf, Object.assign(
   {duration: WP_DUR, easing: "linear", fill: "forwards"}, opt));
 
+/* ★★ 每套特效的**实际总时长**（含错峰延迟）。
+   为什么必须有它：收尾原来是固定等 `WP_DUR + 420`，而条带要
+   `WP_DUR*.72 + WP_DUR*.55 ≈ WP_DUR*1.27` 才跑完、墨渗要 `WP_DUR*1.15`
+   ⇒ **被提前掐掉**：条带/墨还没铺满就被"啪"地换成整张图 = 硬切。
+   观感就是"特效没播放完"。 */
+let wpLastDur = WP_DUR;
+
 /* ★★ 统一"色彩覆盖"语义 —— 所有特效都用这两个辅助。
    为什么必须**显式写 opacity**：
      `.wp-img` 的 CSS 是 `opacity:0`，可见性靠 `.wp-stage.on` 变 1。
@@ -1407,6 +1432,7 @@ function fxIris(to, from, rim){
          {duration:WP_DUR*1.02, easing:"cubic-bezier(.32,0,.68,1)"});
   }
   eatAway(from, WP_DUR * 1.02);             // 旧图被吃掉
+  wpLastDur = WP_DUR * 1.02;
 }
 
 /* ── 斜擦：一道发光前沿横扫 ── */
@@ -1427,6 +1453,7 @@ function fxWipe(to, from, rim){
          {easing:"cubic-bezier(.66,0,.24,1)"});
   }
   eatAway(from, WP_DUR);                    // 旧图被吃掉
+  wpLastDur = WP_DUR;
 }
 
 /* ── 条带揭示：百叶（横向）／中开（纵向） ──
@@ -1460,8 +1487,18 @@ function fxStrips(to, from, rim, vertical, fromCentre){
       duration: WP_DUR * .72, delay: dist * (WP_DUR * .55 / N),
       easing: "cubic-bezier(.3,.7,.3,1)", fill: "forwards"});
   }
-  revealIn(to, WP_DUR, 1.09);               // ★ 显式淡入
+  /* ★★ 这里**不能**给主层做"整张淡入"。
+     条带本身就是新图的可见载体；若主层同时淡入到 opacity:1，
+     它会把还没展开的条带**整块盖住** ⇒ 观感变成"一次淡入 + 几道条纹"，
+     **等于条带特效没播放**（用户实测："很多切换特效等于没有播放完"）。
+     正确做法：主层保持隐藏（`to.style.opacity` 由 fxStrips 置 0），
+     只做轻微的推近；等 `wpSettle` 加上 `.on` 时才整体可见 ——
+     那时条带已铺满全屏，谁也盖不住谁。 */
+  anim(to, [{transform:"scale(1.09)"},{transform:"scale(1)"}],
+       {duration: WP_DUR, easing:"cubic-bezier(.3,0,.5,1)"});
   eatAway(from, WP_DUR);                    // 旧图被吃掉
+  // 实际总时长 = 最后一条的延迟 + 它的时长
+  wpLastDur = WP_DUR * .72 + WP_DUR * .55;
   return () => made.forEach(s => s.remove());
 }
 
@@ -1471,6 +1508,7 @@ function fxZoom(to, from){
             {transform:"scale(1)", filter:"blur(0px) saturate(1)", opacity:1}],
        {easing:"cubic-bezier(.16,1,.3,1)"});
   eatAway(from, WP_DUR * 1.05);            // 旧图被吃掉（统一走辅助）
+  wpLastDur = WP_DUR * 1.05;
 }
 
 /* ── 墨渗：圆 + SVG 湍流扰动 ⇒ 边缘有机不规则（比纯圆更像墨） ── */
@@ -1539,6 +1577,7 @@ function fxInk(to, from, rim){
                {opacity:0, transform:"scale(2.4)"}],
          {duration:dur, easing:"cubic-bezier(.34,0,.66,1)"});
   }
+  wpLastDur = dur;
   return () => {
     cancelAnimationFrame(raf);
     img.style.display = "none";
@@ -1584,7 +1623,8 @@ async function _wpTransition(url){
   else                       wpCleanup = fxInk(to, from, rim);
 
   wpStage(id).classList.add("on");
-  await sleep(WP_DUR + 420);
+  // ★ 等**这一套自己的**实际时长（含错峰延迟），再加一点余量
+  await sleep(wpLastDur + 260);
   wpSettle(id, fromId);
 }
 
@@ -1687,7 +1727,7 @@ const WM_FX_FN = {
   assemble: L => L.forEach((s,i) => s.animate(
     [{opacity:0, transform:`translateY(${.55+Math.random()*.35}em) rotate(${-9+Math.random()*18}deg) scale(.85)`},
      {opacity:1, transform:"none"}],
-    {duration:820, delay:i*46, easing:"cubic-bezier(.16,1,.3,1)", fill:"backwards"})),
+    {duration:820, delay:i*46, easing:"cubic-bezier(.16,1,.3,1)", fill:"both"})),
   glitch: L => {
     L.forEach((s,i) => s.animate(
       [{opacity:0, transform:"translateX(-14px) skewX(22deg)",
@@ -1697,7 +1737,7 @@ const WM_FX_FN = {
        {transform:"translateX(-5px) skewX(7deg)", offset:.5},
        {transform:"translateX(3px)", offset:.66},
        {transform:"none", textShadow:"0 0 0 transparent"}],
-      {duration:1050, delay:i*52, easing:"ease-out", fill:"backwards"}));
+      {duration:1050, delay:i*52, easing:"ease-out", fill:"both"}));
     const sh = document.getElementById("wmSheen");
     if (sh) sh.animate([{opacity:0},{opacity:.85, offset:.5},{opacity:0}],
       {duration:900, delay:260, easing:"ease-out"});
@@ -1706,10 +1746,10 @@ const WM_FX_FN = {
     [{opacity:.18, filter:"blur(3px)", textShadow:"none"},
      {opacity:1, offset:.55, filter:"blur(0px)", textShadow:"0 0 22px currentColor"},
      {opacity:1, filter:"blur(0px)", textShadow:"0 0 9px rgba(255,255,255,.35)"}],
-    {duration:1000, delay:i*92, easing:"ease-out", fill:"backwards"})),
+    {duration:1000, delay:i*92, easing:"ease-out", fill:"both"})),
   sweep: L => {
     L.forEach((s,i) => s.animate([{opacity:.15},{opacity:1}],
-      {duration:420, delay:150+i*40, fill:"backwards"}));
+      {duration:420, delay:150+i*40, fill:"both"}));
     const sh = document.getElementById("wmSheen");
     if (sh) sh.animate(
       [{opacity:0, transform:"translateX(-120%)"},{opacity:1, offset:.5},
@@ -1721,28 +1761,47 @@ const WM_FX_FN = {
      {opacity:1, transform:"translateY(-.12em)", offset:.62},
      {opacity:1, transform:"translateY(0)"}],
     {duration:900, delay:Math.abs(i-(L.length-1)/2)*115,
-     easing:"cubic-bezier(.3,1.3,.4,1)", fill:"backwards"})),
+     easing:"cubic-bezier(.3,1.3,.4,1)", fill:"both"})),
   shatter: L => L.forEach((s,i) => s.animate(
     [{opacity:0, transform:"scale(2.7)", filter:"blur(15px)"},
      {opacity:1, offset:.45, filter:"blur(0px)"},
      {transform:"scale(1)", filter:"blur(0px)"}],
-    {duration:1000, delay:i*54, easing:"cubic-bezier(.16,1,.3,1)", fill:"backwards"})),
+    {duration:1000, delay:i*54, easing:"cubic-bezier(.16,1,.3,1)", fill:"both"})),
 };
 
+/* ★ 箴言特效：都必须"**入场 → 停住 → 淡出**"。
+   原来只有入场（`fill:"backwards"` 播完就交还 CSS），既没有停留，
+   还会和 CSS 的入场动画撞车（用户实测："箴言是直接出现的，也没合适停留"）。
+   现在每条时间线都显式排：入场 → 保持不透明 → 末尾淡出。 */
 const MOTTO_FX_FN = {
-  rise:  el => el.animate([{opacity:0, transform:"translateY(12px)"},{opacity:1, transform:"none"}],
-                          {duration:750, easing:"cubic-bezier(.16,1,.3,1)", fill:"backwards"}),
-  blur:  el => el.animate([{opacity:0, filter:"blur(9px)"},{opacity:1, filter:"blur(0)"}],
-                          {duration:850, easing:"ease-out", fill:"backwards"}),
-  track: el => el.animate([{opacity:0, letterSpacing:"1.4em"},{opacity:1, letterSpacing:".02em"}],
-                          {duration:1000, easing:"cubic-bezier(.16,1,.3,1)", fill:"backwards"}),
-  type:  async el => {
+  rise: el => el.animate(
+    [{opacity:0, transform:"translateY(12px)"},
+     {opacity:1, transform:"none", offset:.20},
+     {opacity:1, transform:"none", offset:.84},
+     {opacity:0, transform:"none"}],
+    {duration:2600, easing:"cubic-bezier(.16,1,.3,1)", fill:"both"}),
+  blur: el => el.animate(
+    [{opacity:0, filter:"blur(9px)"},
+     {opacity:1, filter:"blur(0)", offset:.22},
+     {opacity:1, filter:"blur(0)", offset:.84},
+     {opacity:0, filter:"blur(9px)"}],
+    {duration:2600, easing:"cubic-bezier(.2,0,.4,1)", fill:"both"}),
+  track: el => el.animate(
+    [{opacity:0, letterSpacing:"1.4em"},
+     {opacity:1, letterSpacing:".02em", offset:.30},
+     {opacity:1, letterSpacing:".02em", offset:.84},
+     {opacity:0, letterSpacing:".02em"}],
+    {duration:2800, easing:"cubic-bezier(.16,1,.3,1)", fill:"both"}),
+  type: async el => {
     const txt = el.dataset.txt || "";
+    el.textContent = "";
     el.style.opacity = "1";
     for (let i = 1; i <= txt.length; i++){
       el.textContent = txt.slice(0, i);
-      await sleep(Math.max(9, 620 / Math.max(1, txt.length)));
+      await sleep(Math.max(16, 700 / Math.max(1, txt.length)));
     }
+    await sleep(1500);                                  // ★ 打完停住
+    el.animate([{opacity:1},{opacity:0}], {duration:600, fill:"forwards"});
   },
 };
 
@@ -1776,6 +1835,9 @@ function playSplash(){
 }
 
 function _playSplash(){
+  // ★ 信号："主脚本已接管开屏"。打上之后 CSS 里那套兜底入场动画全部关闭，
+  //   由 JS 独家负责时序（否则两边抢同一个元素 ⇒ 重播 + 时机错乱）。
+  document.documentElement.classList.add("jsfx");
   const sp = document.getElementById("splash");
   clearSplashTimers();
   sp.classList.remove("out");
@@ -1845,11 +1907,21 @@ function _playSplash(){
   //   rand(WM_FX)(WM_FX_FN)(L)（那等于调用字符串，会抛 TypeError，
   //   而且异常发生在显示之后 ⇒ 开屏卡死）
   try {
-    if (L.length) WM_FX_FN[rand(WM_FX)](L);
+    // ★ 等 750ms 再跑 —— 与 CSS 兜底原本的起点一致
+    //   （"画面先出、字再从无到有长出来"），且避免与副标题撞在一起。
+    //   每个字母都带"入场 → 停住"，不会播完就闪回去。
+    after(750, () => { try { WM_FX_FN[rand(WM_FX)](L); } catch (e) {} });
   } catch (e) { console.error("[accel] 开屏：标题特效失败", e); }
+  // 副标题：等标题基本就位（约 1.6s）后再出现，然后停住
+  const sub = document.querySelector(".wm-sub");
+  if (sub) sub.animate([{opacity:0, transform:"translateY(8px)"},
+                        {opacity:1, transform:"none"}],
+                       {duration:760, delay:1850, easing:"cubic-bezier(.16,1,.3,1)",
+                        fill:"both"});
+  // 分隔线
   const line = document.getElementById("spLine");
-  if (line) line.animate([{width:"0"},{width:"46%"}],
-    {duration:900, delay:520, easing:"ease-out", fill:"backwards"});
+  if (line) line.animate([{width:"0", opacity:0},{width:"46%", opacity:1}],
+    {duration:800, delay:2050, easing:"cubic-bezier(.16,1,.3,1)", fill:"both"});
 
   // 箴言
   if (wpSplashMotto){
@@ -1859,7 +1931,7 @@ function _playSplash(){
       mEl.dataset.txt = txt;
       mEl.textContent = txt;
       mEl.style.opacity = "";                    // 先恢复可见（type 特效自己会控）
-      after(780, () => {
+      after(2250, () => {
         try { MOTTO_FX_FN[rand(MOTTO_FX)](mEl); }
         catch (e) { console.error("[accel] 开屏：箴言特效失败", e); }
       });
@@ -1868,7 +1940,10 @@ function _playSplash(){
 
   /* ★ 总时长 5.8s 后开始化开（1.1s）⇒ 约 6.9s 结束。
      前面 ~3.1s 是动画，之后 **静置约 2.7s** 让用户看清。 */
-  after(5800, finishSplash);
+  // 时间轴：0→1.0s 背景渐显 ｜ 0.75→1.6s 字母就位并**停住**
+  //         1.85s 副标题 ｜ 2.05s 分隔线 ｜ 2.25→4.3s 箴言（入场后停住）
+  //         4.6s 整体化开退场 —— 总时长约 5.8s，留足"看"的时间
+  after(4600, finishSplash);
 }
 
 function finishSplash(){
