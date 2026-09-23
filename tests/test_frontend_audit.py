@@ -204,6 +204,76 @@ check("★ 单调递增（墨量只增不减 = 真的在扩散）",
       f_start < f_mid < f_end)
 
 print()
+print()
+print("═══ 5b) ★★ 所有特效统一「色彩覆盖」：新图必须淡入（不许硬切）")
+# 用户实测："好像还有一个效果是直接硬切的"。
+# 根因：新层 keyframes 只写 transform，`fill:"forwards"` 让 opacity 停在 CSS 的 0，
+#       动画结束才跳到 1 ⇒ 新图"啪"地出现。所以每套都必须**显式淡入**。
+_fx_names = ["fxIris", "fxWipe", "fxStrips", "fxZoom", "fxInk"]
+_reveal = re.search(r"function revealIn\(([\s\S]*?)\n\}", js)
+check("存在 revealIn（统一的新图淡入辅助）", _reveal is not None)
+check("★ revealIn 里显式写了 opacity 0 → 1",
+      _reveal and "opacity:0" in _reveal.group(1) and "opacity:1" in _reveal.group(1))
+_eat = re.search(r"function eatAway\(([\s\S]*?)\n\}", js)
+check("存在 eatAway（统一的旧图被吃掉辅助）", _eat is not None)
+check("★ eatAway 里先保持实、后模糊降饱和淡出（真正的覆盖感）",
+      _eat and "opacity:1" in _eat.group(1) and "blur(" in _eat.group(1)
+      and "saturate(" in _eat.group(1))
+# ★ 真正的要求是"**不许硬切**"：每套特效要么调 revealIn，要么自己的关键帧里
+#   显式写 opacity。只数 revealIn 会误判 —— fxInk 走 SVG 遮罩（在函数外掌控节奏），
+#   fxZoom 本来就有自己的 opacity 关键帧。
+def _fx_body(name):
+    i = js.index("function " + name)
+    return js[i:i + 1800]
+
+no_fade = []
+for f in _fx_names:
+    b = _fx_body(f)
+    if "revealIn(" in b:
+        continue
+    if f == "fxInk":
+        continue                      # 墨渗按"噪声长出"覆盖，不走淡入
+    if re.search(r"opacity:\s*0", b) and re.search(r"opacity:\s*1", b):
+        continue                      # 自己有淡入关键帧
+    no_fade.append(f)
+check("★ 每套特效的新图都**不会硬切**（revealIn 或自带 opacity 关键帧）",
+      not no_fade, f"缺淡入: {no_fade}")
+
+print()
+print("═══ 5c) ★ 开屏：首帧就要有画面（否则观感是先有字、后有画）")
+check("★ .sp-wp 有**纯 CSS 静态底**（不依赖网络/JS 就有画面）",
+      re.search(r"\.sp-wp\{[^}]*background-image:[^;]*radial-gradient", HTML) is not None)
+check("★ 标题字母默认 opacity:0 + 延后到壁纸之后（750ms 起）",
+      re.search(r"\.wm-main \.L\{[^}]*opacity:0", HTML) is not None
+      and "750ms" in js or "750ms" in HTML)
+check("★ 副标题/分隔线/箴言都默认透明（从无到有）",
+      all(re.search(r"\.splash:not\(\[hidden\]\) " + sel + r"\{[^}]*opacity:0", HTML) is not None
+          for sel in [r"\.wm-sub", r"\.sp-line", r"\.motto"]))
+check("★ CSS 兜底的背景入场也写了 opacity（否则还是硬切）",
+      re.search(r"@keyframes spWpIn\{[^}]*opacity:0", HTML, re.S) is not None)
+
+print()
+print("═══ 5d) ★ 开屏时长与停留（用户要求久一点）")
+m_total = re.search(r"after\((\d+), finishSplash\)", js)
+check("★ 总时长 ≥5s", m_total and int(m_total.group(1)) >= 5000,
+      m_total.group(1) + "ms" if m_total else "找不到")
+check("★ 收尾过渡 ≥1s（化开而不是硬跳）",
+      re.search(r"\.splash\{[^}]*transition:opacity (\d+(?:\.\d+)?)s", HTML) is not None
+      and float(re.search(r"\.splash\{[^}]*transition:opacity (\d+(?:\.\d+)?)s", HTML).group(1)) >= 1.0)
+check("★ 收尾同时过渡 opacity/transform/filter（化开）",
+      re.search(r"\.splash\{[^}]*transition:[^;]*transform[^;]*filter", HTML, re.S) is not None)
+check("★ .splash.out 带缩放+模糊（不只是透明）",
+      re.search(r"\.splash\.out\{[^}]*transform:[^;]*scale[^}]*filter:[^;]*blur", HTML, re.S) is not None)
+# ⚠️ 必须精确抓 `__accelSplashFailsafe = setTimeout(...)}, NNNN)` 这一处：
+#    非贪婪正则会匹配到后面那个 1200ms 的隐藏定时器，得出错误结论（上一版就写错了）。
+m_fb = re.search(r"__accelSplashFailsafe\s*=\s*setTimeout\(function \(\) \{[\s\S]*?\n\s*\}, (\d+)\);", HTML)
+if m_fb and m_total:
+    check("★ 内联兜底晚于正常收尾（否则会抢在收尾前把开屏掐掉）",
+          int(m_fb.group(1)) > int(m_total.group(1)),
+          f"兜底 {m_fb.group(1)}ms vs 正常 {m_total.group(1)}ms")
+else:
+    check("★ 能找到内联兜底超时值", False, f"m_fb={bool(m_fb)} m_total={bool(m_total)}")
+
 print("═══ 6) ★ 特效要「慢一点」（用户明确要求）")
 m = re.search(r"const WP_DUR = (\d+)", js)
 check("WP_DUR 至少 3000ms（原来 2200 被反馈太快）", m and int(m.group(1)) >= 3000,
@@ -213,13 +283,28 @@ check("条带铺满整个时长（不再挤在前 60%）",
 check("墨渗比基准更长（≈1.15×）", "WP_DUR * 1.15" in js)
 
 print()
-print("═══ 7) ★ 「颜色相互消除/覆盖」感：旧图要被吃掉，不是单纯淡出")
-# 每套特效的 from 动画都带 filter（模糊+降饱和）
-from_anims = re.findall(r"anim\(from, \[\{([^\]]*?)\}", js)
-with_filter = [a for a in from_anims if "filter" in a]
-print(f"     带「被吃掉」处理的旧图动画: {len(with_filter)} / {len(from_anims)}")
-check("★ 至少 4 套特效的旧图带模糊/降饱和（观感是被覆盖）",
-      len(with_filter) >= 4, f"{len(with_filter)} 套")
+print("═══ 7) ★ 「颜色相互消除/覆盖」感：旧图要被吃掉")
+# 除墨渗外，每套的旧图都应走 eatAway（模糊 + 降饱和 + 淡出）；
+# 墨渗按设计**让旧图保持可见**、由墨盖上去（那才是真正的"被下一张吃掉"）。
+eat_ok, eat_missing = [], []
+for f in ["fxIris", "fxWipe", "fxStrips", "fxZoom"]:
+    b = _fx_body(f)
+    (eat_ok if "eatAway(" in b else eat_missing).append(f)
+check("★ 除墨渗外，每套特效的旧图都被 eatAway 吃掉", not eat_missing,
+      f"缺: {eat_missing}")
+_ink = _fx_body("fxInk")
+# ⚠️ 不能简单查 "opacity:0" —— fxInk 里有 `to.style.opacity = "0"`
+#    （把**新层本体**藏起来，因为显示由 SVG <image> 负责，这是设计如此）。
+#    准确的判据是：**旧层根本没有动画**（它保持原样，等着被墨盖住）。
+# ⚠️ 判据要精确：fxInk 里**有意**让旧图做一个"极轻微推近"（保持不透明，
+#    等着被墨盖住）。所以不能禁止 `anim(from,`，而要禁止**旧图动画里出现 opacity:0**
+#    （那才叫"淡出"）。另：`to.style.opacity = "0"` 是**新层本体隐藏**
+#    （显示交给 SVG <image>），与旧图无关，不能误伤。
+_from_block = re.search(r"anim\(from,\s*\[([\s\S]*?)\]", _ink)
+check("★ 墨渗不淡出旧图（旧图动画里没有 opacity:0）",
+      "eatAway(" not in _ink
+      and (_from_block is None or "opacity:0" not in _from_block.group(1)))
+print(f"     走 eatAway 的: {eat_ok}  |  墨渗: 旧图不淡出（被墨覆盖）")
 
 print()
 print("=" * 60)

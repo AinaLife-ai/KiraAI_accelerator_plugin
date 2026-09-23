@@ -305,9 +305,14 @@ select{appearance:none;background-image:none;cursor:pointer}
    （异常、时序、被拦）结果就是**开屏不出现**，而且完全静默 —— 极难排查。
    反过来写，最坏情况只是"基础动画照跑、JS 增强没生效"，开屏一定在。 */
 .splash{position:fixed;inset:0;z-index:60;display:grid;place-items:center;
-  background:#0a0b12;overflow:hidden;transition:opacity .62s ease-out}
+  background:#0a0b12;overflow:hidden;
+  /* ★ 收尾要"化开"而不是"啪一下没了"：同时过渡 不透明度 / 缩放 / 模糊 */
+  transition:opacity 1.1s cubic-bezier(.4,0,.2,1),
+             transform 1.1s cubic-bezier(.4,0,.2,1),
+             filter 1.1s cubic-bezier(.4,0,.2,1)}
 .splash[hidden]{display:none}
-.splash.out{opacity:0}
+/* 结束：淡出的同时**极轻微推远 + 模糊**，像画面在眼前散开 */
+.splash.out{opacity:0;transform:scale(1.045);filter:blur(12px)}
 /* 用户关掉开屏时，首帧之前就由内联脚本打上 hidden —— 不留闪烁 */
 .splash.off{display:none}
 
@@ -322,8 +327,9 @@ select{appearance:none;background-image:none;cursor:pointer}
   100%{opacity:0;transform:scale(2.35)}
 }
 @keyframes spWpIn{
-  0%{clip-path:circle(0% at 50% 50%);transform:scale(1.10)}
-  100%{clip-path:circle(118% at 50% 50%);transform:scale(1)}
+  0%{clip-path:circle(0% at 50% 50%);transform:scale(1.12);opacity:0}
+  14%{opacity:1}
+  100%{clip-path:circle(118% at 50% 50%);transform:scale(1);opacity:1}
 }
 @keyframes spLetterIn{
   0%{opacity:0;transform:translateY(16px) scale(.86);filter:blur(9px)}
@@ -331,7 +337,15 @@ select{appearance:none;background-image:none;cursor:pointer}
 }
 @keyframes spMottoIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
 @keyframes spLineIn{from{width:0;opacity:0}to{width:150px;opacity:1}}
+/* ★★ 静态底：**不依赖网络、不依赖 JS** —— 首帧就有一片"画面"，
+   否则在壁纸加载出来之前开屏是空的 ⇒ 观感变成"先有字再有画"（用户实测）。
+   这是深色墨底 + 一点冷光，与壁纸风格接近，加载完就被真图盖住。 */
 .sp-wp{position:absolute;inset:-3%;background-size:cover;background-position:center;
+  background-image:
+    radial-gradient(70% 55% at 32% 28%, rgba(255,111,174,.30), transparent 68%),
+    radial-gradient(62% 52% at 74% 66%, rgba(139,124,255,.34), transparent 70%),
+    radial-gradient(52% 46% at 52% 88%, rgba(94,240,192,.20), transparent 72%),
+    linear-gradient(160deg, #131628 0%, #0a0b12 46%, #10131f 100%);
   will-change:transform,opacity,clip-path,filter}
 /* 面纱：只把**中间文字区**压暗，四角保留壁纸细节 ——
    既要字能读，又要"这是一张图"的感觉还在。 */
@@ -346,12 +360,18 @@ select{appearance:none;background-image:none;cursor:pointer}
 .sp-inner{position:relative;text-align:center;padding:0 20px;max-width:92vw}
 .wm-wrap{position:relative;display:inline-block}
 /* 标题逐字入场：纯 CSS，靠 --i 做错峰（JS 若在，会改成随机特效） */
+/* ★ 起点推迟到 **壁纸已经显现之后**（0.75s）—— 这样是"画面先出、字再从无到有长出来"，
+   而不是"字先跳出来、背景还空着"。每个字母 90ms 错峰，总共约 0.8s。 */
 .splash:not([hidden]) .wm-main .L{
-  animation:spLetterIn .62s cubic-bezier(.16,1,.3,1) both;
-  animation-delay:calc(var(--i, 0) * 55ms + 260ms)}
-.splash:not([hidden]) .wm-sub{animation:spMottoIn .7s ease-out .62s both}
-.splash:not([hidden]) .sp-line{animation:spLineIn .8s cubic-bezier(.16,1,.3,1) .7s both}
-.splash:not([hidden]) .motto{animation:spMottoIn .8s ease-out 1s both}
+  opacity:0;                      /* 兜底：任何情况下都不会"先亮着" */
+  animation:spLetterIn .78s cubic-bezier(.16,1,.3,1) both;
+  animation-delay:calc(var(--i, 0) * 90ms + 750ms)}
+.splash:not([hidden]) .wm-sub{opacity:0;
+  animation:spMottoIn .8s ease-out 1.45s both}
+.splash:not([hidden]) .sp-line{opacity:0;
+  animation:spLineIn .9s cubic-bezier(.16,1,.3,1) 1.62s both}
+.splash:not([hidden]) .motto{opacity:0;
+  animation:spMottoIn .95s ease-out 1.95s both}
 .wm-main{font-family:NimbusDisplay,Helvetica,sans-serif;font-weight:800;
   font-size:clamp(38px,11.5vw,84px);line-height:.9;letter-spacing:-.05em;white-space:nowrap;
   text-shadow:0 2px 26px rgba(0,0,0,.72)}
@@ -485,22 +505,23 @@ window.__accelSplash = true;
     return;
   }
   // ② 收尾定时器：**立刻 armed**，与主脚本无关
+  // 兜底必须**晚于**主脚本的正常收尾（5800 + 1100）
   window.__accelSplashFailsafe = setTimeout(function () {
     try {
       var e2 = document.getElementById("splash");
       if (e2 && !e2.hidden) {
         e2.classList.add("out");
-        setTimeout(function () { e2.hidden = true; }, 640);
+        setTimeout(function () { e2.hidden = true; }, 1200);
       }
       window.__accelSplash = false;
     } catch (_) {}
-  }, 4200);
+  }, 9200);
   // ③ 跳过
   sp.addEventListener("click", function () {
     if (window.finishSplash) window.finishSplash();
     else {
       sp.classList.add("out");
-      setTimeout(function () { sp.hidden = true; }, 640);
+      setTimeout(function () { sp.hidden = true; }, 1200);
       window.__accelSplash = false;
     }
   });
@@ -509,7 +530,7 @@ window.__accelSplash = true;
       if (window.finishSplash) window.finishSplash();
       else {
         sp.classList.add("out");
-        setTimeout(function () { sp.hidden = true; }, 640);
+        setTimeout(function () { sp.hidden = true; }, 1200);
         window.__accelSplash = false;
       }
     }
@@ -1332,6 +1353,32 @@ function wpLoad(id, url){
 const anim = (el, kf, opt) => el.animate(kf, Object.assign(
   {duration: WP_DUR, easing: "linear", fill: "forwards"}, opt));
 
+/* ★★ 统一"色彩覆盖"语义 —— 所有特效都用这两个辅助。
+   为什么必须**显式写 opacity**：
+     `.wp-img` 的 CSS 是 `opacity:0`，可见性靠 `.wp-stage.on` 变 1。
+     keyframes 里若不写 opacity，`fill:"forwards"` 会让透明度停在 **0**，
+     动画结束才跳到 1 ⇒ **新图"啪"地出现 = 硬切**（用户实测过）。 */
+function revealIn(to, dur, scaleFrom){
+  /* 不透明度**较快**到位（约一半时长）⇒ 新图很快成为一张"实"的覆盖层，
+     之后只是继续轻微的推近。这样观感是"后图压上来"，而不是两图对淡。 */
+  anim(to, [{opacity:0},{opacity:1}],
+       {duration:Math.round(dur * 0.5), easing:"cubic-bezier(.3,0,.5,1)"});
+  anim(to, [{transform:"scale(" + (scaleFrom || 1.08) + ")"},{transform:"scale(1)"}],
+       {duration:dur, easing:"cubic-bezier(.3,0,.5,1)"});
+}
+
+/* 旧图"被吃掉"：先**保持实**一小段（让新图先压上来），随后模糊/降饱和/淡出。
+   时长接近新图 ⇒ 新图成为覆盖层之后，旧图才在下面散尽
+   ⇒ 真正的"色彩被覆盖"，不会出现两张都半透明的糊感。 */
+function eatAway(from, dur){
+  const d = Math.round(dur * 0.95);
+  anim(from, [{opacity:1},{opacity:1, offset:.22},{opacity:0}],
+       {duration:d, easing:"cubic-bezier(.4,0,.5,1)"});
+  anim(from, [{transform:"scale(1)", filter:"blur(0px) saturate(1)"},
+              {transform:"scale(1.065)", filter:"blur(11px) saturate(.42)"}],
+       {duration:d, easing:"cubic-bezier(.4,0,.6,1)"});
+}
+
 /* 复位"揭示光环"（每轮必须清干净，否则上一轮的宽度/背景会残留） */
 function wpRimReset(){
   const rim = document.getElementById("wpRim");
@@ -1351,8 +1398,7 @@ function fxIris(to, from, rim){
   const a = `circle(0% at ${cx}% ${cy}%)`, b = `circle(118% at ${cx}% ${cy}%)`;
   to.style.clipPath = a;
   anim(to, [{clipPath:a},{clipPath:b}], {easing:"cubic-bezier(.32,0,.68,1)"});
-  anim(to, [{transform:"scale(1.14)"},{transform:"scale(1)"}],
-       {easing:"cubic-bezier(.16,1,.3,1)"});
+  revealIn(to, WP_DUR * 1.02, 1.14);        // ★ 显式淡入（原来没有 ⇒ 硬切）
   if (rim){
     rim.style.background = `radial-gradient(circle at ${cx}% ${cy}%, transparent 41%,`
       + ` rgba(255,214,236,.95) 48%, rgba(255,111,174,.45) 54%, transparent 62%)`;
@@ -1360,10 +1406,7 @@ function fxIris(to, from, rim){
                {opacity:1, offset:.62},{opacity:0, transform:"scale(2.5)"}],
          {duration:WP_DUR*1.02, easing:"cubic-bezier(.32,0,.68,1)"});
   }
-  // 旧图"被吃掉"：轻推近 + 模糊 + 降饱和（不是单纯淡出）
-  anim(from, [{opacity:1, transform:"scale(1)", filter:"blur(0px) saturate(1)"},
-              {opacity:0, transform:"scale(1.07)", filter:"blur(7px) saturate(.55)"}],
-       {easing:"cubic-bezier(.5,0,.75,0)"});
+  eatAway(from, WP_DUR * 1.02);             // 旧图被吃掉
 }
 
 /* ── 斜擦：一道发光前沿横扫 ── */
@@ -1373,7 +1416,7 @@ function fxWipe(to, from, rim){
   to.style.clipPath = a;
   anim(to, [{clipPath:a},{clipPath:"inset(0 0 0 0)"}],
        {easing:"cubic-bezier(.66,0,.24,1)"});
-  anim(to, [{transform:"scale(1.05)"},{transform:"scale(1)"}]);
+  revealIn(to, WP_DUR, 1.05);               // ★ 显式淡入（原来没有 ⇒ 硬切）
   if (rim){
     rim.style.background = "linear-gradient(90deg,transparent,rgba(255,214,236,.85) 42%,"
       + "rgba(139,124,255,.55) 60%,transparent)";
@@ -1383,10 +1426,7 @@ function fxWipe(to, from, rim){
                {opacity:1, offset:.86},{opacity:0, transform:`translateX(${x1})`}],
          {easing:"cubic-bezier(.66,0,.24,1)"});
   }
-  // 旧图"被吃掉"
-  anim(from, [{opacity:1, transform:"scale(1)", filter:"blur(0px) saturate(1)"},
-              {opacity:0, transform:"scale(1.05)", filter:"blur(7px) saturate(.55)"}],
-       {easing:"cubic-bezier(.4,0,.6,1)"});
+  eatAway(from, WP_DUR);                    // 旧图被吃掉
 }
 
 /* ── 条带揭示：百叶（横向）／中开（纵向） ──
@@ -1420,12 +1460,8 @@ function fxStrips(to, from, rim, vertical, fromCentre){
       duration: WP_DUR * .72, delay: dist * (WP_DUR * .55 / N),
       easing: "cubic-bezier(.3,.7,.3,1)", fill: "forwards"});
   }
-  anim(to, [{transform:"scale(1.09)"},{transform:"scale(1)"}],
-       {easing:"cubic-bezier(.16,1,.3,1)"});
-  // 旧图"被吃掉"
-  anim(from, [{opacity:1, transform:"scale(1)", filter:"blur(0px) saturate(1)"},
-              {opacity:0, transform:"scale(1.06)", filter:"blur(8px) saturate(.5)"}],
-       {easing:"cubic-bezier(.4,0,.6,1)"});
+  revealIn(to, WP_DUR, 1.09);               // ★ 显式淡入
+  eatAway(from, WP_DUR);                    // 旧图被吃掉
   return () => made.forEach(s => s.remove());
 }
 
@@ -1434,9 +1470,7 @@ function fxZoom(to, from){
   anim(to, [{transform:"scale(1.25)", filter:"blur(9px) saturate(.7)", opacity:0},
             {transform:"scale(1)", filter:"blur(0px) saturate(1)", opacity:1}],
        {easing:"cubic-bezier(.16,1,.3,1)"});
-  anim(from, [{transform:"scale(1)", filter:"blur(0px)", opacity:1},
-              {transform:"scale(1.14)", filter:"blur(7px)", opacity:0}],
-       {easing:"cubic-bezier(.5,0,.75,0)"});
+  eatAway(from, WP_DUR * 1.05);            // 旧图被吃掉（统一走辅助）
 }
 
 /* ── 墨渗：圆 + SVG 湍流扰动 ⇒ 边缘有机不规则（比纯圆更像墨） ── */
@@ -1832,7 +1866,9 @@ function _playSplash(){
     }
   }
 
-  after(3400, finishSplash);
+  /* ★ 总时长 5.8s 后开始化开（1.1s）⇒ 约 6.9s 结束。
+     前面 ~3.1s 是动画，之后 **静置约 2.7s** 让用户看清。 */
+  after(5800, finishSplash);
 }
 
 function finishSplash(){
@@ -1849,7 +1885,7 @@ function finishSplash(){
     sp.style.opacity = "";
     try { sp.getAnimations().forEach(x => x.cancel()); } catch (e) {}
     window.__accelSplash = false;
-  }, 640);
+  }, 1200);
 }
 
 /* ═══ 手动重置熔断 ═══ */
