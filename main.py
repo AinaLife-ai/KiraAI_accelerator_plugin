@@ -1105,6 +1105,16 @@ class AcceleratorPlugin(BasePlugin):
                         resp.__dict__.pop("_accel_early_sent_count", None)
                     if sid_now:
                         plugin._resp_by_sid.pop(sid_now, None)
+                        # ★★ 台账也要**消费完立即清**。
+                        #   原来它只等"下一轮开始"才清，于是同一轮内只要
+                        #   `send_xml_messages` 被调用第二次（多步 loop / 框架的其它
+                        #   调用点），就会出现：
+                        #     · 响应已 pop ⇒ n = 0
+                        #     · 台账仍在   ⇒ 走兜底 ⇒ **每次都告警**（用户实测"经常性 warning"）
+                        #   而且它会拿**本次的（可能完全不相关的）文本**去按内容剥离
+                        #   ⇒ **可能把不该切的内容切掉 = 丢内容**（比重复更严重）。
+                        #   清掉之后：第二次调用 n=0、不告警、原样交给框架（正确）；
+                        #   而"真抢发过但标记丢了"的场景台账仍在，兜底依旧生效。
                         plugin._sent_ledger.pop(sid_now, None)
             # ★★ 声明「有不可撤销的副作用」：这个函数的调用会**真的把消息发出去**。
             #   一旦它抛异常，`patches.guard` 默认会"回落原实现"——那等于**再发一遍**

@@ -352,8 +352,11 @@ check("★ 标题/箴言特效用 fill:both（backwards 会让字母播完消失
 
 # 箴言必须"入场 → 停住 → 淡出"
 _mfx = js[js.index("const MOTTO_FX_FN"):js.index("\n};", js.index("const MOTTO_FX_FN"))]
-check("★ 箴言特效带停住（时间线里有保持不透明的 offset）",
-      _mfx.count("offset:.84") >= 3, f"{_mfx.count('offset:.84')} 处")
+# ⚠️ 不写死 offset 数值（改一次停留就要改测试）；直接数 offset 次数：
+#   每条时间线应有"起点 offset + 停留终点 offset"两处。
+_h_mfx = re.findall(r"offset:\.(\d+)", _mfx)
+check("★ 箴言特效带停住（每条两处 offset = 起点 + 停留终点）",
+      len(_h_mfx) >= 6, f"offset: .{_h_mfx}")
 check("★ 箴言特效结尾会淡出（不再一直亮着）",
       _mfx.count("opacity:0") >= 4)
 
@@ -419,8 +422,9 @@ if _motto_at and _mdur and _fin:
 else:
     check("★ 能定位箴言起点/时长/收尾", False,
           f"at={_motto_at} durs={_mdur} fin={bool(_fin)}")
-check("★ 箴言每条都有「停住」（时间线里有保持不透明的 offset）",
-      _motto.count("offset:.84") >= 3, f"{_motto.count('offset:.84')} 处")
+_holds2 = re.findall(r"offset:\.(\d+)", _motto)
+check("★ 箴言每条都有停住（每条两处 offset = 起点 + 停留终点）",
+      len(_holds2) >= 6, f"offset: .{_holds2}")
 
 print()
 print("═══ 13) ★★ 开屏收尾必须用显式 Web Animation（CSS 同帧加类可能被跳过）")

@@ -353,7 +353,14 @@ html.jsfx .sp-rim{animation:none!important}
 /* ★★ 静态底：**不依赖网络、不依赖 JS** —— 首帧就有一片"画面"，
    否则在壁纸加载出来之前开屏是空的 ⇒ 观感变成"先有字再有画"（用户实测）。
    这是深色墨底 + 一点冷光，与壁纸风格接近，加载完就被真图盖住。 */
-.sp-wp{position:absolute;inset:-3%;background-size:cover;background-position:center;
+/* ★ 与页面壁纸**同构**的三层，理由见 HTML 里的注释：
+     外层 .sp-breathe 呼吸缩放（与 .wallpaper 同一条 keyframes、同周期）
+     中层 .sp-sway    漂移位移（由 JS 写 transform，与 .wp-stage 同源）
+     内层 .sp-wp      特效（clip-path / filter / scale）
+   同构之后，交接瞬间两边的复合 transform 完全一致 ⇒ 不会"突然放大并位移"。 */
+.sp-breathe{position:absolute;inset:-3%;animation:wpBreath 22s ease-in-out infinite}
+.sp-sway{position:absolute;inset:0;will-change:transform}
+.sp-wp{position:absolute;inset:0;background-size:cover;background-position:center;
   background-image:
     radial-gradient(70% 55% at 32% 28%, rgba(255,111,174,.30), transparent 68%),
     radial-gradient(62% 52% at 74% 66%, rgba(139,124,255,.34), transparent 70%),
@@ -471,7 +478,16 @@ html.jsfx .sp-rim{animation:none!important}
 
 <!-- 开屏：随机壁纸 + 随机入场特效 + 随机英文名特效 + 随机箴言 -->
 <div class="splash" id="splash" role="presentation">
-  <div class="sp-wp" id="spWp"></div>
+  <!-- ★ 与页面壁纸**同构**的三层：外层呼吸(scale) → 中层位移(translate) → 内层特效。
+       为什么必须同构：交接（开屏隐藏、页面壁纸露出来）那一瞬，若两边姿态不同
+       （开屏 scale(1) 无位移，而页面是 scale(1.04~1.10) + ±25px 位移），
+       画面会**突然放大并位移** —— 用户看到的"撕裂闪一下"。
+       同构之后两边的复合 transform 完全一致，交接看不出变化。 -->
+  <div class="sp-breathe" id="spBreathe">
+    <div class="sp-sway" id="spSway">
+      <div class="sp-wp" id="spWp"></div>
+    </div>
+  </div>
   <div class="sp-veil"></div>
   <div class="sp-rim" id="spRim"></div>
   <div class="sp-inner">
@@ -529,17 +545,17 @@ window.__accelSplash = true;
       var e2 = document.getElementById("splash");
       if (e2 && !e2.hidden) {
         e2.classList.add("out");
-        setTimeout(function () { e2.hidden = true; }, 1200);
+        setTimeout(function () { e2.hidden = true; }, 1300);
       }
       window.__accelSplash = false;
     } catch (_) {}
-  }, 9200);
+  }, 10400);
   // ③ 跳过
   sp.addEventListener("click", function () {
     if (window.finishSplash) window.finishSplash();
     else {
       sp.classList.add("out");
-      setTimeout(function () { sp.hidden = true; }, 1200);
+      setTimeout(function () { sp.hidden = true; }, 1300);
       window.__accelSplash = false;
     }
   });
@@ -548,7 +564,7 @@ window.__accelSplash = true;
       if (window.finishSplash) window.finishSplash();
       else {
         sp.classList.add("out");
-        setTimeout(function () { sp.hidden = true; }, 1200);
+        setTimeout(function () { sp.hidden = true; }, 1300);
         window.__accelSplash = false;
       }
     }
@@ -1231,7 +1247,8 @@ function applySway(){
     ? "translate3d(" + (baseX + curX).toFixed(2) + "px,"
                     + (baseY + curY).toFixed(2) + "px,0)"
     : "translate3d(0,0,0)";
-  ["wp-a","wp-b"].forEach(id => {
+  // spSway：开屏的"位移中层" —— 让开屏与页面在同一时刻有**同样的位移**
+  ["wp-a","wp-b","spSway"].forEach(id => {
     const el2 = document.getElementById(id);
     if (el2) el2.style.transform = v;
   });
@@ -1533,6 +1550,10 @@ function fxInk(to, from, rim){
   const n1  = document.getElementById("wpInkN1");
   const n2  = document.getElementById("wpInkN2");
   const img = document.getElementById("wpInkImg");
+  /* ★ 先记录实际时长，**再**判断能否渲染。
+     否则"拿不到 SVG 元素"时会带着**上一套特效的 wpLastDur** 去收尾
+     ⇒ 提前掐掉或超时等待（虽然只是极端环境，但收尾时序必须确定）。 */
+  wpLastDur = dur;
   if (!cm || !img) return;                 // 拿不到就退化为普通显示（不崩）
 
   if (n1) n1.setAttribute("seed", String(1 + Math.floor(Math.random() * 999)));
@@ -1577,7 +1598,6 @@ function fxInk(to, from, rim){
                {opacity:0, transform:"scale(2.4)"}],
          {duration:dur, easing:"cubic-bezier(.34,0,.66,1)"});
   }
-  wpLastDur = dur;
   return () => {
     cancelAnimationFrame(raf);
     img.style.display = "none";
@@ -1787,31 +1807,36 @@ const MOTTO_FX_FN = {
   rise: el => el.animate(
     [{opacity:0, transform:"translateY(12px)"},
      {opacity:1, transform:"none", offset:.20},
-     {opacity:1, transform:"none", offset:.84},
+     {opacity:1, transform:"none", offset:.86},
      {opacity:0, transform:"none"}],
-    {duration:2100, easing:"cubic-bezier(.16,1,.3,1)", fill:"both"}),
+    {duration:2400, easing:"cubic-bezier(.16,1,.3,1)", fill:"both"}),
   blur: el => el.animate(
     [{opacity:0, filter:"blur(9px)"},
      {opacity:1, filter:"blur(0)", offset:.22},
-     {opacity:1, filter:"blur(0)", offset:.84},
+     {opacity:1, filter:"blur(0)", offset:.86},
      {opacity:0, filter:"blur(9px)"}],
-    {duration:2100, easing:"cubic-bezier(.2,0,.4,1)", fill:"both"}),
+    {duration:2400, easing:"cubic-bezier(.2,0,.4,1)", fill:"both"}),
   track: el => el.animate(
     [{opacity:0, letterSpacing:"1.4em"},
      {opacity:1, letterSpacing:".02em", offset:.30},
-     {opacity:1, letterSpacing:".02em", offset:.84},
+     {opacity:1, letterSpacing:".02em", offset:.86},
      {opacity:0, letterSpacing:".02em"}],
-    {duration:2200, easing:"cubic-bezier(.16,1,.3,1)", fill:"both"}),
+    {duration:2500, easing:"cubic-bezier(.16,1,.3,1)", fill:"both"}),
   type: async el => {
     const txt = el.dataset.txt || "";
     el.textContent = "";
     el.style.opacity = "1";
     for (let i = 1; i <= txt.length; i++){
       el.textContent = txt.slice(0, i);
-      await sleep(Math.max(16, 700 / Math.max(1, txt.length)));
+      // 打字总时长 480ms（不随长度变），后面才有足够的"停住"时间
+      await sleep(Math.max(14, 480 / Math.max(1, txt.length)));
     }
-    await sleep(1500);                                  // ★ 打完停住
-    el.animate([{opacity:1},{opacity:0}], {duration:600, fill:"forwards"});
+    /* ★ 停留要够久：用户反馈"最后停留太短、消失太快"。
+       整条 = 480(打字) + 1800(停) + 650(淡出) = 2930ms，
+       必须 **装进** 箴言起点(2250) → 收尾(5200) 这个 2950ms 的窗口，
+       否则会被收尾截断（截断看起来就是"突然消失"）。 */
+    await sleep(1800);                                  // ★ 打完停住
+    el.animate([{opacity:1},{opacity:0}], {duration:650, fill:"forwards"});
   },
 };
 
@@ -1953,7 +1978,7 @@ function _playSplash(){
   // 时间轴：0→1.0s 背景渐显 ｜ 0.75→1.6s 字母就位并**停住**
   //         1.85s 副标题 ｜ 2.05s 分隔线 ｜ 2.25→4.3s 箴言（入场后停住）
   //         4.6s 整体化开退场 —— 总时长约 5.8s，留足"看"的时间
-  after(4600, finishSplash);
+  after(5200, finishSplash);
 }
 
 function finishSplash(){
@@ -1967,7 +1992,7 @@ function finishSplash(){
      ⇒ **不产生过渡、直接跳到终值** = 硬切（这正是"结束还是硬切"的根因，
      与之前切换特效那次是同一类问题）。
      Web Animations 是命令式的，一定会执行，而且能读回实际状态做自检。 */
-  const OUT_MS = 1100;
+  const OUT_MS = 1200;
   try {
     sp.animate([
       {opacity:1, transform:"scale(1)",     filter:"blur(0px)"},
