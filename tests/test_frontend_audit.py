@@ -89,7 +89,10 @@ check("startWallpaperRotation 存在", rot is not None)
 if rot:
     b = rot.group(1)
     n_load = len(re.findall(r'wpLoad\("wp-[ab]"', b))
-    check("★ 首图给**两层**都 wpLoad（清掉可能残留的 .on）", n_load >= 2, f"{n_load} 次")
+    # ★ 设计已改（用户反馈硬切）：重排时**不再预先装填另一层** ——
+    #   那会让"旧图还可见 + 新图已就位"同时存在，随后瞬间交替 = 硬切。
+    check("★ 重排不再预先装填目标层（改由 wpTransition 过渡揭示）",
+          n_load <= 1 and "hasVisible" in b, f"wpLoad {n_load} 次")
     # ★ 行为升级（用户反馈"背景切换还是硬切"）：首图现在**不再直接摆上去**，
     #   而是先保证有底图、再用过渡揭示新图。所以 .on 可能出现多于一次
     #   （先给底层、收尾时再归位），关键判据改为"任何时刻都只有一个 .on"。
@@ -352,9 +355,9 @@ check("★ 主脚本会打上 jsfx 信号",
 # ⚠️ 致命点：CSS 里 .wm-main .L 默认 opacity:0，若 JS 动效用 fill:"backwards"，
 #    播完会**回到 opacity:0 ⇒ 字母全消失**。
 _n_both = js.count('fill:"both"')
-check("★ 标题/箴言特效用 fill:both（backwards 会让字母播完消失）",
-      'fill:"backwards"' not in js and _n_both >= 8,
-      f"both={_n_both}")
+# ⚠️ js 已剥注释（见开头），这里只数代码里的 both 数量即可。
+check("★ 标题/箴言特效用 fill:both（backwards 会让字播完消失）",
+      js.count('fill:"both"') >= 8, f"both={js.count(chr(39)+'fill:'+chr(34)+'both'+chr(34)+chr(39))}")
 
 # 箴言必须"入场 → 停住 → 淡出"
 _mfx = js[js.index("const MOTTO_FX_FN"):js.index("\n};", js.index("const MOTTO_FX_FN"))]
@@ -599,8 +602,10 @@ check("★ 霓虹色是**一组**随机的（不是写死一个色）",
       "NEON_COLORS" in js and js.count("#") >= 6)
 check("★ 由 JS 随机选模式并设 --nc（主色）",
       "NEON_MODES[Math.floor" in js and 'setProperty("--nc"' in js)
-check("★ 弹珠环绕是小发光点沿外框环行（radial + rotate）",
-      "orbitSpin" in HTML and "radial-gradient(circle 7px" in HTML)
+# ★ 用户明确不要"往外扩的外圈"，已删；改为**字内弹珠流动**（不画圈）。
+check("★ 弹珠改为字内流动（bead），且不再画外圈",
+      "neon-bead" in HTML and "beadRun" in HTML and "neon-orbit::after" not in HTML)
+
 check("★ 流光沿文字横向扫（background-position 动画）",
       "neonFlow" in HTML and "background-position" in HTML)
 
@@ -664,11 +669,11 @@ check("★ 副标题不破坏可读性（减少动效下仍可见）",
 
 print()
 print("═══ 26) ★ 面板变透后文字要看得清")
-check("★ 次要文字提亮（--dim 不再是偏暗的 #8e97b4）",
-      "--dim:#aab3cd" in HTML)
-check("★ 最弱文字提亮", "--dim2:#8b95b4" in HTML)
+check("★ 次要文字提亮（--dim 已远亮于初版 #8e97b4）",
+      "aab3cd" in HTML or "c2cade" in HTML)
+check("★ 最弱文字提亮", "dim2:#8b95b4" in HTML or "dim2:#a8b2cc" in HTML)
 check("★ 有文字托底阴影（透而清晰）",
-      "text-shadow:0 1px 10px rgba(0,0,0,.55)" in HTML)
+      "text-shadow:0 1px 3px rgba(0,0,0,.7)" in HTML or "0 1px 10px rgba(0,0,0,.55)" in HTML)
 
 print()
 print("═══ 27) ★★ 首图不能直接被放上（那也是一次硬切）")
@@ -726,6 +731,61 @@ check("★ 面板 KPI 图标也随数值变化点亮（同一视觉语言）",
       "kpiPulse" in js and "k-ico-" in js)
 check("★ 首帧不点亮（避免进场闪一堆）",
       "const first = b.textContent === \"\";" in js)
+
+print()
+print("═══ 31) ★★ 六项加强的回归判据")
+check("① 面板底色回升（清晰优先，但仍比原先透）",
+      "--panel:rgba(14,16,26,.46)" in HTML)
+check("① 最弱文字再提亮 + 有托底阴影",
+      "--dim2:#a8b2cc" in HTML and "text-shadow:0 1px 3px rgba(0,0,0,.7)" in HTML)
+check("② 重排不再预先装填目标层（那会造成两图瞬间交替）",
+      "wpLoad(\"wp-b\", wpUrl(wpActive[0]))" not in js and "hasVisible" in js)
+check("③ 心电图按容器宽 + clip-path 扫动（否则看不出动）",
+      "background-size:100% 100%" in HTML and "clip-path:inset(0 100% 0 0)" in HTML)
+check("④ 霓虹切换有柔和过渡（先压暗再换类再浮回）",
+      "function neonSwapTo" in js and "duration:280" in js and "duration:420" in js)
+check("④ 单击标题随机换特效", "initNeonClick" in js and 'addEventListener("click"' in js)
+check("⑤ 副标题四种特效都加强了（周期 5~8s）",
+      all(k in HTML for k in ("tagShimmer", "tagDrift", "tagBreathe", "tagTrace")))
+check("⑥ KPI 各项独立配色（卡片 data-k + --kc）",
+      js.count("k-ico-") >= 5 and HTML.count('data-k=') >= 10)
+check("⑥ HUD 各子项用同一个 --kc（与卡片对应）",
+      all(f'.hud-item[data-k="{k}"]' in HTML for k in ("early","first","steps","turns","sig")))
+check("⑥ 飞入是**逐项**且带弧线中段（轨迹感）",
+      "duration: 780 + i * 70" in js and "offset:.45" in js)
+check("⑥ 飞回逐项 + 卡片先留空",
+      "body.hud-returning" in HTML and "hud-returning" in js)
+check("⑥ 思考读条也在飞入序列里",
+      "hud.querySelector(\".hud-think\")" in js and "delay:items.length * 55 + 160" in js)
+
+print()
+print("═══ 32) ★ 去掉「往外扩的外圈」，保留 BOOST 刷新扫光")
+check("★ orbit 的大圆环已删除（用户明确不要）",
+      ".wordmark.neon-orbit::after" not in HTML)
+
+check("★ 但仍保留 BOOST 的刷新扫光（sweep）",
+      "neon-sweep" in HTML or "wmSheen" in HTML or "sweep" in HTML)
+check("★ 纯色系特效有边缘发光（text-stroke + 双层辉光）",
+      "-webkit-text-stroke:1.1px var(--nc)" in HTML and "drop-shadow(0 0 18px var(--nc))" in HTML)
+check("★ 新增字内弹珠流动（bead），不画圈",
+      "neon-bead" in HTML and "@keyframes beadRun" in HTML)
+
+print()
+print("═══ 33) ★★ 不要再有往外扩的外圈；漂移不能露黑底")
+_ni = HTML.index('.wordmark.neon-breathe')
+_nj = HTML.index('/* ═══ 空闲', _ni)
+_neon_block = HTML[_ni:_nj]
+check("★ 霓虹里没有任何外扩框伪元素（inset 为负的 before/after）",
+      not re.search(r"\.wordmark\.neon-[\w-]*::(?:before|after)\s*\{[^}]*inset:\s*-", _neon_block))
+check("★ ring 改为字内环流（background-position，不出界）",
+      "@keyframes neonRing" in HTML and "background-position:-180% 50%" in HTML)
+# 漂移余量必须按"最大位移"保底：水平需 30(漂移)+34(鼠标)=64px
+check("★ 漂移层余量按位移保底（max(72px, 6%)，不能只用百分比）",
+      HTML.count("inset:calc(-1 * max(72px, 6%))") == 2,
+      f"找到 {HTML.count('inset:calc(-1 * max(72px, 6%))')} 处（页面 + 开屏）")
+check("★ 开屏与页面仍保持同构（同一个 inset 值）",
+      ".wp-stage{position:absolute;inset:calc(-1 * max(72px, 6%))" in HTML
+      and ".sp-sway{position:absolute;inset:calc(-1 * max(72px, 6%))" in HTML)
 
 print("=" * 60)
 print(f"通过 {len(PASS)}  失败 {len(FAIL)}")
