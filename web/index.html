@@ -358,8 +358,11 @@ html.jsfx .sp-rim{animation:none!important}
      中层 .sp-sway    漂移位移（由 JS 写 transform，与 .wp-stage 同源）
      内层 .sp-wp      特效（clip-path / filter / scale）
    同构之后，交接瞬间两边的复合 transform 完全一致 ⇒ 不会"突然放大并位移"。 */
-.sp-breathe{position:absolute;inset:-3%;animation:wpBreath 22s ease-in-out infinite}
-.sp-sway{position:absolute;inset:0;will-change:transform}
+/* ★ transform-origin 必须与 .wallpaper **完全一致**（`50% 45%`）。
+   否则呼吸缩放的中心不同 ⇒ 交接瞬间画面位置跳变（"重置闪现"）。 */
+.sp-breathe{position:absolute;inset:0;transform-origin:50% 45%;
+  animation:wpBreath 22s ease-in-out infinite}
+.sp-sway{position:absolute;inset:-3%;will-change:transform}
 .sp-wp{position:absolute;inset:0;background-size:cover;background-position:center;
   background-image:
     radial-gradient(70% 55% at 32% 28%, rgba(255,111,174,.30), transparent 68%),
@@ -527,6 +530,8 @@ html.jsfx .sp-rim{animation:none!important}
    学的是 Z 插件（KiraAI_Alife_memory_Z_plugin）的做法：
    视觉交给 CSS，JS 只管"填内容 + 收尾"，这样**开屏不可能不出现**。 */
 window.__accelSplash = true;
+window.__accelSplashShownAt = (window.performance && performance.now())
+  ? performance.now() : Date.now();
 (function () {
   var sp = document.getElementById("splash");
   if (!sp) return;
@@ -1448,8 +1453,11 @@ function fxIris(to, from, rim){
                {opacity:1, offset:.62},{opacity:0, transform:"scale(2.5)"}],
          {duration:WP_DUR*1.02, easing:"cubic-bezier(.32,0,.68,1)"});
   }
-  eatAway(from, WP_DUR * 1.02);             // 旧图被吃掉
+  /* ★ 旧图必须**活到新图铺满**：eatAway 的时长 = 本套特效的实际时长。
+     否则旧图先消失、而新图还没盖满 ⇒ 中间露出页面底色
+     ⇒ 观感就是"闪一下/硬切"（条带最明显：它要 WP_DUR*1.27 才铺满）。 */
   wpLastDur = WP_DUR * 1.02;
+  eatAway(from, wpLastDur);                 // 旧图被吃掉
 }
 
 /* ── 斜擦：一道发光前沿横扫 ── */
@@ -1469,8 +1477,8 @@ function fxWipe(to, from, rim){
                {opacity:1, offset:.86},{opacity:0, transform:`translateX(${x1})`}],
          {easing:"cubic-bezier(.66,0,.24,1)"});
   }
-  eatAway(from, WP_DUR);                    // 旧图被吃掉
   wpLastDur = WP_DUR;
+  eatAway(from, wpLastDur);                 // 旧图被吃掉
 }
 
 /* ── 条带揭示：百叶（横向）／中开（纵向） ──
@@ -1513,9 +1521,12 @@ function fxStrips(to, from, rim, vertical, fromCentre){
      那时条带已铺满全屏，谁也盖不住谁。 */
   anim(to, [{transform:"scale(1.09)"},{transform:"scale(1)"}],
        {duration: WP_DUR, easing:"cubic-bezier(.3,0,.5,1)"});
-  eatAway(from, WP_DUR);                    // 旧图被吃掉
-  // 实际总时长 = 最后一条的延迟 + 它的时长
+  // ★ 实际总时长 = 最后一条的延迟 + 它的时长（条带要这么久才铺满）
   wpLastDur = WP_DUR * .72 + WP_DUR * .55;
+  /* ★★ 旧图要活到**条带铺满**为止。原来写死 WP_DUR（3200），
+     而条带要到 4064ms 才铺满 ⇒ 3040~4064ms 之间露出页面底色
+     ⇒ 一块会缩小的暗斑 = 用户说的"硬切/闪一下"。 */
+  eatAway(from, wpLastDur);
   return () => made.forEach(s => s.remove());
 }
 
@@ -1524,8 +1535,8 @@ function fxZoom(to, from){
   anim(to, [{transform:"scale(1.25)", filter:"blur(9px) saturate(.7)", opacity:0},
             {transform:"scale(1)", filter:"blur(0px) saturate(1)", opacity:1}],
        {easing:"cubic-bezier(.16,1,.3,1)"});
-  eatAway(from, WP_DUR * 1.05);            // 旧图被吃掉（统一走辅助）
   wpLastDur = WP_DUR * 1.05;
+  eatAway(from, wpLastDur);                 // 旧图被吃掉（统一走辅助）
 }
 
 /* ── 墨渗：圆 + SVG 湍流扰动 ⇒ 边缘有机不规则（比纯圆更像墨） ── */
@@ -1586,7 +1597,7 @@ function fxInk(to, from, rim){
   };
   raf = requestAnimationFrame(step);
 
-  // 旧层保持可见（被墨吃掉），只做极轻微推近
+  // 旧层保持可见（被墨吃掉），只做极轻微推近；时长与墨的生长一致
   anim(from, [{transform:"scale(1)"},{transform:"scale(1.03)"}],
        {duration:dur, easing:"linear"});
 
@@ -1750,6 +1761,11 @@ const WM_FX_FN = {
         ⇒ **字母播完就消失**。现在统一 `fill:"both"`。
      ② **放慢**（原来 420~1050ms 偏快，用户反馈"播放太快"）。
      ③ 错峰不要太大，否则最后一个字母很晚才停住（停留被压缩）。 */
+  /* ★★ 每一帧都必须显式写 opacity。
+     WAAPI 规则：某属性一旦在任一帧出现就为整条动画合成，**未写该属性的帧会
+     插值到底层值** —— 而 `.wm-main .L` 的底层是 `opacity:0`
+     ⇒ 只写 transform 的帧会把不透明度**拉回 0** ⇒ **字突然消失**。
+     （原来 assemble 的帧 0/1 只写了 transform ⇒ 播到那里就闪没了。） */
   assemble: L => L.forEach((s,i) => s.animate(
     [{opacity:0, transform:`translateY(${.55+Math.random()*.35}em) rotate(${-9+Math.random()*18}deg) scale(.85)`},
      {opacity:1, transform:"none"}],
@@ -1759,10 +1775,10 @@ const WM_FX_FN = {
       [{opacity:0, transform:"translateX(-14px) skewX(22deg)",
         textShadow:"3px 0 rgba(255,111,174,.9), -3px 0 rgba(94,240,192,.9)"},
        {opacity:1, offset:.16},
-       {transform:"translateX(9px) skewX(-14deg)", offset:.30},
-       {transform:"translateX(-5px) skewX(7deg)", offset:.45},
-       {transform:"translateX(3px)", offset:.60},
-       {transform:"none", textShadow:"0 0 0 transparent"}],
+       {opacity:1, transform:"translateX(9px) skewX(-14deg)", offset:.30},
+       {opacity:1, transform:"translateX(-5px) skewX(7deg)", offset:.45},
+       {opacity:1, transform:"translateX(3px)", offset:.60},
+       {opacity:1, transform:"none", textShadow:"0 0 0 transparent"}],
       {duration:1300, delay:i*68, easing:"ease-out", fill:"both"}));
     const sh = document.getElementById("wmSheen");
     if (sh) sh.animate([{opacity:0},{opacity:.85, offset:.5},{opacity:0}],
@@ -1791,7 +1807,7 @@ const WM_FX_FN = {
   shatter: L => L.forEach((s,i) => s.animate(
     [{opacity:0, transform:"scale(2.7)", filter:"blur(15px)"},
      {opacity:1, offset:.45, filter:"blur(0px)"},
-     {transform:"scale(1)", filter:"blur(0px)"}],
+     {opacity:1, transform:"scale(1)", filter:"blur(0px)"}],
     {duration:1200, delay:i*70, easing:"cubic-bezier(.16,1,.3,1)", fill:"both"})),
 };
 
@@ -1992,6 +2008,24 @@ function finishSplash(){
      ⇒ **不产生过渡、直接跳到终值** = 硬切（这正是"结束还是硬切"的根因，
      与之前切换特效那次是同一类问题）。
      Web Animations 是命令式的，一定会执行，而且能读回实际状态做自检。 */
+  /* ★★ 交接前把页面壁纸的**呼吸相位对齐到开屏**。
+     两条 `wpBreath` 各自从"元素出现"起算：页面那条已经跑了几秒，
+     开屏那条从 0 起算 ⇒ 交接瞬间两条的 `scale` 不同 ⇒ 画面**突然跳一下**
+     （用户说的"重置闪现 / 错误抖动"）。
+     做法：用**负 animation-delay** 把开屏已经走过的时间补上，
+     使两条在同一时刻的 scale 完全一致。 */
+  try {
+    const spBreathe = document.getElementById("spBreathe");
+    const wpEl = document.getElementById("wallpaper");
+    if (spBreathe && wpEl){
+      const cur = getComputedStyle(spBreathe).animationDelay || "0s";
+      const secs = parseFloat(cur) || 0;           // 开屏那条当前的 delay（通常 0）
+      const t0 = window.__accelSplashShownAt || performance.now();
+      const elapsed = Math.max(0, (performance.now() - t0) / 1000);
+      wpEl.style.animationDelay = "-" + (elapsed + secs).toFixed(3) + "s";
+    }
+  } catch (e) { /* 对齐失败不影响收尾 */ }
+
   const OUT_MS = 1200;
   try {
     sp.animate([
