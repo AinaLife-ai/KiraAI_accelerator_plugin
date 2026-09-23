@@ -151,6 +151,8 @@ class AcceleratorPlugin(BasePlugin):
         self._current_resp: Any = None
         self._last_seg_ts: dict[str, float] = {}   # 每个会话各自的"上次发送时刻"
         self._resp_by_sid: dict[str, Any] = {}      # 每个会话各自的"本轮响应"
+        # 本轮抢先发送的结果（按顺序），供发送层拼回 message_results 以对齐 message_id
+        self._early_results: dict[str, list] = {}
         self._proxy_cache: dict[tuple, LLMClientProxy] = {}
         self._stats = {
             "turns": 0, "steps": 0,
@@ -470,6 +472,12 @@ class AcceleratorPlugin(BasePlugin):
             await self._pace(ctx)
 
             result = await mp.send_message_chain(ctx.sid, action)
+            # ★ 记下这一段的结果：发送层的剥离会把"已抢先发出的段"从文本里去掉，
+            #   而框架的 _add_message_ids 是**按位置**把 message_results 贴到 <msg> 上的。
+            #   只还回"剩余段"的结果 ⇒ 位置全错 ⇒ 模型在自己历史里读到**错位的
+            #   message_id**（提示词明确说这个 ID 由系统添加，模型会用它引用消息）。
+            #   所以这里按顺序攒起来，稍后拼回结果列表，位置就一一对应了。
+            self._early_results.setdefault(ctx.sid, []).append(result)
             self._mark_sent(ctx)
 
             # ★ 补广播 ON_MESSAGE_SENT（绕过框架发送层就必须补）
@@ -836,12 +844,21 @@ class AcceleratorPlugin(BasePlugin):
                 sid_now = getattr(event, "sid", None)
                 resp = plugin._resp_by_sid.get(sid_now) if sid_now else None
                 n = early_sent_count(resp) if resp is not None else 0
+                early = plugin._early_results.pop(sid_now, []) if sid_now else []
                 if n > 0:
                     xml_data = strip_early_sent(xml_data, n)
                     # 记录一下：本条只发剩余部分（纯观测用）
                     plugin._stats["strip_calls"] = plugin._stats.get("strip_calls", 0) + 1
                 try:
-                    return await original(self, event, xml_data, tag_set)
+                    rest = await original(self, event, xml_data, tag_set)
+                    # ★ 把抢先发出的结果按【顺序】拼回去：
+                    #   框架随后用 _add_message_ids 按位置给 <msg> 贴 ID，
+                    #   只还回剩余段会让 ID 全部错位（模型会引用错消息）。
+                    #   注意：这里只是"还账"，框架**并没有重发**那些段，
+                    #   所以锁里也不会为它们多睡一次（提速收益不受影响）。
+                    if early:
+                        return (early + list(rest or []))
+                    return rest
                 finally:
                     # 本轮已消费完，清掉标记，避免影响下一步/下一轮
                     if resp is not None:

@@ -21,7 +21,13 @@ run() {
   printf '\n──── %s ────\n' "$name"
   # ★ 硬超时：几个集成测试会起真服务器，卡住不能让整套挂死
   if ! timeout -k 5 240 python3 "$@" > /tmp/_accel_out 2>&1; then
-    fail=$((fail+1)); echo "❌ $name 失败"; sed -n '1,40p' /tmp/_accel_out
+    fail=$((fail+1)); echo "❌ $name 失败"
+    # ★ 只输出"失败项"与逐条 ✗，而不是尾部 40 行 ——
+    #   否则偶发失败时看不到究竟是哪条断言（之前吃过这个亏）
+    echo "   ── 未通过的断言 ──"
+    grep -E "^  ✗" /tmp/_accel_out | head -12 | sed 's/^/   /'
+    echo "   ── 末尾输出 ──"
+    tail -12 /tmp/_accel_out | sed 's/^/   /' 
   elif grep -qF "[SKIP]" /tmp/_accel_out; then
     # 缺框架而跳过 —— 不能伪装成"通过"，否则"全绿"是假的
     SKIPPED="$SKIPPED $name"; echo "⏭  $name 跳过（见下一行说明）"
@@ -46,6 +52,7 @@ run "★消息间隔"               tests/test_message_pacing.py
 run "★客户端复用缓存"         tests/test_client_cache.py
 run "★接管点精确还原"         tests/test_patch_restore.py
 run "★记忆落盘优化"           tests/test_memory_dump.py
+run "★抢发后的消息ID对齐"     tests/test_early_sent_alignment.py
 run "前端URL前缀守卫"         tests/test_frontend_api.py
 run "★真框架API集成"          tests/test_real_api.py
 run "★代理类型透传"           tests/test_proxy_isinstance.py
