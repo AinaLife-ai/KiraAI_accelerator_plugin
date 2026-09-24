@@ -669,10 +669,46 @@ check("★ 有 30~60s 随机重切（rollNeon + setTimeout）",
 check("★ 换模式时先移除旧类（否则两个特效打架）",
       "classList.remove(\"neon-breathe\"" in js)
 check("★ 副标题有随机特效", "TAG_MODES" in js and "rollTagline" in js)
-check("★ 副标题特效 >= 4 种", all(k in HTML for k in
-      ("tag-shimmer", "tag-drift", "tag-breathe", "tag-trace")))
-check("★ 副标题不破坏可读性（减少动效下仍可见）",
-      re.search(r"prefers-reduced-motion[\s\S]{0,400}\.tagline\{", HTML) is not None)
+# ★★ 本次补：原判据只判「这个机制存在」，判不出「观感上是不是真的在变」。
+_tag_i = js.find("function initTagline")
+_tag_seg = js[_tag_i:_tag_i + 700] if _tag_i > 0 else ""
+_tag_wait = re.search(
+    r"const wait\s*=\s*(\d+)\s*\+\s*Math\.random\(\)\s*\*\s*(\d+)", _tag_seg)
+check("★★ 轮换周期够短（≤16s —— 原来 30~60s，观感上等于没有变化）",
+      bool(_tag_wait) and (int(_tag_wait.group(1)) + int(_tag_wait.group(2))) <= 16000,
+      (_tag_wait.group(0)[:40] if _tag_wait else "未找到"))
+# 每一档都必须真的用到随机色变量，否则「随机」是假的（改了 --tc 却没人用）
+_tag_modes = re.findall(
+    r'"((?:tag-[a-z]+))"', js[js.find("TAG_MODES"):js.find("TAG_MODES") + 260])
+_tag_used = []
+for _mo in _tag_modes:
+    _i = HTML.find(".tagline." + _mo)
+    if _i < 0:
+        continue
+    _nx = HTML.find("\n.tagline", _i + 1)
+    _seg = HTML[_i:_nx if _nx > 0 else _i + 400]
+    for _kfm in re.finditer(r"@keyframes\s+(\w+)", _seg):
+        _ks = HTML.find("@keyframes " + _kfm.group(1))
+        _seg += HTML[_ks:_ks + 300]
+    if "--tc" in _seg:
+        _tag_used.append(_mo)
+check("★★ 每一档都真的用到随机色 --tc",
+      bool(_tag_modes) and len(_tag_used) == len(_tag_modes),
+      f"{len(_tag_used)}/{len(_tag_modes)}")
+# ★ 档名**从 TAG_MODES 读**，不硬编码 —— 换档名时判据自动跟上。
+#  （原判据写死旧档名 tag-shimmer/drift/breathe/trace，改版后变成假红。）
+check("★ 副标题档数 >= 4 且每个档名都有对应 CSS 规则",
+      len(_tag_modes) >= 4 and all((".tagline." + m) in HTML for m in _tag_modes),
+      f"{len(_tag_modes)} 档: {_tag_modes}")
+# 减少动效兜底：必须能定位到 reduced-motion 块，且里面**关掉动画并恢复可见**
+# ⚠️ 这里**不能**用"任意字符向前找" —— 那样会跨过前面 HUD 块的 `}`，
+#   匹配到错误的块（判据假绿/假红）。必须限制"到达 .tagline 之前不许出现 `}`"。
+_tag_rm = re.search(r"@media \(prefers-reduced-motion:reduce\)\{"
+                    r"(?:(?!\}|@media)[\s\S])*?\.tagline[^{]*\{[^}]*\}", HTML)
+check("★ 副标题不破坏可读性（减少动效下：关动画 + 恢复可见）",
+      bool(_tag_rm) and "animation:none" in _tag_rm.group(0)
+      and "opacity:1" in _tag_rm.group(0),
+      (_tag_rm.group(0)[:60] if _tag_rm else "未定位到 reduced-motion 块"))
 
 print()
 print("═══ 26) ★ 面板变透后文字要看得清")
@@ -714,8 +750,19 @@ check("★ 读条按 score/threshold 换算比例",
       "__accelThinkThreshold" in js and "hudThink" in js)
 check("★ 图标随机特效三选一（呼吸/颤抖/收缩）",
       all(k in HTML for k in ("kpiGlow", "kpiShiver", "kpiSqueeze")))
-check("★ HUD 位置在右上角、且**在已连接之上**不遮字",
+# ★ 次序（用户 2026-09-24 明确要求）：**KPI 小 HUD 在上，「已连接」在它下方**。
+#   原判据名字写的是「在已连接之上」，与要求相反；而且它只判"有没有 fixed+right"，
+#   两种次序下都为真 ⇒ **判不出方向**。这里改成显式比 top 值。
+check("★ HUD 固定在右上角",
       re.search(r"\.hud\{[^}]*position:fixed[^}]*right:", HTML) is not None)
+_hud_top = re.search(r"\.hud\{[^}]*top:\s*(\d+)px", HTML)
+_st_top = re.search(r"\.status\s*\{[^}]*top:\s*(\d+)px", HTML)
+check("★ HUD 在「已连接」之上（HUD 的 top 更小）",
+      bool(_hud_top and _st_top) and int(_hud_top.group(1)) <= int(_st_top.group(1)),
+      f"hud={_hud_top.group(1) if _hud_top else '?'} status={_st_top.group(1) if _st_top else '?'}")
+check("★ zen 下 status 让到 HUD 下方（用实测变量，不写死像素）",
+      "body.zen .status{top:var(--zen-status-top" in HTML
+      and "function situateStatus" in HTML)
 check("★ HUD 有 pointer-events:none（不挡点击）",
       re.search(r"\.hud\{[^}]*pointer-events:none", HTML) is not None)
 # ⚠️ 判 emoji 要用 re 的 \U0001F300-\U0001FAFF（或 \u{...}），
@@ -754,8 +801,11 @@ check("② 重排不再预先装填目标层（那会造成两图瞬间交替）
 check("④ 霓虹切换有柔和过渡（中间压暗 + 回正，无残留）",
       "function neonSwapTo" in js and "offset:.42" in js and "setTimeout(apply, 290)" in js)
 check("④ 单击标题随机换特效", "initNeonClick" in js and 'addEventListener("click"' in js)
-check("⑤ 副标题四种特效都加强了（周期 5~8s）",
-      all(k in HTML for k in ("tagShimmer", "tagDrift", "tagBreathe", "tagTrace")))
+# ★ 每个档都必须有自己的关键帧（且**按 TAG_MODES 推导**，不写死名字）。
+#   原判据写死旧关键帧名 tagShimmer/tagDrift/... ⇒ 改版后假红。
+_missing_kf = [m for m in _tag_modes if not re.search(r"\.tagline\." + m + r"[^{]*\{", HTML)]
+check("⑤ 每个档都有自己的 CSS 规则（关键帧/动画都挂在规则上）",
+      bool(_tag_modes) and not _missing_kf, f"缺规则: {_missing_kf}")
 check("⑥ KPI 各项独立配色（卡片 data-k + --kc）",
       js.count("k-ico-") >= 5 and HTML.count('data-k=') >= 10)
 check("⑥ HUD 各子项用同一个 --kc（与卡片对应）",
@@ -972,6 +1022,26 @@ check("★★ 用 stroke-dashoffset 扫过（稳定、不受容器尺寸影响�
       "@keyframes ecgRun" in HTML and "stroke-dashoffset" in HTML)
 check("★ 有常驻淡轨迹（任何时刻可见）",
       ".status.ok .ecg-track" in HTML)
+# ★★★ 以下三条是用户反馈「心电图还是看不出动」之后补的：
+#   原判据只判「有没有 SVG / 有没有 dashoffset」—— 这两条在
+#   「动画在跑但循环没闭合」或「线细到看不见」时**依然为真** ⇒ 判不出真问题。
+_ecg_kf = re.search(r"@keyframes ecgRun\s*\{((?:[^{}]|\{[^{}]*\})*)\}", HTML)
+_ecg_offs = [float(x) for x in re.findall(r"stroke-dashoffset:\s*(-?[\d.]+)",
+                                          _ecg_kf.group(1) if _ecg_kf else "")]
+_ecg_dash = re.search(r"\.ecg-sweep\{[^}]*stroke-dasharray:\s*([\d.]+)\s+([\d.]+)", HTML)
+_ecg_total = (float(_ecg_dash.group(1)) + float(_ecg_dash.group(2))) if _ecg_dash else 0
+check("★★ 扫描循环**闭合**（offset 跨度 == dasharray 总和，否则每轮倒跳一下）",
+      len(_ecg_offs) >= 2 and _ecg_total > 0
+      and abs(abs(_ecg_offs[0] - _ecg_offs[-1]) - _ecg_total) < 0.01,
+      f"offset={_ecg_offs} 总和={_ecg_total}")
+_ecg_sz = [tuple(int(v) for v in m) for m in
+           re.findall(r"\.ecg\{\s*width:\s*(\d+)px;\s*height:\s*(\d+)px", HTML)]
+_ecg_big = max(_ecg_sz) if _ecg_sz else (0, 0)
+check("★★ 波形尺寸够大（≥80×20 —— 原来 56×16 肉眼看不见）",
+      _ecg_big[0] >= 80 and _ecg_big[1] >= 20, f"{_ecg_big[0]}×{_ecg_big[1]}")
+check("★★ 「已连接」下是**无限循环**（持续动，不只在某一状态闪一下）",
+      re.search(r"\.status\.ok \.ecg-sweep\{[^}]*animation:[^;]*infinite", HTML) is not None)
+check("★ 有过峰闪光（心跳感）", "ecgSpark" in HTML)
 check("★ 用 non-scaling-stroke（缩放后线不变细）",
       "vector-effect:non-scaling-stroke" in HTML)
 check("★ 未连接时不显示（.status.err .ecg）",
