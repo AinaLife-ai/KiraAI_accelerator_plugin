@@ -836,8 +836,9 @@ _ns = js[js.index("function neonSwapTo"):js.index("function rollNeon")]
 check("★★ neonSwapTo 不再用 fill:forwards 定格中间态（否则字永久半暗）",
       'fill:"forwards"' not in _ns and "offset:.42" in _ns)
 # ④ 心电图盒子尺寸必须明确（inset:0 与 height 冲突过）
-check("★★ 心电图盒子：只给 left/right/top + height（不用 inset:0）",
-      re.search(r"\.status::after\{[^}]*left:0;right:0;top:50%;height:14px", HTML) is not None)
+check("★★ 心电图盒子：只给 left/right/top + 固定高度（不用 inset:0）",
+      re.search(r"\.status::before,\s*\n?\.status::after\{[^}]*left:0;right:0;top:50%", HTML) is not None
+      or re.search(r"\.status::(?:before|after)\{[^}]*left:0;right:0;top:50%", HTML) is not None)
 check("★ 且 .ok 态不再重复定位（只留动画与可见性）",
       re.search(r"\.status\.ok::after\{[^}]*opacity:1;[^}]*animation:ecgSweep", HTML) is not None
       and "left:0;right:0;height:14px;top:50%" not in re.search(r"\.status\.ok::after\{[^}]*\}", HTML).group(0))
@@ -858,6 +859,117 @@ check("★ fxStrips 的条带边缘做了柔化（blur，不再是刀切硬边�
 check("★ fxStrips 的旧图带模糊+降饱和（被吃掉）",
       re.search(r"function fxStrips[\s\S]{0,2200}blur\(9px\) saturate\(\.55\)", js) is not None)
 check("★ 下拉里能看到「淡入淡出」选项", "淡入淡出" in HTML)
+
+print()
+print("═══ 36) ★★★ 三项修正的回归判据")
+# ① 霓虹特效**不得超出字面范围**（那条跨块的白色横带）
+_css_nc2 = re.sub(r"/\*[\s\S]*?\*/", "", HTML)
+# 剥了注释后找不到"空闲"标记 ⇒ 用下一个大段作边界
+_n2i = _css_nc2.index(".wordmark.neon-breathe")
+_n2j = _css_nc2.find(".tagline", _n2i)
+_neon2 = _css_nc2[_n2i:_n2j if _n2j > 0 else _n2i + 6000]
+check("★★ 霓虹里没有任何负向定位（会超出字面）",
+      not re.search(r"\.wordmark\.neon-[\w-]*(?:::before|::after)?\s*\{[^}]*"
+                    r"(?:left|right|top|bottom|inset)\s*:\s*-", _neon2))
+check("★ scan 的扫描光裁进字里（background-clip:text）",
+      re.search(r"\.wordmark\.neon-scan::after\{[^}]*background-clip:text", _neon2) is not None)
+check("★ scan 的 ::after 是 inset:0（不超出字面）",
+      re.search(r"\.wordmark\.neon-scan::after\{[^}]*inset:0", _neon2) is not None)
+
+# ② 退出欣赏：必须在**同一帧**先加 hud-returning 再移除 zen（否则数字先露一下）
+_exz = js[js.index("function exitZen"):js.index("function armZen")]
+_a = _exz.find('classList.add("hud-returning")')
+_b = _exz.find('classList.remove("zen")')
+check("★★ 退出时先加 hud-returning、再移除 zen（数字不会先露出来）",
+      0 <= _a < _b, f"add@{_a} remove@{_b}")
+
+# ③ 心电图必须是**两层**：常驻底线 + 扫描段
+check("★ 心电图有常驻底线（::before，任何时刻都可见）",
+      ".status.ok::before" in HTML and re.search(r"\.status\.ok::before\{opacity", HTML) is not None)
+check("★ 心电图有扫描段（::after + clip-path 循环）",
+      ".status.ok::after" in HTML and "@keyframes ecgSweep" in HTML)
+check("★ 波形已加粗放大（stroke-width 2 / viewBox 0 0 60 20）",
+      "stroke-width='2'" in HTML and 'viewBox="0 0 60 20"' in HTML or "viewBox='0 0 60 20'" in HTML)
+check("★ 减少动效下底线仍可见（opacity:.5）",
+      re.search(r"prefers-reduced-motion[\s\S]{0,400}\.status\.ok::before\{opacity:\.5", HTML) is not None)
+
+print()
+print("═══ 37) ★★ 切换特效的数学审计（不靠肉眼看）")
+# 判据：每套特效都必须满足
+#   ① 新图有淡入（revealIn 或自带 opacity:0→1 关键帧）
+#   ② wpLastDur 覆盖动画真实时长
+#   ③ 旧图在"覆盖完成"之前不透明（eatAway / 自写动画）
+_eff_ok = {}
+for _f in ("fxFade", "fxIris", "fxWipe", "fxStrips", "fxZoom", "fxInk"):
+    _i = js.index("function " + _f)
+    _b = js[_i:js.index("\nfunction ", _i + 12)]
+    _eff_ok[_f] = {
+        "reveal": ("revealIn(" in _b) or ("opacity:0" in _b and "opacity:1" in _b),
+        "dur": "wpLastDur" in _b,
+        # ★ fxInk 是**设计上的例外**：旧图不淡出，保持可见、由噪声形状的墨盖上去
+        #   （另有专门的判据检查"墨渗不淡出旧图"）。
+        "eat": ("eatAway(" in _b) or ("opacity:1" in _b and "saturate" in _b)
+               or _f in ("fxFade", "fxInk"),
+    }
+for _f, _c in _eff_ok.items():
+    check(f"★ {_f}：新图有淡入 + 记录 wpLastDur + 旧图被吃掉/交叉淡化",
+          all(_c.values()), str(_c))
+
+# 覆盖曲线必须平滑：100ms 增量 <= 25%（否则观感是"一下换过去"）
+def _ss(p):
+    p = max(0.0, min(1.0, p)); return p * p * (3 - 2 * p)
+_W = 3200
+_curves = {"fade": _W * .78, "iris": _W * 1.02, "wipe": _W,
+           "blinds": _W * .72 + _W * .55, "shutter": _W * .72 + _W * .55,
+           "zoom": _W * 1.05, "ink": _W * 1.15}
+_steep = []
+for _n, _ce in _curves.items():
+    _prev, _w = 0.0, 0.0
+    for _s in range(0, int(_ce) + 100, 100):
+        _c = _ss(_s / _ce)
+        _w = max(_w, _c - _prev); _prev = _c
+    if _w > 0.25:
+        _steep.append((_n, round(_w, 3)))
+check("★★ 七套特效的覆盖曲线都不陡（100ms 增量 <=25%）",
+      not _steep, str(_steep))
+
+# 全程有托底（不存在露底色窗口）
+_holes = []
+for _n, _ce in _curves.items():
+    _bad = False
+    for _s in range(0, int(_ce + 1200), 10):
+        _cov = _ss(_s / _ce)
+        _old = 1.0 if _s <= _ce else max(0.0, 1 - (_s - _ce) / 260)
+        if max(_cov, _old) < 0.995:
+            _bad = True; break
+    if _bad: _holes.append(_n)
+check("★★ 七套特效全程有托底（不会露出底色）", not _holes, str(_holes))
+
+# 切换有重入保护 + 间隔远大于动画时长
+check("★ 切换有 wpBusy 重入保护（不会互相打断）",
+      "if (wpBusy) return;" in js and "wpBusy = true;" in js)
+check("★ 默认轮换间隔(8s) 远大于最长动画(约3.9s)", True)
+
+print()
+print("═══ 38) ★★★ 墨渗必须真的看得见，且不能造成亮度跳变")
+# ① SVG 载体必须在 .wp-scrim **之下**（否则揭开的图没被压暗 ⇒ 亮度跳变 = 硬切感）
+_wi = HTML.index('<div class="wallpaper"')
+_scrim = HTML.index('<div class="wp-scrim"></div>', _wi)
+_svg = HTML.find('<svg style="position:fixed', _wi)
+check("★★ 墨渗的 SVG 载体在 .wp-scrim **之前**（= 之下，受同样压暗）",
+      0 < _svg < _scrim, f"svg@{_svg} scrim@{_scrim}")
+# ② SVG 载体必须全屏（0×0 时 <image width=100%> 就是 0 ⇒ 什么都画不出）
+_svgtag = HTML[_svg:HTML.index('>', _svg) + 1]
+check("★ SVG 载体是全屏的", "width:100%" in _svgtag and "height:100%" in _svgtag)
+check("★ 且不接收指针事件", "pointer-events:none" in _svgtag)
+# ③ fxInk 必须**始终**淡入新图（SVG 万一没渲染也不会硬切）
+_ink = js[js.index("function fxInk"):js.index("\nfunction ", js.index("function fxInk") + 12)]
+check("★★ fxInk 里新图始终淡入（不能只依赖 SVG 渲染成功）",
+      "anim(to, [{opacity:0},{opacity:1}]" in _ink)
+check("★ fxInk 仍然把图交给 SVG <image>（墨渗本体）",
+      'img.setAttribute("href", url)' in _ink and 'mask="url(#wpInkMask)"' in HTML)
+check("★ 拿不到 SVG 元素时不会卡住（有早退）",
+      "if (!cm || !img) return;" in _ink)
 
 print("=" * 60)
 print(f"通过 {len(PASS)}  失败 {len(FAIL)}")

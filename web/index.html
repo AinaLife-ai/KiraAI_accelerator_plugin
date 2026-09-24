@@ -306,6 +306,19 @@ h1{margin:0;font-size:15px;letter-spacing:.3px;font-weight:600}
 }
   100%{background-position:0 220%}
 }
+/* ★ 字内扫描：整段文字作为裁剪源，扫过时只亮笔画、不出现横带。
+   用 ::after 叠在文字上 + background-clip:text ⇒ 光被裁进字里。 */
+.wordmark.neon-scan::after{
+  content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:linear-gradient(180deg,
+    transparent 0%, rgba(255,255,255,.92) 45%, rgba(255,255,255,.92) 55%, transparent 100%);
+  background-size:100% 260%;
+  background-repeat:no-repeat;
+  -webkit-background-clip:text;background-clip:text;
+  /* 关键：只对**文字**着色，容器本身不着色 ⇒ 不会出现横带 */
+  color:transparent;
+  animation:neonScan 3.4s linear infinite}
+
 .wordmark.neon-scan{
   /* ★★★ 这条曾经把字"吃掉"：原实现是
        background-image: 一条白色扫描带 + background-clip:text + .o/.e{color:transparent}
@@ -314,13 +327,12 @@ h1{margin:0;font-size:15px;letter-spacing:.3px;font-weight:600}
      现在改为：**底色始终可见**（沿用原来的渐变/描边），
      扫描带作为**叠加层**从字面上扫过 —— 特效在，字也在。 */
   position:relative}
-.wordmark.neon-scan::after{
-  content:"";position:absolute;left:-6%;right:-6%;top:-10%;bottom:-10%;
-  pointer-events:none;
-  background:linear-gradient(180deg,
-    transparent 0%, rgba(255,255,255,.55) 46%, transparent 56%, transparent 100%);
-  mix-blend-mode:screen;
-  animation:neonScan 5.5s linear infinite}
+/* ★★★ 这里原来是一条 `position:absolute; left:-6%; right:-6%; top:-10%; bottom:-10%`
+   的白色横带，挂在 **.wordmark 容器**上 ⇒ 它横扫的是**整个 Kira Boost 区域**
+   （用户实测图 1："大外圈扫描光，而不是 boost 字内部扫描"）。
+   正确做法：扫描带必须**裁进字母本身**（`background-clip:text`），
+   光只出现在笔画上，绝不会有一条横跨标题区的光带。 */
+
 /* （原来这里把 .o/.e 设成透明 ⇒ 字会大部分时间不可见，已删除） */
 .wordmark.neon-scan .e{-webkit-text-stroke:1.5px var(--nc)}
 
@@ -602,39 +614,47 @@ select{appearance:none;background-image:none;cursor:pointer}
   background:rgba(255,255,255,.06);color:var(--dim);border:1px solid var(--edge);margin-left:6px}
 .mini:hover{color:var(--fg);border-color:var(--violet)}
 .status        {font-size:11.5px;color:var(--dim2);display:flex;align-items:center;gap:5px}
-/* ═══ 「已连接」心电图：一条细脉冲线在状态条里循环扫过 ═══ */
+/* ═══ 「已连接」心电图 ═══
+   ★★★ 为什么之前"还是没有动态特效"：
+     原来只有**一层**：viewBox 120×24 的细线被 `background-size:100% 100%` +
+     `preserveAspectRatio="none"` 压进约 70×14px 的容器 ⇒ 线宽只剩 ~1px、
+     脉冲峰值 ~2px，而且 `clip-path` 循环里有约 28% 的时间**整条不可见**
+     ⇒ 在花哨壁纸上根本注意不到。
+   现在改成**两层**：
+     ::before = 常驻的淡色底线（**任何时刻都看得见**，一眼知道有心跳）
+     ::after  = 明亮的"扫描段"在底线上扫过（动感来源）
+   并且把波形画得**更粗、峰值更高**。 */
 .status{position:relative;overflow:hidden}
-/* ★ 这里原来写的是 `inset:0`（= top/right/bottom/left 全 0），
-   而 .ok 状态里又设了 `height:14px` 与 `top:50%` —— **bottom:0 没被覆盖**，
-   与 height 同时存在 ⇒ 盒子尺寸/位置错乱，`clip-path` 也就扫不出来。
-   现在只给需要的三条边 + 固定高度，盒子尺寸明确。 */
+
+.status::before,
 .status::after{
-  content:"";position:absolute;left:0;right:0;top:50%;height:14px;
+  content:"";position:absolute;left:0;right:0;top:50%;pointer-events:none;
   transform:translateY(-50%);
-  pointer-events:none;opacity:0;
-  background-image:url("data:image/svg+xml;utf8,\
-<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 24' preserveAspectRatio='none'>\
-<polyline points='0,12 16,12 21,12 25,4 29,20 34,12 52,12 57,12 61,6 65,18 69,12 120,12' \
-fill='none' stroke='%235ef0c0' stroke-width='1.6' stroke-linejoin='round'/></svg>");
-  /* ★ 扫动的关键：背景图宽度必须按**容器宽度**算。原来固定 120px，
-     而 .status 只有约 70px 宽（一个图标 + "已连接"）⇒ 图大半在容器外，
-     `background-position-x` 从 -120px 到 100% 的变化只有几十像素 ⇒ **看不出在动**。 */
   background-repeat:no-repeat;background-size:100% 100%;background-position:0 0;
+  /* 波形：viewBox 更扁平（0 0 60 20），峰值拉到 2~18 ⇒ 缩放后峰值约 11px，
+     线宽 2 ⇒ 缩放后约 1.4px，肉眼看得出。 */
+  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 60 20' preserveAspectRatio='none'><polyline points='0,10 10,10 13,10 15,3 17,17 19,10 27,10 30,10 32,4 34,16 36,10 60,10' fill='none' stroke='%235ef0c0' stroke-width='2' stroke-linejoin='round' stroke-linecap='round'/></svg>");
 }
-/* ★ 心电图要"看得出来"：把高度撑起来、线条更亮，
-   并把整条 trace 的底色也提亮一点（原来太细太暗，肉眼看不出在动）。 */
-/* ★ 用 clip-path 做"画出来 → 再擦掉"的循环，肉眼一定看得出在扫。 */
+/* 常驻底线：淡一点，但**始终可见** */
+.status::before{height:18px;opacity:0}
+.status.ok::before{opacity:.42}
+
+/* 扫描段：亮、带辉光，在底线上从左到右扫过 */
+.status::after{height:18px;opacity:0}
 .status.ok::after{
   opacity:1;
-  animation:ecgSweep 2.4s linear infinite;
-  filter:brightness(1.35) saturate(1.2)}
+  animation:ecgSweep 2.6s linear infinite;
+  filter:brightness(1.5) saturate(1.25)
+            drop-shadow(0 0 4px rgba(94,240,192,.85))}
 @keyframes ecgSweep{
   0%  {clip-path:inset(0 100% 0 0)}
-  55% {clip-path:inset(0 0 0 0)}
-  72% {clip-path:inset(0 0 0 0)}
+  70% {clip-path:inset(0 0 0 0)}
   100%{clip-path:inset(0 0 0 100%)}
 }
-@media (prefers-reduced-motion:reduce){ .status.ok::after{animation:none;opacity:.35} }
+@media (prefers-reduced-motion:reduce){
+  .status.ok::after{animation:none;opacity:.5}
+  .status.ok::before{opacity:.5}
+}
 .status.ok{color:var(--mint)}.status.err{color:var(--rose)}
 
 .hint-note{font-size:11px;color:var(--dim2);margin-top:9px;display:flex;gap:6px;align-items:flex-start}
@@ -793,12 +813,12 @@ html.jsfx .sp-rim{animation:none!important}
        它只负责"压暗壁纸"；盖在图上时，交接瞬间若下层短暂不可见，
        就会**透出遮罩的黑** ⇒ 观感是"黑屏弹一下 / UI 弹一弹"。
        放在最底：任何时刻看到的都是"图 + 遮罩"的合成结果，不会露黑。 -->
-  <div class="wp-scrim"></div>
-  <div class="wp-stage" id="wp-a"><div class="wp-img"></div></div>
-  <div class="wp-stage" id="wp-b"><div class="wp-img"></div></div>
-  <div class="wp-rim" id="wpRim"></div>
-</div>
-
+  <!-- ★★ 墨渗的绘制载体必须放在这里：**在 .wp-scrim 之下、与两个图层同层**。
+     放在 .wallpaper 外面（原来那样）时，它与 .wallpaper 同为 z-index:0
+     且在 DOM 后面 ⇒ 画在**遮罩之上** ⇒ 墨渗揭开的那块**没有被压暗**、
+     比正常壁纸亮；收尾时 SVG 一藏、遮罩把亮度压回去 ⇒ **亮度跳变**,
+     观感就是"闪一下 / 硬切"。
+     放在遮罩之下后，墨渗揭开的图与普通图层**受同样的压暗**，亮度连续。 -->
 <!-- ══ 墨渗：像墨晕在宣纸上散开 ══
      原理——「分形噪声 + 阈值扩散」：
        feTurbulence ×2      → 两层不同频率/种子的分形噪声相加 ⇒ 粗纹 + 细丝
@@ -852,6 +872,13 @@ html.jsfx .sp-rim{animation:none!important}
          preserveAspectRatio="xMidYMid slice"
          mask="url(#wpInkMask)" style="display:none"/>
 </svg>
+  <div class="wp-scrim"></div>
+  <div class="wp-stage" id="wp-a"><div class="wp-img"></div></div>
+  <div class="wp-stage" id="wp-b"><div class="wp-img"></div></div>
+  <div class="wp-rim" id="wpRim"></div>
+</div>
+
+
 
 <!-- 开屏：随机壁纸 + 随机入场特效 + 随机英文名特效 + 随机箴言 -->
 <div class="splash" id="splash" role="presentation">
@@ -2023,7 +2050,16 @@ function fxInk(to, from, rim){
   };
 
   // 新层本体隐藏 —— 由 #wpInkImg（带遮罩）负责显示
+  /* ★★ 新图**始终淡入**（兜底）。
+     为什么必须有：墨渗把新图交给 SVG `<image>` 显示，若那个 mask/滤镜在某个环境
+     没渲染成功，就等于"整段没有新图" ⇒ 收尾时突然出现 = 硬切。
+     让本体也淡入之后：
+       · SVG 正常 ⇒ 墨渗的纹路盖在上面（视觉主体仍是墨渗）
+       · SVG 异常 ⇒ 仍是一次平滑淡入，**绝不会硬切**
+     （这正是"不能让单一脆弱机制独自决定"的做法。） */
   to.style.opacity = "0";
+  anim(to, [{opacity:0},{opacity:1}],
+       {duration: Math.round(dur * 0.9), easing:"cubic-bezier(.4,0,.5,1)"});
   const url = (to.style.backgroundImage.match(/url\("?([^")]+)"?\)/) || [])[1] || "";
   if (url){
     img.setAttribute("href", url);
@@ -2840,10 +2876,15 @@ function exitZen(){
      ③ 因此这里**不调用** hudReset，而是延迟到面板淡入完成后，
         并且用同一个 0.9s 时长飞回，观感是"读数回到卡片里"。
      HUD 只在 zen 期间存在，所以延迟期间它一直稳稳停着，不会露馅。 */
+  /* ★★★ 顺序（这里踩过坑，用户实测："面板上先有数字，然后才消失，再飞回来"）：
+     移除 body.zen 之后，面板的 CSS 过渡会让它**立刻开始淡入**，
+     而数值就在卡片上 ⇒ **数字会先露一下**，等 hudReset 才被藏起来。
+     正确做法：**在移除 zen 的同一帧就把 hud-returning 加上**
+     （数值/图标保持隐藏），这样从"欣赏模式"到"读数落回"之间，
+     卡片上的数字**从来没有出现过**。
+     等读数飞回、落位之后，才由 hudReset 的 restore() 统一解除隐藏。 */
+  document.body.classList.add("hud-returning");
   document.body.classList.remove("zen");
-  /* ★ 面板淡入（CSS 0.9s）走完大半之后，再让读数飞回各自的卡片；
-     飞回期间卡片上的数字是**空的**（body.hud-returning），落位后才显示 ——
-     这样两者不会在半透明时重叠成重影。 */
   setTimeout(() => { try { hudReset(); } catch (e) {} }, 520);
 }
 function armZen(){
