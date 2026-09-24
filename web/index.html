@@ -482,6 +482,10 @@ h1{margin:0;font-size:15px;letter-spacing:.3px;font-weight:600}
    用 visibility 而不是 display —— 保留占位，布局不跳动。 */
 body.hud-returning .kpi .v,
 body.hud-returning .kpi .lab .ico{visibility:hidden}
+/* ★ 飞回期间 HUD **必须继续可见** —— 它只在 .zen 下 opacity:1，
+   而退出时 zen 先被移除 ⇒ 不加这条，整段 FlyBack 是在透明状态下跑的
+   （等于动画白跑）。到 restore() 移除 hud-returning 时它才自然淡出。 */
+body.hud-returning .hud{opacity:1}
 
 /* ★★ 五项各自一个颜色（用户要求：变小飞走后也要能分辨，且与卡片一一对应）。
    用 CSS 变量 `--kc` 承载：卡片边框、数值、图标、以及右上角 HUD 都读同一个变量
@@ -696,7 +700,14 @@ select{appearance:none;background-image:none;cursor:pointer}
    "以后给 HUD 加一项"时悄悄失效（重叠，且不报错）。
    ⇒ 由 JS 实测 HUD 的 bottom（situateStatus()）写入 --zen-status-top，
       下面的 78px 只是"JS 还没跑时的兜底"。 */
-body.zen .status{top:var(--zen-status-top,78px)}
+/* ★★★ 锚定条件：zen **或** hud-returning。
+   为什么必须带 hud-returning（用户实测："结束欣赏模式，KPI 字还飞回来的时候，
+   已连接就先复位了，导致它百分百和还没飞回来的字重叠"）：
+   hudReset() 让各项**从右上角 top:16 起飞**飞回卡片，
+   而退出瞬间 zen 已被移除 ⇒ status 立刻回落到 top:16 = 那些字的**起飞点**
+   ⇒ 必然重叠。让它多留一会儿，等字全部落位再回去。 */
+body.zen .status,
+body.hud-returning .status{top:var(--zen-status-top,78px)}
 
 /* ═══ 「已连接」心电图 ═══
    ★★★ 为什么以前"一直没有动态特效"：之前用**伪元素 + background-image**，

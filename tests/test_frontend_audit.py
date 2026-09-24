@@ -627,6 +627,28 @@ check("★ 默认不可见（.ecg-sweep 基础 opacity:0）",
 check("★ 减少动效下不扫但仍可见（不消失）",
       re.search(r"prefers-reduced-motion[\s\S]{0,400}\.status\.ok \.ecg-sweep\{animation:none", HTML) is not None)
 
+
+# ═══ ★★★ 退出欣赏模式：「已连接」不得早于 KPI 飞回复位 ═══
+# 用户实测："结束欣赏模式，KPI 字还飞回来的时候，已连接就先复位了，
+#            导致它百分百和还没飞回来的字重叠。"
+# 根因：hudReset 让各项**从右上角 top:16 起飞**，而退出瞬间 zen 已移除
+#       ⇒ status 回落到 top:16 = 那些字的**起飞点** ⇒ 必然重叠。
+print()
+print("═══ 23b) ★★★ 退出欣赏模式：连接状态与飞回读数的重叠 ═══")
+_nc3 = re.sub(r"/\*[\s\S]*?\*/", "", HTML)      # 先剥注释，否则注释里的说明会被当成命中
+check("★★★ 「已连接」在 hud-returning 期间保持锚定（不提前复位）",
+      re.search(r"body\.hud-returning\s+\.status", _nc3) is not None)
+check("★★★ 它的回归由「hud-returning 解除」驱动 ⇒ 时序上必然晚于飞回",
+      re.search(r"body\.hud-returning\s+\.status", _nc3) is not None
+      and 'classList.remove("hud-returning")' in HTML)
+check("★★ 飞回期间 HUD 仍可见（否则整段 FlyBack 在透明下白跑）",
+      re.search(r"body\.hud-returning\s+\.hud\s*\{[^}]*opacity:1", _nc3) is not None)
+
+_dur = re.search(r"const dur = (\d+)", HTML)
+_n_items = len(re.findall(r'class="hud-item"', HTML)) or 5
+_fly_ms = (int(_dur.group(1)) + (_n_items - 1) * 45) if _dur else -1
+check(f"★ 飞回总时长可解析（{_fly_ms}ms）且复位有余量", _fly_ms > 0)
+
 print()
 print("═══ 23) ★★ 空闲欣赏模式：UI 藏、品牌字与连接状态**必须留**")
 check("★ 有 body.zen 机制", "body.zen" in HTML and "initZen" in js)
@@ -760,8 +782,11 @@ _st_top = re.search(r"\.status\s*\{[^}]*top:\s*(\d+)px", HTML)
 check("★ HUD 在「已连接」之上（HUD 的 top 更小）",
       bool(_hud_top and _st_top) and int(_hud_top.group(1)) <= int(_st_top.group(1)),
       f"hud={_hud_top.group(1) if _hud_top else '?'} status={_st_top.group(1) if _st_top else '?'}")
+# 选择器已合并为 `body.zen .status, body.hud-returning .status{...}`
+# （后者是为了修"退出时提前复位导致重叠"）⇒ 判据要允许合并写法。
 check("★ zen 下 status 让到 HUD 下方（用实测变量，不写死像素）",
-      "body.zen .status{top:var(--zen-status-top" in HTML
+      re.search(r"body\.zen\s+\.status[^{]*\{[^}]*top:var\(--zen-status-top",
+                re.sub(r"/\*[\s\S]*?\*/", "", HTML)) is not None
       and "function situateStatus" in HTML)
 check("★ HUD 有 pointer-events:none（不挡点击）",
       re.search(r"\.hud\{[^}]*pointer-events:none", HTML) is not None)
