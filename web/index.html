@@ -133,6 +133,18 @@ body.zen .hud{opacity:1;pointer-events:auto}
 .hud-item[data-k="sig"]  {--kc:var(--rose)}
 .hud-item .ico{color:var(--kc)}
 .hud-item b{color:var(--kc)}
+/* ═══ zen HUD 的排列扩展（用户要求：数字变长时让它在左右方向占更多）═══
+   · 字号分档缩小（与面板同一套档位）
+   · `min-width` 由 `--w`（数字字符数）驱动 ⇒ 位数多的项**自动占更宽**，
+     既不会被挤扁，也不会把相邻项挤压变形。
+   · 用 `tabular-nums` 保证等宽数字，位数变化时不会左右抖动。 */
+.hud-item b,.hud-item .v{display:inline-block;text-align:right;
+  min-width:calc(var(--w, 1) * .62em)}
+.hud-item.v-m{font-size:13.5px}
+.hud-item.v-s{font-size:12px}
+.hud-item.v-xs{font-size:10.5px}
+.hud-item.v-s b,.hud-item.v-xs b{letter-spacing:-.03em}
+.hud-item{transition:font-size .25s cubic-bezier(.4,0,.2,1)}
 .hud-item .ico{font-size:12px;color:var(--dim);stroke-width:2.2}
 .hud-item b{font:inherit}
 /* 数值变化时，图标随机播一种"亮起 / 颤抖 / 收缩"（JS 加类触发一次） */
@@ -220,7 +232,11 @@ body.zen .hud{opacity:1;pointer-events:auto}
 /* 减少动效：不飞、不闪，但仍可见 */
 @media (prefers-reduced-motion:reduce){
   .hud{transition:none}
-  .hud-item .ico,.hud-fill{animation:none!important}
+  /* ★★ 同上：zen 的 HUD 图标特效也是用户要求的，不能静默关掉 */
+  .hud-item.pulse .ico{animation-duration:1.5s}
+  .hud-item.shake .ico{animation-duration:1.4s}
+  .hud-item.shrink .ico{animation-duration:1.5s}
+  .hud-fill{animation-duration:4.5s}
 }
 
 /* ═══ 空闲欣赏模式：面板 UI 完全淡出，**只留品牌字与连接状态** ═══
@@ -602,7 +618,12 @@ body.hud-returning .hud{opacity:1}
 .kpi .lab .ico.k-fx3{animation:kpiSqueeze 1.0s cubic-bezier(.3,1.4,.4,1)}
 .kpi .lab .ico{transition:color .4s ease}
 @media (prefers-reduced-motion:reduce){
-  .kpi .lab .ico{animation:none!important}
+  /* ★★ 不再 animation:none —— 用户明确要求「计数变动时图标有特效」，
+     而这条在 reduce 下把它整个关掉了（实测现象：图标纹丝不动）。
+     改为**放慢 + 降低幅度**：仍是持续、非闪频的动。 */
+  .kpi .lab .ico.k-fx1{animation-duration:1.6s}
+  .kpi .lab .ico.k-fx2{animation-duration:1.5s}
+  .kpi .lab .ico.k-fx3{animation-duration:1.6s}
 }
 .kpi .lab{font-size:10.5px;color:var(--dim2);letter-spacing:.7px;margin-top:3px;
   display:flex;align-items:center;gap:4px}
@@ -611,6 +632,14 @@ body.hud-returning .hud{opacity:1}
 .kpi.cool .v{color:var(--mint);text-shadow:var(--glow-mint)}
 /* ★ 数值后面的单位：**沿用同一字体**，只略小、与数字同基线。
    不要用另一套 12px 的字体 —— 那会让这个数字和其它三个计数看着不是一套。 */
+/* ═══ 数字自适应字号（长期累积后 1.1k / 12.3k / 999k / 1.2亿 会变长）═══
+   ★ 不裁切、不换行 —— **主动缩小字号**，并按"数字+单位"的整体宽度收字距。
+   档位与 zen HUD 共用同一套命名（v-m / v-s / v-xs），两处观感一致。 */
+.kpi .v.v-m{font-size:23px}
+.kpi .v.v-s{font-size:19.5px;letter-spacing:-.045em}
+.kpi .v.v-xs{font-size:16.5px;letter-spacing:-.05em}
+.kpi .v.v-s .u,.kpi .v.v-xs .u{font-size:.68em}
+
 .kpi .v .u{font-family:inherit;font-size:.62em;font-weight:700;
   color:var(--dim);margin-left:2px;letter-spacing:0}
 .kpi span.unit{font-family:inherit;font-size:.62em;font-weight:700;
@@ -839,7 +868,21 @@ body.hud-returning .status{top:var(--zen-status-top,78px)}
 
 /* 减少动效：只关装饰动画，内容一律保持可见 */
 @media (prefers-reduced-motion:reduce){
-  .aurora i,.wordmark>span,.card,.chip,.track>i{animation:none!important;transition:none!important}
+  .aurora i,.card,.chip,.track>i{animation:none!important;transition:none!important}
+  /* ★★★ 原来这里还有 `.wordmark>span{animation:none!important}`，
+     而「字内扫光」正好挂在字母 span 上（`.wordmark.neon-flow .o/.e`）
+     ⇒ reduce 下扫光被整条冻掉，用户看到的就是「扫光没了 / 显示不正常」，
+     并且 **Boost 那几个 .e 字母最明显**（用户原话「尤其是 boost」）。
+     现在：只关「入场那一下」（rise），**字内扫光保留**。 */
+  .wordmark>span{animation:none!important;opacity:1!important;transform:none!important}
+  /* 把扫光放回来（比上面的基础规则更具体，故能覆盖） */
+  .wordmark.neon-flow .o,
+  .wordmark.neon-flow .e{animation:neonFlow 5s linear infinite!important}
+  .wordmark.neon-aurora .o,
+  .wordmark.neon-aurora .e{animation:neonAurora 13s ease-in-out infinite!important}
+  .wordmark.neon-scan::after{animation:neonScan 4.8s linear infinite!important}
+  .wordmark.neon-bead>span::after{animation:beadRun 3.6s linear infinite!important}
+  .wordmark.neon-prism{animation:neonPrism 16s linear infinite!important}
   .wp-layer{transition:none!important;transform:none!important}
   .wallpaper{animation:none!important}
   .wordmark>span{opacity:1!important;transform:none!important}
@@ -1491,7 +1534,15 @@ function renderHealth(d){
     hudThink(d.thinking_now);
     return;
   }
-  $("#k-early").textContent = s.early_sent ?? 0;
+  /* ★ 计数统一走单位化 + 自适应字号（长期累积不会撑破面板） */
+  const _setNum = (id, v) => {
+    const el = $(id); if (!el) return;
+    const txt = fmtCount(v);
+    el.textContent = txt;
+    el.classList.remove("v-m", "v-s", "v-xs");
+    const fc = fitClass(txt); if (fc) el.classList.add(fc);
+  };
+  _setNum("#k-early", s.early_sent ?? 0);
   const fs = s.first_seg_s;
   /* ★ 字体统一：以前这里把 "s" 包在 `<span class="unit">`（12px 小号）里，
      而其它三个计数是**纯数字大号** ⇒ 四个数字看起来不是一套字。
@@ -1502,15 +1553,15 @@ function renderHealth(d){
           ? (fs < 0.01 ? "<0.01" : (fs < 10 ? fs.toFixed(2) : fs.toFixed(1)))
             + '<span class="u">s</span>'
           : '<span class="u">&lt;0.01s</span>');
-  $("#k-steps").textContent = s.steps ?? 0;
-  $("#k-turns").textContent = s.turns ?? 0;
-  $("#k-sig").textContent   = s.tool_signals ?? 0;
+  _setNum("#k-steps", s.steps ?? 0);
+  _setNum("#k-turns", s.turns ?? 0);
+  _setNum("#k-sig",   s.tool_signals ?? 0);
   // ★ 同步到右上角 HUD（zen 模式下显示；数值变了图标会随机亮一下）
-  hudSet("early", String(s.early_sent ?? 0));
+  hudSet("early", fmtCount(s.early_sent ?? 0));
   hudSet("first", fs == null ? "—" : (fs > 0 ? fs.toFixed(2) + "s" : "<0.01s"));
-  hudSet("steps", String(s.steps ?? 0));
-  hudSet("turns", String(s.turns ?? 0));
-  hudSet("sig",   String(s.tool_signals ?? 0));
+  hudSet("steps", fmtCount(s.steps ?? 0));
+  hudSet("turns", fmtCount(s.turns ?? 0));
+  hudSet("sig",   fmtCount(s.tool_signals ?? 0));
   hudThink(d.thinking_now);
 
   const t = d.thinking_now, box = $("#think");
@@ -2912,8 +2963,7 @@ function neonSwapTo(mode, color){
   const wm = document.querySelector(".wordmark");
   if (!wm) return;
   const apply = () => {
-    wm.classList.remove("neon-breathe", "neon-flow", "neon-bead", "neon-orbit",
-                        "neon-aurora", "neon-prism", "neon-scan", "neon-ring");
+    wm.classList.remove(...NEON_MODES);        // ★ 与 rollNeon 共用同一份清单
     wm.style.setProperty("--nc", color);
     wm.classList.add(mode);
     window.__accelNeon = { mode, color };
@@ -2945,7 +2995,11 @@ function rollNeon(){
     ? NEON_MODES[(NEON_MODES.indexOf(mode) + 1 + Math.floor(Math.random() * (NEON_MODES.length - 1))) % NEON_MODES.length]
     : mode;
   const color = NEON_COLORS[Math.floor(Math.random() * NEON_COLORS.length)];
-  wm.classList.remove("neon-breathe", "neon-flow", "neon-orbit");
+  /* ★★★ 原来这里只移除 3 个类，而总共有 8 个模式 ⇒
+     上一次的类会**残留**，旧特效和新特效同时生效、互相打架
+     ⇒ 观感就是「某个特效没了 / 显示不正常」（用户反馈"内部扫光没了"）。
+     neonSwapTo() 里移除的是全的，rollNeon() 漏了 —— 现在统一用同一份清单。 */
+  wm.classList.remove(...NEON_MODES);
   wm.style.setProperty("--nc", color);
   wm.classList.add(pick);
   window.__accelNeon = { mode: pick, color };
@@ -3050,6 +3104,12 @@ function hudSet(key, text){
   if (b.textContent === text) return;          // 没变 → 不动（避免无意义闪烁）
   const first = b.textContent === "";
   b.textContent = text;
+  /* ★ zen HUD 的排列扩展：数字变长时**缩字号 + 允许该项占更宽**，
+     而不是把右侧的读数挤变形（用户要求"让数字相对左右位置占更多"）。
+     `--w` 是该数字的字符数，CSS 用它给 min-width 留位。 */
+  b.classList.remove("v-m", "v-s", "v-xs");
+  const _fc = fitClass(text); if (_fc) b.classList.add(_fc);
+  b.style.setProperty("--w", String(text).length);
   // ★ 面板卡片上的图标也亮一下（首帧不亮，避免进场闪一堆）
   if (!first) kpiPulse("k-ico-" + key);
   const item = b.closest(".hud-item");
@@ -3059,6 +3119,64 @@ function hudSet(key, text){
   void item.offsetWidth;                        // 强制重排，动画才能重播
   item.classList.add(fx);
   setTimeout(() => item.classList.remove(fx), 700);
+}
+
+/* ═══ 计数单位化（长期累积用）═══
+   计数会很频繁地增长，四位数以上直接铺开会把面板撑破。
+   规则（中文习惯优先）：
+     < 1e4        → 原样（最多三位数 + 小数）
+     < 1e8        → k   （1.1k / 12.3k / 999k）
+     < 1e12       → 亿  （1.1亿 / 12亿）   ← 中文场景更自然
+     < 1e16       → 万亿
+     ≥ 1e16       → B（兜底，避免继续造词）
+   小数位：值 < 100 时保留 1 位，否则 0 位（1.1k / 12k / 999k）。
+   ★ 用「四舍五入到 1 位后仍为整数」时省掉小数点（1.0k → 1k）。 */
+function fmtCount(v){
+  const num = Number(v);
+  if (!isFinite(num)) return "—";
+  const neg = num < 0 ? "-" : "";
+  let a = Math.abs(num);
+
+  /* 阶梯（单位, 除数）。顺序即优先级。 */
+  const LADDER = [
+    [1e16, "B"], [1e12, "万亿"], [1e8, "亿"], [1e6, "M"], [1e3, "k"],
+  ];
+  if (a < 1e4) {                      // 四位以下直接显示（最多三位小数位不必要）
+    return neg + (Number.isInteger(num) ? String(Math.trunc(a)) : a.toFixed(1));
+  }
+  for (let i = 0; i < LADDER.length; i++){
+    const [base, unit] = LADDER[i];
+    if (a >= base){
+      let mant = a / base;
+      let d = mant < 100 ? 1 : 0;
+      let s = mant.toFixed(d);
+      /* ★ 进位溢出：999999 ⇒ 999.999k ⇒ toFixed(0) = "1000"（4 位）
+         ⇒ 应该**升到上一级**变成 1M，而不是显示 "1000k"。 */
+      let u = unit;
+      if (parseFloat(s) >= 1000 && i > 0){
+        const nb = LADDER[i - 1][0];
+        const m2 = a / nb;
+        /* ★ 只有**升档后仍 ≥1** 才升。
+           否则会得到 "0.1万亿" / "0.1B" 这种比 "1000亿" 更难读的形式
+           （数学上没错，但读起来更差 —— 实测发现）。 */
+        if (m2 >= 1){
+          u = LADDER[i - 1][1];
+          s = m2.toFixed(m2 < 100 ? 1 : 0);
+        }
+      }
+      s = s.replace(/\.0+$/, "");       // 1.0 → 1
+      return neg + s + u;
+    }
+  }
+  return neg + a.toFixed(0);          // 理论上到不了
+}
+
+function fitClass(text){
+  const len = String(text || "").length;
+  if (len <= 4)  return "";
+  if (len <= 6)  return "v-m";
+  if (len <= 8)  return "v-s";
+  return "v-xs";
 }
 
 /** 思考读条：按 score / threshold 的比例；无判定时留空。 */

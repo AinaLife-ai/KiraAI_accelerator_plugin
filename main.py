@@ -86,6 +86,13 @@ class AcceleratorPlugin(BasePlugin):
 
         self.observe_enabled = bool(c_obs.get("enabled", True))
         self.observe_window = int(c_obs.get("window", 50))
+        # ★ 计数保留天数：默认 30 天自动清除；0 = 永久不清
+        try:
+            self.stats_keep_days = int(c_obs.get("stats_keep_days", 30))
+        except (TypeError, ValueError):
+            self.stats_keep_days = 30
+        if self.stats_keep_days < 0:
+            self.stats_keep_days = 0
 
 
         self.takeover_build_client = bool(c_tak.get("reuse_http_client", True))
@@ -191,17 +198,75 @@ class AcceleratorPlugin(BasePlugin):
             saved = json.loads(p.read_text(encoding="utf-8"))
             if not isinstance(saved, dict):
                 return
+            # ★ 保留期结算（在灌入数值**之前**判断，否则会先看到旧值）
+            #   ★★ 它返回 True 表示「刚清零」⇒ 必须**跳过下面的灌入**，
+            #   否则刚清成 0 又被文件里的旧值覆盖 —— 实测抓到的真 bug。
+            if self._apply_keep_window(saved):
+                return
             for k, v in saved.items():
                 if k in self._stats:
                     # ★ 只接受同类型，避免污染（比如把 dict 塞进数字里）
                     cur = self._stats[k]
                     if cur is None or isinstance(v, (int, float)):
                         self._stats[k] = v
+            self._stats_since = saved.get("_since")
             logger.info("[accel] 已恢复累计统计：%s", {
                 k: self._stats.get(k) for k in ("turns", "early_sent", "streamed_calls")
             })
         except Exception:  # noqa: BLE001
             logger.exception("[accel] 恢复统计失败（忽略，按 0 起步）")
+
+    def _apply_keep_window(self, saved: dict) -> None:
+        """按「计数保留天数」结算：超期就清零并重新起算（滚动窗口）。
+
+        返回 True 表示**本次已清零**（调用方必须跳过后续的数值灌入）。
+
+        · keep=0  ⇒ 永久保留，不做任何处理
+        · 首次启动（文件里没有 _since）⇒ 记为现在，本轮照常累计
+        · 已超期 ⇒ 清零 stats 并把 _since 重置为现在
+        ★ 放在加载时结算，而不是起一个常驻计时器：
+          插件停用期间不会执行任何代码，下次加载时一次性算清即可，
+          既不占资源，也不会因为休眠而漏判。
+        """
+        import json
+        import time
+        keep = int(getattr(self, "stats_keep_days", 30) or 0)
+        p = self._stats_file()
+        if keep <= 0:
+            return False                            # 永久保留
+        now = time.time()
+        since = saved.get("_since")
+        try:
+            since = float(since) if since is not None else None
+        except (TypeError, ValueError):
+            since = None
+        if since is None:
+            # 首次：记下起算点，本轮不清
+            try:
+                if p is not None:
+                    data = dict(saved)
+                    data["_since"] = now
+                    p.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+            except Exception:  # noqa: BLE001
+                pass
+            return False
+        if now - since < keep * 86400.0:
+            return False                            # 还在窗口内
+        # 超期 ⇒ 清零并重新起算
+        days = int((now - since) // 86400)
+        for k in self._stats:
+            self._stats[k] = None if k == "first_seg_s" else 0
+        try:
+            if p is not None:
+                data = {k: v for k, v in self._stats.items()
+                        if isinstance(v, (int, float)) or v is None}
+                data["_since"] = now
+                p.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        except Exception:  # noqa: BLE001
+            pass
+        logger.info("[accel] 计数保留期（%s 天）已到（距上次起算 %s 天）⇒ 计数已清零并重新起算",
+                    keep, days)
+        return True                                 # ★ 告诉调用方：已清零，别再灌旧值
 
     def _save_stats(self) -> None:
         """把统计落盘（节流：最多每 5 秒一次，避免每轮都写盘）。"""
@@ -218,6 +283,9 @@ class AcceleratorPlugin(BasePlugin):
             # 只存数字与 None（first_seg_s 可能是 None）
             data = {k: v for k, v in self._stats.items()
                     if isinstance(v, (int, float)) or v is None}
+            # ★ 保留期起算点也要落盘，否则每次加载都会当成"首次"从而永不清零
+            if getattr(self, "_stats_since", None) is not None:
+                data["_since"] = self._stats_since
             p.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
         except Exception:  # noqa: BLE001
             pass          # 存不下不影响功能

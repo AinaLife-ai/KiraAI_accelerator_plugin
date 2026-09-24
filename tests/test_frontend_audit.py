@@ -692,13 +692,82 @@ check("★ 藏 section / tagline / dock", all(k in _zen for k in
 _zr = HTML[HTML.index("body.zen .shell > .wordmark"):]
 check("★ 保留 wordmark 与 status", "wordmark" in _zr and ".status" in _zr)
 
+
+# ═══ 计数单位化 + 长期运行（用户要求：计数很频繁，要考虑长期性与显示优化）═══
+print()
+print("═══ 24b) ★★ 计数单位化与自适应字号（长期累积）")
+check("★★ 有单位化函数 fmtCount",
+      re.search(r"function fmtCount\s*\(", js) is not None)
+_nc4 = re.sub(r"/\*[\s\S]*?\*/", "", HTML)
+_units = re.findall(r'\[\s*1e(?:\d+)\s*,\s*"([^"]+)"\s*\]', _nc4)
+check("★★ 单位阶梯含 k / M / 亿 / B（用户点名）",
+      "k" in _units and "M" in _units and "亿" in _units and "B" in _units,
+      f"实际={_units}")
+check("★★ 有进位溢出处理（999999 不得显示成 1000k）",
+      "parseFloat(s) >= 1000" in js and "m2 >= 1" in js)
+check("★★ 面板与 HUD 都用 fmtCount（两处口径一致）",
+      js.count("fmtCount(") >= 4, f"{js.count('fmtCount(')} 处调用")
+check("★ 面板有自适应字号档位 v-m / v-s / v-xs",
+      all(k in HTML for k in (".kpi .v.v-m", ".kpi .v.v-s", ".kpi .v.v-xs")))
+check("★ zen HUD 有自适应字号档位（同一套命名）",
+      all(k in HTML for k in (".hud-item.v-m", ".hud-item.v-s", ".hud-item.v-xs")))
+# ★ 用户要求「让数字在左右方向占更多」⇒ 用 --w（字符数）驱动 min-width
+check("★★ HUD 读数按字符数横向扩展占位（--w → min-width）",
+      re.search(r"min-width:calc\(var\(--w", _nc4) is not None
+      and "setProperty(\"--w\"" in js)
+
+# ═══ 计数保留期（默认 30 天，0 = 永久）═══
+print()
+print("═══ 24c) ★★ 计数保留天数（长期运行）")
+try:
+    import json as _json
+    _sch = _json.loads(pathlib.Path(__file__).resolve().parent.parent.joinpath("schema.json").read_text(encoding="utf-8"))
+    _f = _sch["section_observe"]["fields"]["stats_keep_days"]
+    check("★★ schema 有 stats_keep_days（默认 30）", _f.get("default") == 30, f"default={_f.get('default')}")
+except Exception as _e:                                     # noqa: BLE001
+    check("★★ schema 有 stats_keep_days（默认 30）", False, str(_e))
+_py = pathlib.Path(__file__).resolve().parent.parent.joinpath("main.py").read_text(encoding="utf-8")
+check("★★ 保留期在**加载时**结算（不依赖常驻计时器）",
+      "_apply_keep_window" in _py and "_apply_keep_window(saved)" in _py)
+check("★★ 0 = 永久保留（keep<=0 直接返回，不清零）",
+      re.search(r"if keep <= 0:\s*\n\s*return", _py) is not None)
+check("★★ 起算点 _since 会落盘（否则每次加载都当首次 ⇒ 永不清零）",
+      "_since" in _py and "_since" in _py[_py.find("_save_stats"):_py.find("_save_stats")+900])
+
+# ═══ 用户明确要求的特效不得被 reduced-motion 静默关掉 ═══
+print()
+print("═══ 24d) ★★★ 特效不得被 prefers-reduced-motion 静默吞掉")
+_ncd = re.sub(r"/\*[\s\S]*?\*/", "", HTML)
+for _name, _pat in (
+    ("KPI 面板图标特效", r"@media \(prefers-reduced-motion:reduce\)\{(?:(?!\}|@media)[\s\S])*?\.kpi \.lab \.ico[^{]*\{([^}]*)\}"),
+    # 实际写法是 `.hud-item.pulse .ico` 等（带状态类），所以中间要有 [^{]* 兜住
+    ("zen HUD 图标特效", r"@media \(prefers-reduced-motion:reduce\)\{(?:(?!\}|@media)[\s\S])*?\.hud-item[^{]*\.ico[^}]*\{([^}]*)\}"),
+):
+    _blk = re.search(r"@media \(prefers-reduced-motion:reduce\)\{(?:(?!@media)[\s\S])*?\n\}",
+                     _ncd)
+    _seg_txt = _blk.group(0) if _blk else ""
+    _has_kill = re.search(r"\.hud-item[^{]*\.ico\{[^}]*animation:none", _seg_txt) \
+                or re.search(r"\.kpi \.lab \.ico\{[^}]*animation:none", _seg_txt)
+    check(f"★★★ {_name} 在 reduce 下仍保留（不是 animation:none）",
+          bool(_seg_txt) and not _has_kill,
+          ("命中 animation:none" if _has_kill else "保留 ✓"))
+check("★★★ 标题「字内扫光」在 reduce 下仍保留（尤其 Boost 的 .e）",
+      re.search(r"reduced-motion[\s\S]{0,900}?neon-flow[^{]*\.e[^{]*\{[^}]*animation:neonFlow",
+                _ncd) is not None)
+
 print()
 print("═══ 25) ★ 霓虹 / 副标题：种类够多 + 会定时随机换")
 check("★ 霓虹 >= 6 种", js.count("neon-") >= 6, f"{js.count('neon-')} 处引用")
 check("★ 有 30~60s 随机重切（rollNeon + setTimeout）",
       "rollNeon" in js and "30000 + Math.random() * 30000" in js)
-check("★ 换模式时先移除旧类（否则两个特效打架）",
-      "classList.remove(\"neon-breathe\"" in js)
+# ★★★ 判据升级：原来只断言「出现了 classList.remove("neon-breathe"」，
+#   而实际 bug 正是 rollNeon 只移除了 8 个类里的 3 个 ⇒ 旧类残留、两套特效打架
+#   （用户报「内部扫光没了 / 显示不正常」）。所以必须断言**清光全部模式**。
+_nm = re.search(r"const NEON_MODES\s*=\s*\[([^\]]*)\]", js)
+_nmodes = re.findall(r'"([^"]+)"', _nm.group(1)) if _nm else []
+check("★ 换模式时把**全部**旧类移除（否则两套特效打架）",
+      len(_nmodes) >= 6 and "classList.remove(...NEON_MODES)" in js,
+      f"模式数={len(_nmodes)}；用展开清空={'classList.remove(...NEON_MODES)' in js}")
 check("★ 副标题有随机特效", "TAG_MODES" in js and "rollTagline" in js)
 # ★★ 本次补：原判据只判「这个机制存在」，判不出「观感上是不是真的在变」。
 _tag_i = js.find("function initTagline")
