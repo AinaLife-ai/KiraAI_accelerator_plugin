@@ -110,7 +110,10 @@ body.no-wallpaper .wallpaper{display:none}
    设计意图：把"面板上的 5 个计数 + 思考判定"压缩成一组小读数，
    在欣赏壁纸时仍能一眼看到系统在做什么，但**不打扰**。
    出现方式：从原来 KPI 卡片的位置**飞过来**（见 JS 的 FLIP 实现）。 */
-.hud{position:fixed;top:14px;right:16px;z-index:40;
+/* ★★ 次序（用户要求）：**KPI 小 HUD 在上，「已连接」+ 心电图在它下方**。
+   HUD 靠视口顶部；zen 模式下 HUD 出现时，status 自动让到它下面
+   （见 body.zen .status）。两者都是 fixed ⇒ 不随页面滚动。 */
+.hud{position:fixed;top:16px;right:16px;z-index:42;
   display:flex;flex-direction:column;gap:5px;align-items:flex-end;
   opacity:0;pointer-events:none;transition:opacity .6s cubic-bezier(.4,0,.2,1)}
 body.zen .hud{opacity:1;pointer-events:auto}
@@ -157,6 +160,16 @@ body.zen .hud{opacity:1;pointer-events:auto}
   84%{transform:scale(.96)}
   100%{transform:scale(1)}
 }
+.ecg{
+  width:92px;height:22px;flex:none;margin-left:8px;
+  overflow:visible;pointer-events:none;
+}
+/* 窄屏：固定药丸不能压到左侧品牌字 ⇒ ECG 收窄、字号略降 */
+@media (max-width:560px){
+  .ecg{width:58px;height:18px;margin-left:6px}
+  .status{font-size:11px;gap:4px;padding:4px 9px 4px 7px}
+}
+
 /* 思考读条：一条细轨 + 实时填充；有极缓的呼吸，不抢戏 */
 .hud-think{display:inline-flex;align-items:center;gap:5px;
   font-size:11px;color:var(--dim);font-variant-numeric:tabular-nums}
@@ -362,53 +375,82 @@ h1{margin:0;font-size:15px;letter-spacing:.3px;font-weight:600}
 .tagline{margin:0 0 24px;color:var(--dim);font-size:12.5px;letter-spacing:.2px;
   text-shadow:0 1px 3px rgba(0,0,0,.65),0 1px 12px rgba(0,0,0,.45)}
 
-/* ═══ 副标题特效（随机一种，30~60s 再随机换；都刻意做得"低频、不打扰"）═══ */
+/* ═══ 副标题（标题下的小字）：**明显 + 持续 + 随机变化**的特效 ═══
+   ★★★ 实测到的两个真问题：
+   ① 旧的 tag-shimmer 渐变是 var(--dim)→白→var(--dim)（**灰白**），
+      随机出来的 --tc **根本没进渐变** ⇒ 深色背景上等于看不见；
+   ② 周期 5.5~7s、每 30~60s 才换一次 ⇒ 感知不到"持续 + 随机变化"。
 
-/* shimmer：一道微光极慢地扫过（明暗流动） */
-/* ★ 四种低频特效：幅度要比"几乎看不见"明显一些（用户反馈看不出），
-   但仍保持**低频、柔和**，不影响阅读。周期控制在 5~8 秒。 */
-@keyframes tagShimmer{
-  0%{background-position:-180% 0}
-  100%{background-position:280% 0}
+   做法：
+     · **随机色必须进入特效本身**（发光 / 渐变 / 描边都用 var(--tc)）；
+     · 每个字拆成 span（--i 错峰、--r 随机相位）⇒ 逐字效果才明显；
+     · 周期 2.4~3.4s；每 8~14s 随机换模式 + 换色。
+   ⚠️ 四条铁律（都是踩过的坑）：
+     · 基准态必须**可见**（任何模式下字都在，不靠动画做可见性）；
+     · 绝不用 background-clip:text 做"只剩一道光带"（那会把字吃掉）→
+       aurora 的渐变里 **每个色标都是亮的**，所以任何时刻都可读；
+     · 减少动效时**静态也要看得清**（兜底把字色强制回 --dim）；
+     · 只作用于 .tagline，**不碰标题字**（用户说标题的滚动光是好的）。 */
+.tagline .tlw{display:inline-block;will-change:transform,opacity,filter}
+
+/* ① wave —— 逐字错峰起伏（一道波流过整行），整行罩 --tc 光晕 */
+@keyframes tlWave{
+  0%,100%{transform:translateY(0)}
+  50%    {transform:translateY(-3.4px)}
 }
-@keyframes tagDrift{
-  0%,100%{transform:translateX(0);letter-spacing:.2px}
-  50%    {transform:translateX(5px);letter-spacing:.5px}
+.tagline.tag-wave{filter:drop-shadow(0 0 7px var(--tc))}
+.tagline.tag-wave .tlw{
+  color:var(--fg);
+  animation:tlWave 2.6s ease-in-out infinite;
+  animation-delay:calc(var(--i) * -0.14s);
 }
-@keyframes tagBreathe{
-  0%,100%{opacity:.62;filter:drop-shadow(0 0 0 transparent)}
-  50%    {opacity:1;filter:drop-shadow(0 0 9px var(--nc, #8b7cff))}
+
+/* ② glow —— 整体呼吸发光（字色与光晕一起起伏），最"稳"的一种 */
+@keyframes tlGlow{
+  0%,100%{color:var(--dim);filter:drop-shadow(0 0 0 transparent)}
+  50%    {color:var(--fg);filter:drop-shadow(0 0 11px var(--tc))}
 }
-@keyframes tagTrace{
-  0%,100%{-webkit-text-stroke:0px transparent;color:var(--dim);opacity:.85}
-  45%,60%{-webkit-text-stroke:.5px var(--nc, #8b7cff);color:var(--fg);opacity:1}
-}
-.tagline.tag-shimmer{
+.tagline.tag-glow{animation:tlGlow 3.0s ease-in-out infinite}
+
+/* ③ aurora —— 亮色渐变在字里横向流动
+   ★ 每个色标都是亮的（--tc / 白 / --tc）⇒ 任何时刻字都可读、且明显。 */
+@keyframes tlAurora{0%{background-position:0% 50%}100%{background-position:200% 50%}}
+.tagline.tag-aurora{
   background-image:linear-gradient(100deg,
-    var(--dim) 0%, var(--dim) 34%, #fff 50%, var(--dim) 66%, var(--dim) 100%);
-  background-size:260% 100%;
-  -webkit-background-clip:text;background-clip:text;color:transparent;
-  animation:tagShimmer 5.5s linear infinite}
+    var(--tc) 0%, #ffffff 22%, var(--tc) 50%, #ffffff 78%, var(--tc) 100%);
+  background-size:200% 100%;
+  -webkit-background-clip:text;background-clip:text;
+  animation:tlAurora 3.2s linear infinite;
+  filter:drop-shadow(0 0 7px var(--tc))}
+.tagline.tag-aurora .tlw{color:transparent}
 
-.tagline.tag-drift{animation:tagDrift 7s ease-in-out infinite}
-
-/* breathe：亮度缓慢起伏 */
-@keyframes tagBreathe{
-  0%,100%{opacity:.72;filter:drop-shadow(0 0 0 transparent)}
-  50%{opacity:1;filter:drop-shadow(0 0 9px var(--tc, transparent))}
+/* ④ blink —— 逐字**随机**亮起（每字一个随机相位，彼此不同步） */
+@keyframes tlBlink{
+  0%,100%{opacity:.5;color:var(--dim);filter:none}
+  45%,55%{opacity:1;color:var(--fg);filter:drop-shadow(0 0 8px var(--tc))}
 }
-.tagline.tag-breathe{animation:tagBreathe 5.5s ease-in-out infinite}
-
-/* trace：描边流光（从透明描边到实心，缓慢往返） */
-@keyframes tagTrace{
-  0%,100%{-webkit-text-stroke:0px transparent;color:var(--dim)}
-  50%{-webkit-text-stroke:.6px var(--tc);color:transparent}
+.tagline.tag-blink .tlw{
+  animation:tlBlink 3.4s ease-in-out infinite;
+  animation-delay:calc(var(--r) * -3.4s);
 }
-.tagline.tag-trace{animation:tagTrace 6.5s ease-in-out infinite}
 
+/* ⑤ drift —— **保留原有那一档横向滚动**（用户觉得这种"走字"好看），
+   只把幅度增大到看得清，并加上 --tc 的光。 */
+@keyframes tlDrift{
+  0%,100%{transform:translateX(0);letter-spacing:.2px}
+  50%    {transform:translateX(9px);letter-spacing:.75px}
+}
+.tagline.tag-drift{
+  animation:tlDrift 6.5s ease-in-out infinite;
+  filter:drop-shadow(0 0 7px var(--tc));
+  color:var(--fg)}
+
+/* 减少动效：**不靠动画做可见性** —— 字一律回到可读的 --dim */
 @media (prefers-reduced-motion:reduce){
-  .tagline{animation:none!important;color:var(--dim)!important;
-           -webkit-text-stroke:0!important;background:none!important}
+  .tagline,.tagline .tlw{animation:none!important;
+    color:var(--dim)!important;-webkit-text-stroke:0!important;
+    background:none!important;filter:none!important;opacity:1!important}
+  .tagline.tag-aurora .tlw{color:var(--dim)!important}
 }
 
 /* ── 卡片 ── */
@@ -635,7 +677,27 @@ select{appearance:none;background-image:none;cursor:pointer}
 .mini{font:inherit;font-size:10px;padding:1px 7px;border-radius:6px;cursor:pointer;
   background:rgba(255,255,255,.06);color:var(--dim);border:1px solid var(--edge);margin-left:6px}
 .mini:hover{color:var(--fg);border-color:var(--violet)}
-.status        {font-size:11.5px;color:var(--dim2);display:flex;align-items:center;gap:5px}
+/* ★★★ 固定定位（用户要求："就和 KPI 变小 HUD 飞过去的那样"）。
+   原来它在 <header> 的**文档流**里 ⇒ 页面一滚动它就跟着动；
+   而 HUD 是 position:fixed ⇒ 两者相对位置随滚动不断变化，
+   必然出现"遮挡 HUD / 被 HUD 遮挡"。现在两者都固定在视口右上，
+   并且**上下排开**（status 16px 起、HUD 66px 起），永不重叠。 */
+.status        {font-size:11.5px;color:var(--dim2);display:flex;align-items:center;gap:5px;
+  position:fixed;top:16px;right:16px;z-index:41;
+  transition:top .5s cubic-bezier(.4,0,.2,1);
+  padding:5px 11px 5px 9px;border-radius:999px;
+  background:rgba(10,11,18,.52);
+  backdrop-filter:blur(12px) saturate(120%);
+  -webkit-backdrop-filter:blur(12px) saturate(120%);
+  border:1px solid var(--edge);
+  box-shadow:0 2px 14px rgba(0,0,0,.4)}
+/* ★★ zen（欣赏模式）下 HUD 出现在视口右上 ⇒ 「已连接」让到它**下方**。
+   ⚠️ 这里**不写死像素**：HUD 的高度由它的行数/字号决定，写死会在
+   "以后给 HUD 加一项"时悄悄失效（重叠，且不报错）。
+   ⇒ 由 JS 实测 HUD 的 bottom（situateStatus()）写入 --zen-status-top，
+      下面的 78px 只是"JS 还没跑时的兜底"。 */
+body.zen .status{top:var(--zen-status-top,78px)}
+
 /* ═══ 「已连接」心电图 ═══
    ★★★ 为什么以前"一直没有动态特效"：之前用**伪元素 + background-image**，
    那条路要同时协调 background-size / preserveAspectRatio / clip-path / 伪元素定位，
@@ -644,37 +706,57 @@ select{appearance:none;background-image:none;cursor:pointer}
    这是画心电图的常规做法，**稳定、明显、不受容器尺寸影响**。
      .ecg-track = 常驻淡色轨迹（任何时刻可见）
      .ecg-sweep = 明亮扫描段（扫过整条轨迹） */
-.status{position:relative}
+/* （这里原来有 `.status{position:relative}`，它在本节**之后**出现，
+   会把上面刚设好的 position:fixed 覆盖回 relative ⇒ 固定定位失效。
+   现在 ECG 与 spark 都是 SVG 内的元素、不需要定位上下文，所以直接去掉。） */
 
-.ecg{
-  width:56px;height:16px;flex:none;margin-left:2px;
-  overflow:visible;pointer-events:none;
-}
+/* ★★★ 尺寸与亮度（实测：原来是 56x16px、轨迹 opacity 0.45 ⇒ 肉眼看不见）。
+   现在 92x22px、轨迹 0.55，并给整条波形加一层常驻的薄荷色外发光。 */
+
+.status.ok .ecg{filter:drop-shadow(0 0 5px rgba(94,240,192,.6))}
 .ecg polyline{
   fill:none;stroke-linecap:round;stroke-linejoin:round;
   vector-effect:non-scaling-stroke;     /* ★ 缩放后线宽不跟着变细 */
 }
-.ecg-track{stroke:var(--mint);stroke-width:1.6;opacity:0}
-.status.ok .ecg-track{opacity:.45}
+.ecg-track{stroke:var(--mint);stroke-width:2;opacity:0}
+.status.ok .ecg-track{opacity:.55}
 
 .ecg-sweep{
-  stroke:#c9fff0;stroke-width:2.2;opacity:0;
-  stroke-dasharray:18 82;                /* 亮段占 18%（pathLength=100） */
+  stroke:#eafff9;stroke-width:3;opacity:0;
+  stroke-dasharray:22 78;                /* 亮段占 22%（pathLength=100） */
 }
 .status.ok .ecg-sweep{
   opacity:1;
-  filter:drop-shadow(0 0 3px rgba(94,240,192,.95));
-  animation:ecgRun 2.4s linear infinite;
+  filter:drop-shadow(0 0 5px var(--mint)) drop-shadow(0 0 11px rgba(94,240,192,.85));
+  animation:ecgRun 2.1s linear infinite;
 }
+/* ★★★ 无缝循环：dasharray 合计 100 == pathLength，
+   所以 offset 走完**整整一个周期**（100 → 0）时，图案与起点完全重合。
+   原实现写到 -18 ⇒ 每 2.1s **倒跳 18 个单位**，看起来是"闪一下"、不像连续扫过。
+   （这是"有动画但观感不对"的典型：属性在动，但循环没闭合。） */
 @keyframes ecgRun{
   0%  {stroke-dashoffset:100}
-  100%{stroke-dashoffset:-18}
+  100%{stroke-dashoffset:0}
+}
+/* ★★ 过峰闪光：扫描线经过 R 波尖峰那一刻，那一段格外亮一下（心跳感）。
+   扫描从起点走到尖峰 x=31/60 约需 52% 周期 ⇒ 亮点在 48%~60% 最亮。 */
+.ecg-spark{
+  stroke:#fff;stroke-width:3.6;opacity:0;
+  filter:drop-shadow(0 0 6px var(--mint)) drop-shadow(0 0 15px var(--mint));
+}
+.status.ok .ecg-spark{animation:ecgSpark 2.1s linear infinite}
+@keyframes ecgSpark{
+  0%,40%{opacity:0}
+  48%,60%{opacity:1}
+  70%,100%{opacity:0}
 }
 .status.err .ecg{display:none}
 
+/* 减少动效：不扫，但**波形与尖峰亮点仍然可见**（不靠动画做可见性） */
 @media (prefers-reduced-motion:reduce){
-  .status.ok .ecg-sweep{animation:none;stroke-dasharray:none;stroke-dashoffset:0;opacity:.55}
-  .status.ok .ecg-track{opacity:.5}
+  .status.ok .ecg-sweep{animation:none;stroke-dasharray:none;stroke-dashoffset:0;opacity:.8}
+  .status.ok .ecg-track{opacity:.6}
+  .status.ok .ecg-spark{animation:none;opacity:.9}
 }
 .status.ok{color:var(--mint)}.status.err{color:var(--rose)}
 
@@ -1032,6 +1114,9 @@ window.__accelSplashShownAt = (window.performance && performance.now())
           points="0,10 9,10 12,10 14,7 16,13 18,10 26,10 29,10 31,4 33,16 35,10 44,10 47,10 49,7 51,13 53,10 60,10"/>
         <polyline class="ecg-sweep" pathLength="100"
           points="0,10 9,10 12,10 14,7 16,13 18,10 26,10 29,10 31,4 33,16 35,10 44,10 47,10 49,7 51,13 53,10 60,10"/>
+        <!-- ★ 过峰闪光：只盖住 R 波尖峰那一段，随扫描节奏亮一下 -->
+        <polyline class="ecg-spark"
+          points="27,10 29,10 31,4 33,16 35,10 37,10"/>
       </svg>
     </div>
   </header>
@@ -2814,16 +2899,37 @@ function initNeon(){
       trace   —— 描边流光（字从透明描边到实心的往返）
       marquee —— 完整跑马灯（长文案时才有意义，这里作为一档备用）
    ⚠️ 不用打字机：它会让文案"时有时无"，而这行是说明文字，要一直可读。 */
-const TAG_MODES = ["tag-shimmer", "tag-drift", "tag-breathe", "tag-trace"];
-const TAG_COLORS = ["#ff6fae", "#8b7cff", "#5ef0c0", "#00e5ff", "#ff8ad4"];
+const TAG_MODES = ["tag-wave", "tag-glow", "tag-aurora", "tag-blink", "tag-drift"];
+const TAG_COLORS = ["#ff6fae", "#8b7cff", "#5ef0c0", "#00e5ff", "#ff8ad4", "#ffc46b"];
+
+/** ★ 把文案**逐字拆成 span**（只做一次，不改变文本内容）。
+    不拆的话，"波浪 / 随机闪动"这类逐字效果根本做不出来 ——
+    整行只有一个 box，只能整体动，观感就是"淡淡的"。
+    每个字带一个**随机相位** --r ⇒ 逐字动画彼此不同步 = 真正"随机变化"的观感。 */
+function splitTagline(el){
+  if (!el || el.dataset.split === "1") return;
+  const txt = el.textContent;
+  el.textContent = "";
+  Array.prototype.forEach.call(txt, function (ch, i) {
+    const s = document.createElement("span");
+    s.className = "tlw";
+    s.style.setProperty("--i", i);
+    s.style.setProperty("--r", Math.random().toFixed(3));
+    s.textContent = (ch === " ") ? "\u00a0" : ch;
+    el.appendChild(s);
+  });
+  el.dataset.split = "1";
+}
 
 function rollTagline(){
   const el = document.querySelector(".tagline");
   if (!el) return;
+  splitTagline(el);
   const mode = TAG_MODES[Math.floor(Math.random() * TAG_MODES.length)];
   const color = TAG_COLORS[Math.floor(Math.random() * TAG_COLORS.length)];
   el.classList.remove(...TAG_MODES);
-  el.style.setProperty("--tc", color);
+  el.style.setProperty("--tc", color);      // ★ 随机色这次真的会被用到
+  void el.offsetWidth;                      // 强制重排，动画从头播
   el.classList.add(mode);
   window.__accelTag = { mode, color };
 }
@@ -2832,7 +2938,9 @@ let tagTimer = null;
 function initTagline(){
   rollTagline();
   const schedule = () => {
-    const wait = 30000 + Math.random() * 30000;      // 与标题同节奏：30~60s
+    /* ★ 8~14s 换一次（原来 30~60s）——用户要的是"持续、随机变化"，
+       间隔太长就等于没有变化。周期本身也压到 2.4~3.4s。 */
+    const wait = 8000 + Math.random() * 6000;
     tagTimer = setTimeout(() => { rollTagline(); schedule(); }, wait);
   };
   if (tagTimer) clearTimeout(tagTimer);
@@ -3029,6 +3137,21 @@ function exitZen(){
   document.body.classList.remove("zen");
   setTimeout(() => { try { hudReset(); } catch (e) {} }, 520);
 }
+/** ★ 让「已连接」精确落在 HUD **下方**（用户要求）。
+    用**实测**而不是写死：HUD 的高度取决于它自己有几行、字号多大，
+    换个字号/加一项读数的场合，写死的 top 就会让它俩重叠 —— 而且不报错。
+    这里量一次 HUD 的底边，把 status 的 top 设为 bottom + 间距。 */
+function situateStatus(){
+  const hud = document.getElementById("hud");
+  if (!hud) return;
+  const r = hud.getBoundingClientRect();
+  // HUD 此时可见（zen）才有真实高度；不可见时用它的 scrollHeight 估
+  const h = r.height > 0 ? r.height : hud.scrollHeight;
+  if (!(h > 0)) return;
+  const gap = 10;
+  document.documentElement.style.setProperty("--zen-status-top", (16 + h + gap) + "px");
+}
+
 function armZen(){
   if (zenTimer) clearTimeout(zenTimer);
   const secs = Number(window.__accelZenSeconds ?? 10);
@@ -3037,8 +3160,15 @@ function armZen(){
     zenOn = true;
     hudFlyIn();                         // ★ 从 KPI 面板的位置飞到右上角
     document.body.classList.add("zen");
+    /* ★ 关键：先加 zen（HUD 变可见）、**下一帧**再量高度——
+       在 zen 之前量，HUD 是 opacity:0/未布局，量到的高度是 0 ⇒ 变量写不进去。 */
+    requestAnimationFrame(() => { try { situateStatus(); } catch (e) {} });
   }, secs * 1000);
 }
+window.addEventListener("resize", () => {
+  if (document.body.classList.contains("zen")) { try { situateStatus(); } catch (e) {} }
+}, {passive:true});
+
 function initZen(){
   /* ★ 恢复条件：**点击画面任意处 / 按键**（用户明确要求），
      不是"移动鼠标就出来" —— 那样手一碰鼠标 UI 就跳回来，没法安静欣赏背景。
