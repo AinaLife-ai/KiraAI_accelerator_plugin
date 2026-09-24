@@ -44,6 +44,18 @@
             "hint": "内存中保留的最近样本条数。默认：50。"
           }
         }
+      },
+      "stats_keep_days": {
+        "type": "integer",
+        "name": "Reset counters every N days",
+        "default": 30,
+        "hint": "0 = never reset. Counters are cumulative and are cleared when the retention window elapses. Checked at load time.",
+        "locales": {
+          "zh": {
+            "name": "计数保留天数",
+            "hint": "默认 30 天。计数是累计的，超过保留期后会在下次加载时**清零并重新起算**（滚动窗口，不是停止统计）。填 0 = 永久保留、永不清除。判断发生在插件加载/热重载时，不依赖常驻定时器。"
+          }
+        }
       }
     }
   },
