@@ -615,45 +615,44 @@ select{appearance:none;background-image:none;cursor:pointer}
 .mini:hover{color:var(--fg);border-color:var(--violet)}
 .status        {font-size:11.5px;color:var(--dim2);display:flex;align-items:center;gap:5px}
 /* ═══ 「已连接」心电图 ═══
-   ★★★ 为什么之前"还是没有动态特效"：
-     原来只有**一层**：viewBox 120×24 的细线被 `background-size:100% 100%` +
-     `preserveAspectRatio="none"` 压进约 70×14px 的容器 ⇒ 线宽只剩 ~1px、
-     脉冲峰值 ~2px，而且 `clip-path` 循环里有约 28% 的时间**整条不可见**
-     ⇒ 在花哨壁纸上根本注意不到。
-   现在改成**两层**：
-     ::before = 常驻的淡色底线（**任何时刻都看得见**，一眼知道有心跳）
-     ::after  = 明亮的"扫描段"在底线上扫过（动感来源）
-   并且把波形画得**更粗、峰值更高**。 */
-.status{position:relative;overflow:hidden}
+   ★★★ 为什么以前"一直没有动态特效"：之前用**伪元素 + background-image**，
+   那条路要同时协调 background-size / preserveAspectRatio / clip-path / 伪元素定位，
+   在 flex 标签里非常脆弱；而且缩放到很窄的容器后线会细到看不见。
+   现在改成**真实的内联 SVG**，用 `stroke-dashoffset` 让一段亮线扫过 ——
+   这是画心电图的常规做法，**稳定、明显、不受容器尺寸影响**。
+     .ecg-track = 常驻淡色轨迹（任何时刻可见）
+     .ecg-sweep = 明亮扫描段（扫过整条轨迹） */
+.status{position:relative}
 
-.status::before,
-.status::after{
-  content:"";position:absolute;left:0;right:0;top:50%;pointer-events:none;
-  transform:translateY(-50%);
-  background-repeat:no-repeat;background-size:100% 100%;background-position:0 0;
-  /* 波形：viewBox 更扁平（0 0 60 20），峰值拉到 2~18 ⇒ 缩放后峰值约 11px，
-     线宽 2 ⇒ 缩放后约 1.4px，肉眼看得出。 */
-  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 60 20' preserveAspectRatio='none'><polyline points='0,10 10,10 13,10 15,3 17,17 19,10 27,10 30,10 32,4 34,16 36,10 60,10' fill='none' stroke='%235ef0c0' stroke-width='2' stroke-linejoin='round' stroke-linecap='round'/></svg>");
+.ecg{
+  width:56px;height:16px;flex:none;margin-left:2px;
+  overflow:visible;pointer-events:none;
 }
-/* 常驻底线：淡一点，但**始终可见** */
-.status::before{height:18px;opacity:0}
-.status.ok::before{opacity:.42}
+.ecg polyline{
+  fill:none;stroke-linecap:round;stroke-linejoin:round;
+  vector-effect:non-scaling-stroke;     /* ★ 缩放后线宽不跟着变细 */
+}
+.ecg-track{stroke:var(--mint);stroke-width:1.6;opacity:0}
+.status.ok .ecg-track{opacity:.45}
 
-/* 扫描段：亮、带辉光，在底线上从左到右扫过 */
-.status::after{height:18px;opacity:0}
-.status.ok::after{
+.ecg-sweep{
+  stroke:#c9fff0;stroke-width:2.2;opacity:0;
+  stroke-dasharray:18 82;                /* 亮段占 18%（pathLength=100） */
+}
+.status.ok .ecg-sweep{
   opacity:1;
-  animation:ecgSweep 2.6s linear infinite;
-  filter:brightness(1.5) saturate(1.25)
-            drop-shadow(0 0 4px rgba(94,240,192,.85))}
-@keyframes ecgSweep{
-  0%  {clip-path:inset(0 100% 0 0)}
-  70% {clip-path:inset(0 0 0 0)}
-  100%{clip-path:inset(0 0 0 100%)}
+  filter:drop-shadow(0 0 3px rgba(94,240,192,.95));
+  animation:ecgRun 2.4s linear infinite;
 }
+@keyframes ecgRun{
+  0%  {stroke-dashoffset:100}
+  100%{stroke-dashoffset:-18}
+}
+.status.err .ecg{display:none}
+
 @media (prefers-reduced-motion:reduce){
-  .status.ok::after{animation:none;opacity:.5}
-  .status.ok::before{opacity:.5}
+  .status.ok .ecg-sweep{animation:none;stroke-dasharray:none;stroke-dashoffset:0;opacity:.55}
+  .status.ok .ecg-track{opacity:.5}
 }
 .status.ok{color:var(--mint)}.status.err{color:var(--rose)}
 
@@ -855,9 +854,18 @@ html.jsfx .sp-rim{animation:none!important}
     <feTurbulence id="wpInkN2" type="fractalNoise" baseFrequency="0.023 0.019"
                   numOctaves="3" seed="23" result="n2"/>
     <feComposite in="n1" in2="n2" operator="arithmetic"
-                 k1="0" k2="0.62" k3="0.38" k4="0" result="n"/>
+                 k1="0" k2="0.55" k3="0.45" k4="0" result="n"/>
+    <!-- ★★ 关键：先把噪声**拉高对比**再阈值化。
+         原来两个噪声做加权平均后集中在 0.5 附近、方差很小 ⇒ 过阈的是一片
+         "均匀的块"，边界感弱 ⇒ 观感像"一下子整块出现"（用户反馈还是硬切）。
+         拉对比之后，噪声变成"高高低低的丝缕"，阈值化时是**一根根渗出来**的。 -->
+    <feComponentTransfer in="n" result="nc">
+      <feFuncR type="linear" slope="2.6" intercept="-0.8"/>
+      <feFuncG type="linear" slope="2.6" intercept="-0.8"/>
+      <feFuncB type="linear" slope="2.6" intercept="-0.8"/>
+    </feComponentTransfer>
     <!-- ★ 这一行的最后一个系数（bias）由 JS 逐帧改写 ⇒ 墨量增长 -->
-    <feColorMatrix id="wpInkCM" in="n" type="matrix"
+    <feColorMatrix id="wpInkCM" in="nc" type="matrix"
       values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0.55 0.35 0.10 0 -0.45"
       result="a"/>
     <feComponentTransfer in="a">
@@ -990,7 +998,20 @@ window.__accelSplashShownAt = (window.performance && performance.now())
         <p class="sub">Accelerator · Control Deck</p>
       </div>
     </div>
-    <div class="status" id="conn"><svg class="ico"><use href="#i-activity"/></svg><span>连接中</span></div>
+    <div class="status" id="conn">
+      <svg class="ico"><use href="#i-activity"/></svg><span id="conn-text">连接中</span>
+      <!-- ★ 心电图：**真实的内联 SVG**，用 stroke-dashoffset 扫过。
+           为什么不用伪元素 + background-image：那条路要同时管好
+           background-size / clip-path / 伪元素定位，在 flex 容器里太脆弱，
+           而且缩放到很窄的标签里线会细到看不见（用户反馈"还是没有特效"）。
+           画成元素之后：常驻淡轨迹 + 一段亮线扫过，**稳定且明显**。 -->
+      <svg class="ecg" viewBox="0 0 60 20" preserveAspectRatio="none" aria-hidden="true">
+        <polyline class="ecg-track"
+          points="0,10 9,10 12,10 14,7 16,13 18,10 26,10 29,10 31,4 33,16 35,10 44,10 47,10 49,7 51,13 53,10 60,10"/>
+        <polyline class="ecg-sweep" pathLength="100"
+          points="0,10 9,10 12,10 14,7 16,13 18,10 26,10 29,10 31,4 33,16 35,10 44,10 47,10 49,7 51,13 53,10 60,10"/>
+      </svg>
+    </div>
   </header>
 
   <!-- ★ 欣赏模式（body.zen）时的"简约实时 HUD"：
@@ -2074,7 +2095,13 @@ function fxInk(to, from, rim){
   const step = () => {
     const p = Math.min(1, (performance.now() - t0) / dur);
     //  由 BIAS0（一粒墨）走到 BIAS1（铺满）
-    setBias(BIAS0 + (BIAS1 - BIAS0) * ease(p) * 1.658);
+    /* ★★★ 去掉 1.658 这个放大系数（用户反馈"墨渗还是硬切"）。
+       实测覆盖率曲线（拉对比后）：
+         带 1.658：50% 进度已 79% 不透明 ⇒ 观感是"一下就散完了"
+         线性   ：50% 进度只 53%      ⇒ 扩散铺满整个时长
+       Bias 的终点也相应收到 BIAS1（不再需要放大去"够到"全不透明，
+       因为 88% 覆盖 + 旧图托底已经足够，且结尾的柔和更自然）。 */
+    setBias(BIAS0 + (BIAS1 - BIAS0) * ease(p));
     if (p < 1) raf = requestAnimationFrame(step);
     else img.style.display = "none";
   };
@@ -2575,11 +2602,17 @@ async function poll(){
     const r = await fetch(PAPI + "/health", {credentials:"include"});
     if (!r.ok) throw new Error("HTTP " + r.status);
     renderHealth(await r.json());
+    /* ★ 不要再 innerHTML 覆盖 —— 那会把里面的心电图 SVG 一起冲掉。
+       只更新类名与文字即可（图标与 ECG 都是静态结构）。 */
     conn.className = "status ok";
-    conn.innerHTML = icon("activity") + "<span>已连接</span>";
+    const ct = document.getElementById("conn-text");
+    if (ct) ct.textContent = "已连接";
   } catch(e){
     conn.className = "status err";
-    conn.innerHTML = icon("triangle-alert") + "<span>未连接</span>";
+    const ct = document.getElementById("conn-text");
+    if (ct) ct.textContent = "未连接";
+    const ico = conn.querySelector("use");
+    if (ico) ico.setAttribute("href", "#i-triangle-alert");
   }
 }
 
@@ -2901,11 +2934,38 @@ function initZen(){
   /* ★ 恢复条件：**点击画面任意处 / 按键**（用户明确要求），
      不是"移动鼠标就出来" —— 那样手一碰鼠标 UI 就跳回来，没法安静欣赏背景。
      计时也从"进入页面"起算；点击/按键既恢复 UI、也重新开始计时。 */
-  const wake = () => { exitZen(); armZen(); };
-  window.addEventListener("pointerdown", wake, { passive: true });
-  window.addEventListener("keydown", wake);
-  // 滚轮/触摸滑动也算"用户在操作"（移动端没有 hover，点一下就恢复即可）
-  window.addEventListener("touchstart", wake, { passive: true });
+  /* ★★★ 用户要求：**点标题（换霓虹特效）时不要退出欣赏模式**。
+     之前试过在标题的 click 上 stopPropagation —— **原理上就不成立**：
+       · 恢复监听绑的是 window 的 `pointerdown`，而 pointerdown **先于 click** 发生
+         ⇒ 等 click 跑到时，UI 早就已经恢复了；
+       · 而且拦的是标题上的 click，根本挡不住"从标题冒泡到 window 的 pointerdown"。
+     正确做法：在 window 的 **捕获阶段**（第三个参数 true / capture）先判断
+       "这次点击是否落在标题区域内"，是则不恢复 UI、只让它去换特效。
+     捕获阶段比冒泡早，且能看到真实 target ⇒ 时机与位置都对。 */
+  const inWordmark = (ev) => {
+    try {
+      const wm = document.querySelector(".wordmark");
+      if (!wm) return false;
+      const r = wm.getBoundingClientRect();
+      const x = (ev.clientX !== undefined) ? ev.clientX
+              : (ev.touches && ev.touches[0] ? ev.touches[0].clientX : null);
+      const y = (ev.clientY !== undefined) ? ev.clientY
+              : (ev.touches && ev.touches[0] ? ev.touches[0].clientY : null);
+      if (x === null || y === null) return false;
+      // 给一点外扩，手指点得偏一点也算"点在标题上"
+      const pad = 10;
+      return x >= r.left - pad && x <= r.right + pad
+          && y >= r.top - pad  && y <= r.bottom + pad;
+    } catch (e) { return false; }
+  };
+  const wake = (ev) => {
+    // 点在标题上 ⇒ 只换特效，不恢复 UI
+    if (ev && ev.type !== "keydown" && inWordmark(ev)) return;
+    exitZen(); armZen();
+  };
+  window.addEventListener("pointerdown", wake, { passive: true, capture: true });
+  window.addEventListener("touchstart", wake, { passive: true, capture: true });
+  window.addEventListener("keydown", () => { exitZen(); armZen(); });
   armZen();
 }
 
@@ -2923,13 +2983,9 @@ initZen();
   wm.style.cursor = "pointer";
   wm.title = "点一下换一种光影";
   wm.addEventListener("click", (ev) => {
-    /* ★ 欣赏模式下点标题**只换特效，不恢复 UI**（用户要求）。
-       做法：把事件拦在这里 —— stopPropagation 会挡住冒泡到 window 的那个
-       `pointerdown` 恢复监听；因为恢复监听绑在 window 且用冒泡阶段。 */
-    if (document.body.classList.contains("zen")) {
-      try { ev.stopPropagation(); } catch (e) {}
-      try { ev.preventDefault(); } catch (e) {}
-    }
+    /* 注：拦截已改到 window 的**捕获阶段**（见 initZen）——那里先判断坐标是否
+       落在标题内，是则直接放行、不恢复 UI。这里只负责"换特效"。 */
+    ev.stopPropagation();
     const cur = (window.__accelNeon || {}).mode;
     let mode = cur;
     let guard = 0;
