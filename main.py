@@ -240,8 +240,18 @@ class AcceleratorPlugin(BasePlugin):
             since = float(since) if since is not None else None
         except (TypeError, ValueError):
             since = None
-        if since is None:
-            # 首次：记下起算点，本轮不清
+        # ★★ 合理性校验：_since 必须是"过去且为正"的时间。
+        #   为什么要校验：文件可能被手工改过、被同步工具写坏、或系统时间被调过。
+        #   - `_since = -1` 会让 (now - since) 大得离谱 ⇒ **误判超期、把计数清掉**；
+        #   - `_since` 在未来（时间被调过）⇒ 窗口永远不触发。
+        #   两种情况都**只重记起算点、本轮绝不清零** —— 宁可不清，也不误伤数据。
+        #   （边界审计实测抓到 `_since=-1` 会清掉计数，故加此校验。）
+        #   还有"准 0"的时间戳（1e-9 ≈ 1970-01-01）：按字面确实"超期 55 年"，
+        #   但那不可能是真实起算点 —— 插件那时并不存在。⇒ 用一个**绝对下限**
+        #   兜住这类值（2020-09 之前的时间戳对本插件都不可能是真的起算点）。
+        #   （相对下限定不住：回溯 100 年后会是负数，反而把 1e-9 放行了 —— 实测踩过。）
+        _FLOOR = 1_600_000_000.0                    # 2020-09-13，早于此视为坏数据
+        if since is None or since <= 0 or since > now or since < _FLOOR:
             try:
                 if p is not None:
                     data = dict(saved)
