@@ -618,14 +618,14 @@ check("★ 流光沿文字横向扫（background-position 动画）",
 
 print()
 print("═══ 22) ★ 「已连接」心电图")
-check("★ 有 ECG 折线（polyline 脉冲波形）",
-      "polyline" in HTML and "ecgSweep" in HTML)
-check("★ 只在**已连接**时出现（.status.ok::after）",
-      ".status.ok::after" in HTML)
-check("★ 默认不可见（未连接时不闪）",
-      re.search(r"\.status::after\{[^}]*opacity:0", HTML) is not None)
+check("★ 有 ECG 折线（真实 polyline）",
+      'class="ecg-track"' in HTML and 'class="ecg-sweep"' in HTML)
+check("★ 只在已连接时出现（.status.ok 控制）",
+      ".status.ok .ecg-sweep" in HTML and ".status.err .ecg" in HTML)
+check("★ 默认不可见（.ecg-sweep 基础 opacity:0）",
+      re.search(r"\.ecg-sweep\{[^}]*opacity:0", HTML) is not None)
 check("★ 减少动效下不扫但仍可见（不消失）",
-      re.search(r"prefers-reduced-motion[\s\S]{0,600}\.status\.ok::after\{[^}]*animation:none", HTML) is not None)
+      re.search(r"prefers-reduced-motion[\s\S]{0,400}\.status\.ok \.ecg-sweep\{animation:none", HTML) is not None)
 
 print()
 print("═══ 23) ★★ 空闲欣赏模式：UI 藏、品牌字与连接状态**必须留**")
@@ -749,8 +749,6 @@ check("① 最弱文字再提亮 + 有托底阴影",
       "--dim2:#a8b2cc" in HTML and "text-shadow:0 1px 3px rgba(0,0,0,.7)" in HTML)
 check("② 重排不再预先装填目标层（那会造成两图瞬间交替）",
       "wpLoad(\"wp-b\", wpUrl(wpActive[0]))" not in js and "hasVisible" in js)
-check("③ 心电图按容器宽 + clip-path 扫动（否则看不出动）",
-      "background-size:100% 100%" in HTML and "clip-path:inset(0 100% 0 0)" in HTML)
 # ★ 实现已简化为**一条动画**：中间关键帧压暗（offset .42）、结束回到 opacity:1，
 #   换类在最暗那一刻执行 —— 比"两条动画"更稳（不会留下压暗残留）。
 check("④ 霓虹切换有柔和过渡（中间压暗 + 回正，无残留）",
@@ -836,15 +834,7 @@ _ns = js[js.index("function neonSwapTo"):js.index("function rollNeon")]
 check("★★ neonSwapTo 不再用 fill:forwards 定格中间态（否则字永久半暗）",
       'fill:"forwards"' not in _ns and "offset:.42" in _ns)
 # ④ 心电图盒子尺寸必须明确（inset:0 与 height 冲突过）
-check("★★ 心电图盒子：只给 left/right/top + 固定高度（不用 inset:0）",
-      re.search(r"\.status::before,\s*\n?\.status::after\{[^}]*left:0;right:0;top:50%", HTML) is not None
-      or re.search(r"\.status::(?:before|after)\{[^}]*left:0;right:0;top:50%", HTML) is not None)
-check("★ 且 .ok 态不再重复定位（只留动画与可见性）",
-      re.search(r"\.status\.ok::after\{[^}]*opacity:1;[^}]*animation:ecgSweep", HTML) is not None
-      and "left:0;right:0;height:14px;top:50%" not in re.search(r"\.status\.ok::after\{[^}]*\}", HTML).group(0))
 # 点击标题不恢复 UI
-check("★ 欣赏模式下点标题只换特效、不恢复 UI",
-      'classList.contains("zen")' in js and "stopPropagation" in js)
 
 print()
 print("═══ 35) ★★ 淡入淡出与条带柔化（用户要求：一定要搞好）")
@@ -884,14 +874,6 @@ check("★★ 退出时先加 hud-returning、再移除 zen（数字不会先露
       0 <= _a < _b, f"add@{_a} remove@{_b}")
 
 # ③ 心电图必须是**两层**：常驻底线 + 扫描段
-check("★ 心电图有常驻底线（::before，任何时刻都可见）",
-      ".status.ok::before" in HTML and re.search(r"\.status\.ok::before\{opacity", HTML) is not None)
-check("★ 心电图有扫描段（::after + clip-path 循环）",
-      ".status.ok::after" in HTML and "@keyframes ecgSweep" in HTML)
-check("★ 波形已加粗放大（stroke-width 2 / viewBox 0 0 60 20）",
-      "stroke-width='2'" in HTML and 'viewBox="0 0 60 20"' in HTML or "viewBox='0 0 60 20'" in HTML)
-check("★ 减少动效下底线仍可见（opacity:.5）",
-      re.search(r"prefers-reduced-motion[\s\S]{0,400}\.status\.ok::before\{opacity:\.5", HTML) is not None)
 
 print()
 print("═══ 37) ★★ 切换特效的数学审计（不靠肉眼看）")
@@ -970,6 +952,61 @@ check("★ fxInk 仍然把图交给 SVG <image>（墨渗本体）",
       'img.setAttribute("href", url)' in _ink and 'mask="url(#wpInkMask)"' in HTML)
 check("★ 拿不到 SVG 元素时不会卡住（有早退）",
       "if (!cm || !img) return;" in _ink)
+
+print()
+print("═══ 39) ★★★ 点标题不退出欣赏模式 + 心电图用真实 SVG")
+# ① 恢复监听必须在 **window 的捕获阶段** 判断坐标（click 上的 stopPropagation 太晚）
+_iz = js[js.index("function initZen"):js.index("function initZen") + 2200]
+check("★★ 恢复监听用捕获阶段（capture:true）",
+      "capture: true" in _iz)
+check("★★ 且按坐标判断是否落在标题内（不是靠 stopPropagation 拦 click）",
+      "inWordmark" in _iz and "getBoundingClientRect" in _iz)
+check("★ 落在标题内时不恢复 UI", re.search(r"inWordmark\(ev\)\)\s*return", _iz) is not None)
+check("★ 按键仍然恢复 UI（键盘不受影响）",
+      "keydown" in _iz and "exitZen(); armZen();" in _iz)
+
+# ② 心电图：真实内联 SVG + stroke-dashoffset（不再用伪元素 + background-image）
+check("★★ 心电图是**真实内联 SVG**（.ecg / polyline）",
+      'class="ecg"' in HTML and 'class="ecg-track"' in HTML and 'class="ecg-sweep"' in HTML)
+check("★★ 用 stroke-dashoffset 扫过（稳定、不受容器尺寸影响）",
+      "@keyframes ecgRun" in HTML and "stroke-dashoffset" in HTML)
+check("★ 有常驻淡轨迹（任何时刻可见）",
+      ".status.ok .ecg-track" in HTML)
+check("★ 用 non-scaling-stroke（缩放后线不变细）",
+      "vector-effect:non-scaling-stroke" in HTML)
+check("★ 未连接时不显示（.status.err .ecg）",
+      ".status.err .ecg" in HTML and "display:none" in HTML)
+check("★★ poll() **不再用 innerHTML 覆盖**状态块（否则会把心电图冲掉）",
+      'conn.innerHTML' not in js and 'id="conn-text"' in HTML)
+check("★ 未连接时图标会换（保留原有行为）",
+      'setAttribute("href", "#i-triangle-alert")' in js)
+
+print()
+print("═══ 40) ★★★ 墨渗：丝缕清晰 + 扩散铺满（用户第三次反馈硬切）")
+_ink2 = js[js.index("function fxInk"):js.index("\nfunction ", js.index("function fxInk") + 12)]
+# ① 不能再用 1.658 放大（那会让墨在中段就散完 ⇒ 观感"一下出现"）
+check("★★ 偏置不再用 1.658 放大（否则 50% 进度就 79% 不透明 ⇒ 像硬切）",
+      "1.658" not in _ink2)
+check("★ 偏置按 smoothstep 线性铺满整个时长",
+      "setBias(BIAS0 + (BIAS1 - BIAS0) * ease(p));" in _ink2)
+# ② 噪声必须先拉对比再阈值（否则过阈的是"一片均匀的块"，边界感弱）
+check("★★ 噪声先拉对比（feFuncR/G/B slope）再阈值化",
+      re.search(r'<feComponentTransfer in="n" result="nc">[\s\S]{0,300}slope="2\.6"', HTML) is not None)
+check("★ feColorMatrix 用的是拉过对比的 nc",
+      'id="wpInkCM" in="nc"' in HTML)
+# ③ 新图始终淡入（SVG 万一失效也不硬切）
+check("★★ fxInk 里新图始终淡入（不依赖 SVG 是否渲染成功）",
+      "anim(to, [{opacity:0},{opacity:1}]" in _ink2)
+# ④ 覆盖率曲线：验证 50% 进度时**不该**超过 70%（否则"散太快"）
+def _frac(bias, mu0=0.5, sd=0.15, slope=2.6):
+    mu = mu0 * slope - (1 - mu0) * (slope - 1) + bias
+    import math as _m
+    z = ((1.0 / 3.0) - mu) / (sd * slope)
+    return 0.5 * (1 - _m.erf(z / _m.sqrt(2)))
+_b0, _b1 = -0.58, 0.30
+_mid = _frac(_b0 + (_b1 - _b0) * 0.5) * 100
+check("★★ 50% 进度时覆盖率 <=70%（墨是慢慢渗而不是一下散完）",
+      _mid <= 70, f"实际 {_mid:.1f}%")
 
 print("=" * 60)
 print(f"通过 {len(PASS)}  失败 {len(FAIL)}")
