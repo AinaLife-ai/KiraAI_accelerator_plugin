@@ -451,6 +451,7 @@
         "default": "random",
         "options": [
           "random",
+          "fade",
           "iris",
           "wipe",
           "blinds",
@@ -458,11 +459,11 @@
           "zoom",
           "ink"
         ],
-        "hint": "random = a different reveal each time (default): iris, wipe, blinds, shutter, zoom or ink. Or pin one: iris = circle opens from a random point; wipe = a lit edge sweeps across; blinds = horizontal bands; shutter = vertical slats opening from the middle; zoom = dolly push; ink = irregular bleed.",
+        "hint": "random = a different reveal every time (default): fade, iris, wipe, blinds, shutter, zoom or ink. fade is the softest (a plain cross-fade). Or pin one of them.",
         "locales": {
           "zh": {
             "name": "切换特效",
-            "hint": "random=每次随机换一种（默认）：虹膜／斜擦／百叶／中开／推镜／墨渗。也可以固定一种 —— 虹膜=圆形从随机位置张开；斜擦=一道发光前沿横扫；百叶=横向条带展开；中开=竖向板从中缝打开；推镜=镜头推进；墨渗=不规则渗开。"
+            "hint": "random=每次随机换一种（默认）：淡入淡出／虹膜／斜擦／百叶／中开／推镜／墨渗。其中「淡入淡出」最柔和，最不容易出现突兀的切换。也可以固定一种。"
           }
         }
       },
