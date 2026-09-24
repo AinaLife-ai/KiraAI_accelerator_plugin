@@ -26,8 +26,12 @@ def check(name, cond, detail=""):
 html = (HERE / "web" / "index.html").read_text(encoding="utf-8")
 
 print("1) 轮换逻辑的静态检查（确认真的用了随机）")
-check("使用 Math.random 选下一张", "Math.random() * wpActive.length" in html)
-check("有避免连续重复的循环", "while (wpActive[next] === cur" in html)
+# 实现升级（用户要求"要随机、但别重复"）：
+# 从"排除最近若干张"的池子里随机挑，而不是只排除当前那一张。
+check("仍然使用 Math.random 随机挑（不是顺序轮换）",
+      "Math.random() * pool.length" in html or "Math.random() * wpActive.length" in html)
+check("有「最近不重复」队列（随机但短期不重复）",
+      "wpRecent" in html and "avoid.has(n)" in html)
 check("不再用顺序 (wpIdx + 1) 递增", "wpIdx = (wpIdx + 1) % wpActive.length" not in html)
 check("只有 1 张时提前返回（不轮换）", "if (wpActive.length < 2 || wpIntervalS <= 0) return;" in html)
 # ★ 行为升级（2026-09-23）：定时器里现在还要求"不在切换中"（wpBusy），
@@ -133,6 +137,19 @@ bad_claimed = sorted({int(m) for m in _re.findall(r"(\d+)\s*张动漫壁纸", ba
 check("★ 反向验证：数字改错后会被抓出", bad_claimed != [real],
       f"篡改后 {bad_claimed} vs 实际 {real}")
 
+
+# ── 轮换策略：**随机** + 短期不重复（用户明确要随机，不要顺序） ──
+print("\n★ 轮换策略：随机但短期不重复")
+_cap = None
+for _m in __import__("re").finditer(r"const cap = Math\.max\((\d+), Math\.floor\(wpActive\.length / (\d+)\)\)", html):
+    _cap = _m.groups()
+check("★ 从「最近没出现过的」池子里**随机**挑（不是顺序）",
+      "Math.random() * pool.length" in html)
+check("★ 顺序轮换的痕迹已清除（不得出现 +1 %）",
+      "wpIdx + 1) % wpActive.length" not in html)
+check("★ 有「最近不重复」容量控制", _cap is not None, str(_cap))
+check("★ 池子被排除空时有兜底（不至于永远不换）",
+      "if (!pool.length) pool = wpActive.slice();" in html)
 print()
 if FAILED:
     print(f"❌ {len(FAILED)} 条未通过: {FAILED}")

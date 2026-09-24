@@ -166,7 +166,15 @@ async def main():
                 if "{" in pth or pth.endswith("/"):
                     continue
                 if var == "PAPI":
-                    r = await c.get(pref + pth)
+                    # ★ 按**端点真实的方法**发请求。
+                    #   原来一律用 GET，而新加的 upload/delete 是 POST
+                    #   ⇒ 405/404 被误判成"端点不通"（前端其实是对的）。
+                    #   判据：**只要不是 404 就说明路由存在**（405 = 存在但方法不对）。
+                    if pth.endswith("/upload") or pth.endswith("/delete") \
+                            or "reset" in pth:
+                        r = await c.post(pref + pth, json={})
+                    else:
+                        r = await c.get(pref + pth)
                     check(f"PAPI {pth} 真的能通", r.status_code != 404, f"{r.status_code}")
                 else:
                     check(f"API {pth} 是框架声明的路由",

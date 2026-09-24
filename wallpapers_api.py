@@ -62,3 +62,62 @@ def resolve(name: str) -> Optional[pathlib.Path]:
 
 def mime_for(name: str) -> str:
     return IMAGE_MIME.get(pathlib.Path(name).suffix.lower(), "application/octet-stream")
+
+
+# ══════════════════════════════════════════════════════════════
+# 用户上传（面板里的「+」方框）
+# ══════════════════════════════════════════════════════════════
+USER_PREFIX = "u_"                     # 用户上传的图统一前缀，便于区分/清理
+MAX_UPLOAD_BYTES = 12 * 1024 * 1024    # 单张上限 12MB（再大就不是壁纸了）
+
+def safe_name(original: str, data: bytes) -> Optional[str]:
+    """给上传的图生成一个**安全的文件名**。
+
+    ★ 不直接用客户端给的名字 —— 那是路径穿越的经典入口（`../../x.png`）。
+      这里：只取扩展名、白名单校验，主体用时间戳+随机串。
+    """
+    import time, secrets
+    ext = pathlib.Path(original or "").suffix.lower()
+    if ext == ".jpeg":
+        ext = ".jpg"
+    if ext not in EXTS:
+        ext = ".png"                   # 没给扩展名就按 png 存（下面还会按 magic 校验）
+    if len(data) > MAX_UPLOAD_BYTES:
+        return None
+    # 简单的 magic 校验：确认它真的是一张图，而不是改了名的其它文件
+    head = data[:16]
+    ok = (
+        head.startswith(b"\xff\xd8\xff")                       # jpeg
+        or head.startswith(b"\x89PNG\r\n\x1a\n")             # png
+        or (head[:4] == b"RIFF" and head[8:12] == b"WEBP")    # webp
+        or head[:6] in (b"GIF87a", b"GIF89a")                 # gif（浏览器能显示）
+    )
+    if not ok:
+        return None
+    return f"{USER_PREFIX}{int(time.time())}_{secrets.token_hex(3)}{ext}"
+
+def save_upload(original: str, data: bytes) -> Optional[str]:
+    """把上传内容写进壁纸目录，返回文件名（失败返回 None）。"""
+    name = safe_name(original, data)
+    if not name:
+        return None
+    d = wallpaper_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    try:
+        (d / name).write_bytes(data)
+    except Exception:  # noqa: BLE001
+        return None
+    return name
+
+def remove(name: str) -> bool:
+    """删除一张**用户上传**的图（内置图不允许删）。"""
+    if not name.startswith(USER_PREFIX):
+        return False               # ★ 内置壁纸不让删，避免用户误删后无法恢复
+    p = resolve(name)
+    if p is None:
+        return False
+    try:
+        p.unlink()
+        return True
+    except Exception:  # noqa: BLE001
+        return False

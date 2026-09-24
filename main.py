@@ -169,6 +169,59 @@ class AcceleratorPlugin(BasePlugin):
         }
 
     # ══════════════════════════════════════════════════════════
+    # ══════════════════════════════════════════════════════════
+    # KPI 统计的持久化
+    # ══════════════════════════════════════════════════════════
+    def _stats_file(self):
+        """统计文件位置（插件数据目录，框架约定）。"""
+        try:
+            d = self.ctx.get_plugin_data_dir()          # 框架提供的插件数据目录
+            d.mkdir(parents=True, exist_ok=True)
+            return d / "kpi_stats.json"
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _load_stats(self) -> None:
+        """热重载后把累计统计读回来（用户要求：点保存/热重载不该清零）。"""
+        try:
+            p = self._stats_file()
+            if p is None or not p.is_file():
+                return
+            import json
+            saved = json.loads(p.read_text(encoding="utf-8"))
+            if not isinstance(saved, dict):
+                return
+            for k, v in saved.items():
+                if k in self._stats:
+                    # ★ 只接受同类型，避免污染（比如把 dict 塞进数字里）
+                    cur = self._stats[k]
+                    if cur is None or isinstance(v, (int, float)):
+                        self._stats[k] = v
+            logger.info("[accel] 已恢复累计统计：%s", {
+                k: self._stats.get(k) for k in ("turns", "early_sent", "streamed_calls")
+            })
+        except Exception:  # noqa: BLE001
+            logger.exception("[accel] 恢复统计失败（忽略，按 0 起步）")
+
+    def _save_stats(self) -> None:
+        """把统计落盘（节流：最多每 5 秒一次，避免每轮都写盘）。"""
+        import time
+        now = time.monotonic()
+        if now - getattr(self, "_stats_saved_at", 0.0) < 5.0:
+            return
+        self._stats_saved_at = now
+        try:
+            p = self._stats_file()
+            if p is None:
+                return
+            import json
+            # 只存数字与 None（first_seg_s 可能是 None）
+            data = {k: v for k, v in self._stats.items()
+                    if isinstance(v, (int, float)) or v is None}
+            p.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        except Exception:  # noqa: BLE001
+            pass          # 存不下不影响功能
+
     async def initialize(self) -> None:
         logger.info(
             "[accel] initialize（观测=%s 强制流式=%s 抢先发送=%s 自动思考=%s）",
@@ -187,8 +240,16 @@ class AcceleratorPlugin(BasePlugin):
             self._install_parallel_tools()
         if self.takeover_memory_dump:
             self._install_memory_dump()
+        # ★ 把上次累计的统计读回来 —— 热重载（保存配置）不会清零
+        self._load_stats()
 
     async def terminate(self) -> None:
+        # ★ 卸载前把统计落盘（热重载会走这里，下次 initialize 再读回来）
+        try:
+            self._stats_saved_at = 0.0      # 绕过节流，保证这次一定写
+            self._save_stats()
+        except Exception:  # noqa: BLE001
+            pass
         self.patches.uninstall_all()
         self._proxy_cache.clear()
         logger.info("[accel] terminate，所有接管点已还原")
@@ -217,6 +278,7 @@ class AcceleratorPlugin(BasePlugin):
             return
         try:
             self._stats["turns"] += 1
+            self._save_stats()          # ★ 节流落盘（≤5s 一次），热重载不清零
             sid = getattr(event, "sid", "?")
             # 把"本轮有没有用工具"记为"上一轮"，供下一轮判定使用
             self.thinking.commit_turn(sid)
@@ -1192,6 +1254,43 @@ class AcceleratorPlugin(BasePlugin):
             media_type=wp.mime_for(name),
             headers={"Cache-Control": "public, max-age=86400"},
         )
+
+    # ── 用户上传壁纸（面板里的「+」方框）──
+    @register.api(method="POST", path="/wallpapers/upload", auth=True)
+    async def api_wallpaper_upload(self, payload: dict | None = None):
+        """接收 base64 图片并写入壁纸目录。
+
+        payload: {"name": "原始文件名（仅用于取扩展名）", "data": "data:image/...;base64,xxx"}
+        返回:    {"ok": true, "name": "u_xxx.webp"} / {"ok": false, "error": "..."}
+        """
+        import base64
+        from . import wallpapers_api as wp
+
+        p = payload or {}
+        raw = p.get("data") or ""
+        if not isinstance(raw, str) or len(raw) < 32:
+            return {"ok": False, "error": "没有收到图片数据"}
+        # dataURL → bytes
+        try:
+            b64 = raw.split(",", 1)[1] if raw.startswith("data:") else raw
+            data = base64.b64decode(b64, validate=False)
+        except Exception:  # noqa: BLE001
+            return {"ok": False, "error": "图片数据无法解析"}
+        name = wp.save_upload(str(p.get("name") or ""), data)
+        if not name:
+            return {"ok": False,
+                    "error": f"不是可识别的图片，或超过 {wp.MAX_UPLOAD_BYTES // 1024 // 1024}MB"}
+        logger.info("[accel] 已保存用户上传的壁纸：%s（%d KB）", name, len(data) // 1024)
+        return {"ok": True, "name": name, "files": wp.discover()}
+
+    @register.api(method="POST", path="/wallpapers/delete", auth=True)
+    async def api_wallpaper_delete(self, payload: dict | None = None):
+        """删除一张**用户上传**的壁纸（内置图不允许删）。"""
+        from . import wallpapers_api as wp
+        name = str((payload or {}).get("name") or "")
+        if not wp.remove(name):
+            return {"ok": False, "error": "只能删除自己上传的背景"}
+        return {"ok": True, "files": wp.discover()}
 
     @register.api(method="POST", path="/breaker/reset", auth=True)
     async def api_breaker_reset(self, payload: dict | None = None):
