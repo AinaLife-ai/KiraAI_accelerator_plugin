@@ -51,7 +51,12 @@ check("④ 有工具标签转义的诊断日志",
 check("④ 本插件确实从不 escape（只 unescape）",
       "escape" not in PY_ALL.get("early_sent.py", "").replace("unescape", "")
       and "unescape" in PY_ALL.get("early_sent.py", ""))
-check("⑤ 版本号已前进", json.loads((ROOT/"manifest.json").read_text(encoding='utf-8'))["version"].endswith(".2"))
+# ★ 判据要**通用**：不该把版本号写死（每升一次就要改判据 = 判据在追着代码跑）。
+#   这里只断言"比基线 1.0.1 新"，版本继续往前也不会误报。
+_v = json.loads((ROOT / "manifest.json").read_text(encoding="utf-8"))["version"]
+def _vt(s):
+    return tuple(int(x) for x in s.split("."))
+check("⑤ 版本号已前进（> 1.0.1）", _vt(_v) > _vt("1.0.1"), _v)
 
 print()
 print(("🎉 全部通过（%d 项）" % len(OK)) if not BAD else ("❌ %d 项未通过: %s" % (len(BAD), BAD[:5])))
