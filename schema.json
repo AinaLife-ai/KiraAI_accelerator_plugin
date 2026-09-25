@@ -472,13 +472,14 @@
           "blinds",
           "shutter",
           "zoom",
-          "ink"
+          "ink",
+          "burn"
         ],
-        "hint": "random = a different reveal every time (default): fade, iris, wipe, blinds, shutter, zoom or ink. fade is the softest (a plain cross-fade). Or pin one of them.",
+        "hint": "random = a different reveal every time (default): fade, iris, wipe, blinds, shutter, zoom, ink or burn. fade is the softest. burn = the previous image chars away from a random point, with an irregular spreading edge (no flames, no scorch).",
         "locales": {
           "zh": {
             "name": "切换特效",
-            "hint": "random=每次随机换一种（默认）：淡入淡出／虹膜／斜擦／百叶／中开／推镜／墨渗。其中「淡入淡出」最柔和，最不容易出现突兀的切换。也可以固定一种。"
+            "hint": "random=每次随机换一种（默认）：淡入淡出／虹膜／斜擦／百叶／中开／推镜／墨渗／燃纸。其中「淡入淡出」最柔和；「燃纸」是从随机一点起、边界不规则地烧穿，露出后图（无明火、无焦边）。也可以固定一种。"
           }
         }
       },

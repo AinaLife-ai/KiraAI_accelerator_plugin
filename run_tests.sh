@@ -62,6 +62,7 @@ run "★前端审计（层级/开屏/墨渗）" tests/test_frontend_audit.py
 run "★计数保留期（30天/永久）" tests/test_stats_retention.py
 run "★计数清理安全性（不误伤）" tests/test_stats_safety.py
 run "★v1.0.2 新功能（多选/扫光/外链）" tests/test_v102_features.py
+run "★壁纸切换特效（防硬切/燃纸）" tests/test_wallpaper_fx.py
 run "★日志行为（不误导/不误报）" tests/test_log_behaviour.py
 run "★媒体描述不计入评分"     tests/test_thinking_media.py
 run "★台账生命周期（防误告警）" tests/test_ledger_lifecycle.py

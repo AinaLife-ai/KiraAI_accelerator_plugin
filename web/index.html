@@ -1016,11 +1016,17 @@ body.hud-returning .status{top:var(--zen-status-top,78px)}
   .wordmark.neon-scan::after{animation:neonScan 4.8s linear infinite!important}
   .wordmark.neon-bead>span::after{animation:beadRun 3.6s linear infinite!important}
   .wordmark.neon-prism{animation:neonPrism 16s linear infinite!important}
-  .wp-layer{transition:none!important;transform:none!important}
+  /* ★★★ 壁纸切换特效**必须保留**（用户明确要求"淡入淡出一定要搞好"）。
+     原来这里把 transform / transition 全部 !important 抹掉 ⇒ 缩放/擦除/虹膜
+     全废，只剩瞬切 ⇒ 用户看到的就是"下一张连淡入淡出都没有，直接出现"。
+     正确的取舍：**保留缓慢柔和的交叉过渡**（缩放、擦除、对淡都属低频平移，
+     不是闪频刺激），只压掉会造成不适的部分：
+       · 圆环冲击（wp-rim）—— 高亮闪一下，去掉
+       · 条带（blinds/shutter）—— 高频闪烁感，交给 JS 换成 fade
+     所以这里**不再写 transform:none**，也不再写 transition:none。 */
   .wallpaper{animation:none!important}
   .wordmark>span{opacity:1!important;transform:none!important}
   .card{opacity:1!important;transform:none!important}
-  .wp-img,.s-strip{transition:none!important;transform:none!important}
   .wp-rim{display:none!important}
   /* 减少动效：**只关动画**，开屏本身仍按"默认可见"的规则走，
      由内联脚本的收尾定时器把它收掉（保持与默认设计一致，不引入第二个隐藏来源）。 */
@@ -1661,6 +1667,7 @@ const FX_LABEL = {
   random: "随机（每次不同）", fade: "淡入淡出（最柔和）",
   iris: "虹膜（圆形张开）", wipe: "斜擦（发光前沿横扫）",
   blinds: "百叶（横向条带）", shutter: "中开（竖向板从中缝开）",
+  burn: "燃纸（不规则烧穿露出后图）",
   zoom: "推镜（镜头推进）", ink: "墨渗（不规则渗开）",
 };
 
@@ -2287,7 +2294,19 @@ const MOTTOES = [
   "The fastest reply is the one already on its way.",
 ];
 
-const WP_EFFECTS = ["fade","iris","wipe","blinds","shutter","zoom","ink"];
+/* ★ 设备是否要求"减少动效"。Android 省电模式/开发者选项会置真。
+   用途：只在**真正会引起不适**的地方降级（高频条带闪烁），
+   而不是把所有过渡关掉 —— 全关掉就是硬切（用户报过的现象）。 */
+window.__accelReduced = window.matchMedia
+  ? window.matchMedia("(prefers-reduced-motion: reduce)").matches : false;
+if (window.matchMedia){
+  try {
+    window.matchMedia("(prefers-reduced-motion: reduce)")
+      .addEventListener("change", e => { window.__accelReduced = e.matches; });
+  } catch (e) { /* 老 WebView 无 addEventListener，忽略 */ }
+}
+
+const WP_EFFECTS = ["fade","iris","wipe","blinds","shutter","zoom","ink","burn"];
 const WM_FX     = ["assemble","glitch","neon","sweep","wave","shatter"];
 const MOTTO_FX  = ["rise","type","blur","track"];
 
@@ -2449,6 +2468,110 @@ function fxIris(to, from, rim){
      ⇒ 观感就是"闪一下/硬切"（条带最明显：它要 WP_DUR*1.27 才铺满）。 */
   wpLastDur = WP_DUR * 1.02;
   eatAway(from, wpLastDur);                 // 旧图被吃掉
+}
+
+/* ── 燃纸：前图像被点燃的纸那样**不规则地烧穿**，露出后图 ──
+
+   用户要的语义："前图像被点燃的纸钱那样，随机退化露出后图"；
+   并明确两点：**不要真的火**、**不要焦边** —— 要的是**燃烧的动感**本身。
+   所以这里**不加任何边缘层**，动感完全由"烧"的节奏与顺序表达：
+     · 从随机一点起，边界**不规则**（距离 + 噪声，不是整齐的圆）
+     · 有**迸发感**：偶尔连着烧穿一小片、再慢下来 —— 纸张引燃就是这个节奏，
+       匀速推进反而像"擦除"，不像"烧"
+     · 被烧的那一版会**先泛起暖色再变亮**（受热感），随后才被吃掉
+       —— 这是"烧"的关键观感，而且**不产生任何焦黑边缘**
+   实现用网格 + 分帧批处理（每帧最多 24 块），开销与帧数成正比而不是块数。 */
+function fxBurn(to, from, rim){
+  const dur = WP_DUR * 1.15;                  // 比普通过渡略长，看得清蔓延
+  const W = Math.max(window.innerWidth, 320);
+  const H = Math.max(window.innerHeight, 320);
+  const cell = Math.max(26, Math.min(64, Math.round(Math.min(W, H) * 0.055)));
+  const cols = Math.max(3, Math.ceil(W / cell));
+  const rows = Math.max(3, Math.ceil(H / cell));
+  const n = cols * rows;
+
+  /* 起点随机（留边距），且蔓延方向随机偏一下 ⇒ 每次都不同 */
+  const ox = (0.12 + Math.random() * 0.76) * cols;
+  const oy = (0.12 + Math.random() * 0.76) * rows;
+  const biasX = (Math.random() - 0.5) * 0.55;
+  const biasY = (Math.random() - 0.5) * 0.55;
+
+  /* 每块一个"点燃时刻"：距离归一化 + 噪声 ⇒ 边界锯齿化；
+     再叠一层**分组迸发**（见下）做出"呼"地一下的节奏。 */
+  const delays = new Float32Array(n);
+  let maxT = 0;
+  for (let r = 0; r < rows; r++){
+    for (let c = 0; c < cols; c++){
+      const dx = (c + 0.5 - ox) * (1 + biasX);
+      const dy = (r + 0.5 - oy) * (1 + biasY);
+      let tt = Math.sqrt(dx * dx + dy * dy) + Math.random() * 0.42;
+      /* ★ 迸发：把时刻按 0.75 的幂拉伸 ⇒ 近处几块挤在一起（一下子烧开），
+         远处逐渐拉开（慢下来）。这是"燃烧"而非"匀速擦除"的关键。 */
+      tt = Math.pow(tt / 1.6, 0.75) * 1.6;
+      delays[r * cols + c] = tt;
+      if (tt > maxT) maxT = tt;
+    }
+  }
+
+  to.style.opacity = "1";                     // 后图**一直在下面**，由前图烧穿露出
+  anim(to, [{transform:"scale(1.045)"},{transform:"scale(1)"}],
+       {duration: dur, easing:"cubic-bezier(.33,0,.55,1)"});
+
+  /* ★ 受热感：被烧的那一版**先泛暖再变亮**（不是变黑！）
+     这一步替代了原来的焦黑层 —— 没有任何边缘，但一眼看得出"在烧"。 */
+  anim(from, [
+    {filter:"sepia(0) saturate(1) brightness(1)"},
+    {filter:"sepia(.30) saturate(1.5) brightness(1.10)", offset:.22},
+    {filter:"sepia(.52) saturate(1.85) brightness(1.22)", offset:.58},
+    {filter:"sepia(.62) saturate(2.0) brightness(1.34)", offset:.85},
+    {filter:"sepia(.5) saturate(1.6) brightness(1.15)", offset:1},
+  ], {duration: dur * 0.86, easing:"cubic-bezier(.4,0,.6,1)"});
+
+  /* 逐块挖空（不做任何焦边层） */
+  const rectFor = (c, r) => {
+    const x0 = (c * 100 / cols), y0 = (r * 100 / rows);
+    const w = 100 / cols, h = 100 / rows;
+    return `inset(${y0.toFixed(2)}% ${(100 - x0 - w).toFixed(2)}% `
+         + `${(100 - y0 - h).toFixed(2)}% ${x0.toFixed(2)}%)`;
+  };
+  const rects = [];
+  for (let i = 0; i < n; i++) rects.push(rectFor(i % cols, Math.floor(i / cols)));
+  from.style.clipPath = "inset(0% 0% 0% 0%)";
+
+  const spread = dur * 0.60;
+  const perBlock = spread / Math.max(maxT, 1e-6);
+  const order = Array.from({length: n}, (_, i) => i)
+    .sort((a, b) => delays[a] - delays[b]);
+  const fireAt = order.map(i => delays[i] * perBlock);
+
+  let cursor = 0, t0 = null, rafId = 0, stopped = false;
+  const step = (now) => {
+    if (stopped) return;
+    if (t0 === null) t0 = now;
+    const el = now - t0;
+    /* 每帧最多 24 块 —— 防止一次重排太多导致掉帧 */
+    let done = 0;
+    while (cursor < n && fireAt[cursor] <= el && done < 24){
+      from.style.clipPath = rects[order[cursor++]];
+      done++;
+    }
+    if (cursor < n){ rafId = requestAnimationFrame(step); }
+  };
+  rafId = requestAnimationFrame(step);
+
+  /* 收尾：烧完后前图退尽（此时基本已被吃掉），避免残影 */
+  const endT = setTimeout(() => {
+    anim(from, [{opacity:1},{opacity:0}], {duration: dur * 0.28, easing:"linear"});
+  }, dur * 0.62);
+
+  wpLastDur = dur;
+
+  return () => {
+    stopped = true;
+    try { cancelAnimationFrame(rafId); } catch (e) { /* 老 WebView */ }
+    clearTimeout(endT);
+    try { from.style.clipPath = ""; } catch (e) { /* 无所谓 */ }
+  };
 }
 
 /* ── 斜擦：一道发光前沿横扫 ── */
@@ -2660,6 +2783,14 @@ async function _wpTransition(url){
   if (!wpEffect || wpEffect === "random"){
     if (fx === _wpLastFx) fx = rand(WP_EFFECTS);
   }
+  /* ★★ 减少动效时**只避开高频闪烁类**（条带 blinds/shutter = 多条同时闪，
+     最接近"闪光刺激"），换成柔和的交叉过渡；其余照常。
+     注意：**不是"全部关掉"** —— 用户明确要淡入淡出，全关掉就等于硬切，
+     那正是之前报的"下一张图直接出现"。 */
+  if (window.__accelReduced && (fx === "blinds" || fx === "shutter")){
+    fx = (fx === "blinds") ? "fade" : "iris";
+  }
+  /* ★ 燃纸：条带/擦除类在"燃纸"语境下也换成 burn（下面是新增特效） */
   _wpLastFx = fx;
 
   wpCleanup = null;
@@ -2669,6 +2800,7 @@ async function _wpTransition(url){
   else if (fx === "blinds")  wpCleanup = fxStrips(to, from, rim, false, false);
   else if (fx === "shutter") wpCleanup = fxStrips(to, from, rim, true, true);
   else if (fx === "zoom")    fxZoom(to, from);
+  else if (fx === "burn")    wpCleanup = fxBurn(to, from, rim);
   else                       wpCleanup = fxInk(to, from, rim);
 
   wpStage(id).classList.add("on");
@@ -2957,7 +3089,7 @@ function _playSplash(){
     spWp.style.backgroundImage = 'url("' + wpUrl(pick) + '")';
     spWp.style.backgroundSize = "cover";
     spWp.style.backgroundPosition = "center";
-    const fxs = ["iris","wipe","zoom","ink","blinds"];
+    const fxs = ["iris","wipe","zoom","ink","blinds","burn"];
     const f = rand(fxs);
     if (f === "iris" || f === "ink"){
       const cx = 26 + Math.random()*48, cy = 24 + Math.random()*52;
