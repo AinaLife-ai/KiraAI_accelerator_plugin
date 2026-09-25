@@ -1026,6 +1026,18 @@ body.hud-returning .status{top:var(--zen-status-top,78px)}
      现在：只关「入场那一下」（rise），**字内扫光保留**。 */
   .wordmark>span{animation:none!important;opacity:1!important;transform:none!important}
   /* 把扫光放回来（比上面的基础规则更具体，故能覆盖） */
+  /* ★★ 这里**必须覆盖全部 9 个模式**。
+     原来只有 5 个（flow/aurora/scan/bead/prism）在抢救名单里，
+     而 neon-orbit（撕裂）、neon-drop（字内竖扫）、neon-breathe、neon-ring
+     **全被上面的 `.wordmark>span{animation:none!important}` 干掉**
+     ⇒ 用户报"新加的脉冲标题特效和 boost 扫光特效都没看到"，
+       以及"有些模式完全没特效" —— 根因就是这个漏网。
+     规则：**用户明确要求的特效，在 reduced-motion 下只放慢、绝不关闭**。 */
+  .wordmark.neon-breathe{animation:neonBreath 5.4s ease-in-out infinite!important}
+  .wordmark.neon-ring>span{animation:neonRing 7.2s linear infinite!important}
+  .wordmark.neon-orbit.neon-glitch>span{animation:neonGlitch 4.2s steps(1,end) infinite!important}
+  .wordmark.neon-drop.neon-drop-run .o,
+  .wordmark.neon-drop.neon-drop-run .e{animation:neonDrop 3.4s cubic-bezier(.4,0,.6,1) infinite!important}
   .wordmark.neon-flow .o,
   .wordmark.neon-flow .e{animation:neonFlow 5s linear infinite!important}
   .wordmark.neon-aurora .o,
@@ -2310,6 +2322,15 @@ const MOTTOES = [
   "Presence is built one sentence at a time.",
   "Say it as you think it.",
   "The fastest reply is the one already on its way.",
+  /* ★ 新增 7 条（用户要求总数到 19）—— 仍贴合本插件主题：
+     流式 / 抢先发送 / 按需思考 / 在场感 / 延迟的代价。 */
+  "A pause you choose is not the same as a wait imposed on you.",
+  "Ship the sentence before you finish the paragraph.",
+  "Thinking in silence beats speaking in delay.",
+  "The gap between idea and answer is where attention dies.",
+  "Momentum survives on small, early confirmations.",
+  "Answer at the speed of thought, not the speed of completion.",
+  "Silence has its place. Between messages is not one.",
 ];
 
 /* ★ 设备是否要求"减少动效"。Android 省电模式/开发者选项会置真。
