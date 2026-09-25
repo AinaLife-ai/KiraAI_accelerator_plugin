@@ -82,6 +82,27 @@ check("② 撕裂不旋转（用户否掉旋转）",
 check("② 撕裂是短促脉冲（静默占多数，不是一直抖）",
       re.search(r"0%,86%,100%\{transform:translate\(0,0\)", HTML) is not None)
 
+
+print()
+print("═══ ★★★ 标题：reduced-motion 下必须**全部** 9 个模式都被抢救 ═══")
+# 这是本次的真 bug：抢救名单只有 5 个，另 4 个（orbit/drop/breathe/ring）
+# 被 `.wordmark>span{animation:none!important}` 干掉 ⇒ 用户"完全没看到"。
+# 判据写成**通用**的：从 NEON_MODES 推出应有清单，逐个核对，不写死名字。
+_nc = re.sub(r"/\*[\s\S]*?\*/", "", HTML)
+_allb = "".join(m.group(1) for m in
+               re.finditer(r"@media \(prefers-reduced-motion:reduce\)\{((?:[^{}]|\{[^{}]*\})*)\}", _nc))
+_modes = [x.strip().strip('"') for x in
+          re.search(r"const NEON_MODES\s*=\s*\[([^\]]*)\]", HTML).group(1).split(",")]
+_missing = [m for m in _modes if m not in _allb]
+check("★★★ 减少动效下**每个**霓虹模式都被保留（只放慢、不关闭）",
+      not _missing, f"缺失={_missing}" if _missing else f"{len(_modes)}/{len(_modes)} 全在")
+
+print()
+print("═══ 英文箴言总数 ═══")
+_mo = re.search(r"const MOTTOES = \[([\s\S]*?)\];", HTML)
+_items = re.findall(r'"([^"]+)"', _mo.group(1)) if _mo else []
+check("★ 英文箴言 19 条", len(_items) == 19, f"{len(_items)} 条")
+
 check("⑤ 版本号已前进（> 1.0.1）", _vt(_v) > _vt("1.0.1"), _v)
 
 print()
