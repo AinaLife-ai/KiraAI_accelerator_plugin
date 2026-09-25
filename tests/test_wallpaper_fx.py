@@ -77,11 +77,17 @@ print("═══ 燃纸 burn ═══")
 _b = JS[JS.find("function fxBurn"):JS.find("/* ── 斜擦")]
 check("★ 已注册在 WP_EFFECTS", '"burn"' in JS)
 check("★ 无焦边层（用户明确不要）", "scorch" not in _b)
+check("★ 两层可见性都显式写动画（否则烧在透明层上=硬切）",
+      "anim(from, [{opacity:1},{opacity:1}]" in _b)
 check("★ 无明火（用户明确不要）", not re.search(r"\bfire\b|flame", _b, re.I))
 check("★ 有燃烧动感：受热暖调", "sepia(" in _b)
 check("★ 有燃烧动感：迸发节奏（幂拉伸，非匀速）", "Math.pow(" in _b)
-check("★ 边缘不规则（随机噪声）", re.search(r"Math\.random\(\) \* 0\.4", _b) is not None)
-check("★ 起点随机", re.search(r"0\.12 \+ Math\.random\(\) \* 0\.76", _b) is not None)
+check("★ 边缘不规则（随机噪声）", re.search(r"Math\.random\(\) \* 0\.5", _b) is not None)
+# ★ 用户要求改成"多个地方随机点燃" ⇒ 起点不再是单个
+check("★ 多处随机点燃（3~6 个火源）",
+      re.search(r"3 \+ Math\.floor\(Math\.random\(\) \* 4\)", _b) is not None)
+check("★ 每处速率不同（非同心圆）", "rate:" in _b and "0.62 + Math.random()" in _b)
+check("★ 火线相遇取最早（自然形成延迟脊）", "if (t < best) best = t;" in _b)
 check("★ 分帧批处理（不每块一个定时器）", "requestAnimationFrame" in _b and "done < 24" in _b)
 check("★ 可取消（收尾清理）", "cancelAnimationFrame" in _b)
 

@@ -28,20 +28,36 @@ check("② neon-drop 关键帧存在（由上往下）", "@keyframes neonDrop" i
 check("② drop 每轮重掷随机量", "startDropCycle" in HTML and "--drop-x" in HTML and "--drop-dur" in HTML)
 check("② drop 靠 .neon-drop-run 触发（否则只跑一次）", "neon-drop-run" in HTML)
 check("② drop 有描边 ⇒ 字不会被遮住", re.search(r"neon-drop[^{]*\{[^}]*text-stroke", HTML) is not None)
-check("② orbit 真正启用（orbitSpin 被引用）",
-      re.search(r"neon-orbit[^{]*\{[^}]*animation:\s*orbitSpin", HTML) is not None)
+# ★ 用户明确否掉"绕中心旋转"（"太难看了"）⇒ 换成赛博朋克式**撕裂脉冲**。
+#   判据随之改：**不得再有旋转**，且确有 glitch。
+#   （剥注释后再判 —— 注释里提到 orbitSpin 会假红）
+_nc_v = re.sub(r"/\*[\s\S]*?\*/", "", HTML)
+check("② orbit 不再绕中心旋转（用户否掉了）", "orbitSpin" not in _nc_v)
+check("② orbit 换成撕裂脉冲（glitch）",
+      "@keyframes neonGlitch" in HTML and "neon-glitch" in HTML)
 check("② ring 真正启用（neonRing 被引用）",
       re.search(r"neon-ring[^{]*\{[^}]*animation:\s*neonRing", HTML) is not None)
 check("② NEON_MODES 含 neon-drop", "neon-drop" in re.search(r"const NEON_MODES\s*=\s*\[([^\]]*)\]", HTML).group(1))
 
 # 3) 外链按钮
-check("③ 有外链按钮且在标题栏", 'id="open-panel"' in HTML)
+# ★ 用户要求：位置改到**小字下方居中**、尺寸缩小、随欣赏模式隐藏；
+#   并且曾经误出现**两个**按钮（open-front + open-panel 重复）。
+check("③ 只有一个外链按钮（曾误出现两个）",
+      HTML.count('id="btn-open-front"') == 1 and "icon-btn" not in HTML)
+check("③ 按钮在小字下方居中（.front-row）",
+      'class="front-row"' in HTML and ".front-row{display:flex;justify-content:center" in HTML)
+check("③ 随欣赏模式一起隐藏",
+      re.search(r"body\.zen \.shell > \.front-row", HTML) is not None)
+check("③ 尺寸已缩小（24px）", "width:24px;height:24px" in HTML)
 check("③ 用 i-external 图标且图标已定义", 'href="#i-external"' in HTML and 'id="i-external"' in HTML)
 check("③ 新标签页打开（window.open + noopener）",
       "window.open(" in HTML and "noopener" in HTML)
 check("③ 走 /plugin-page/ 路径", "/plugin-page/" in HTML)
-check("③ 有持续特效（常驻动画）", re.search(r"\.icon-btn[^{]*\{[^}]*animation:", HTML) is not None)
-check("③ 有 title 无障碍提示", 'open-panel' in HTML and 'title=' in HTML[HTML.find("open-panel"):HTML.find("open-panel")+400])
+# ★ 去掉外圈（那正是"看起来像两个按钮"的原因），持续动效改做在**图标自身**
+check("③ 持续特效做在图标自身（无外圈）",
+      "@keyframes ofGlow" in HTML and "ofBreath" not in HTML
+      and "inset:-2px;border-radius:11px" not in HTML)
+check("③ 有 title 无障碍提示", "在新标签页打开前端" in HTML)
 
 # 4/5) 工具轮 / 复读
 check("④ 工具轮已发内容会被标记（避免重复发送/复读）",
@@ -56,6 +72,16 @@ check("④ 本插件确实从不 escape（只 unescape）",
 _v = json.loads((ROOT / "manifest.json").read_text(encoding="utf-8"))["version"]
 def _vt(s):
     return tuple(int(x) for x in s.split("."))
+
+# ★ 用户反馈"boost 字内扫描好像还没看到" ⇒ 原来是一次性动画（跑完就静默），
+#   已改成 infinite + 定期换参数 ⇒ 只要轮到该模式就一直在扫。
+check("② 字内扫描持续（infinite，不是跑一次就停）",
+      re.search(r"neon-drop-run[^{]*\{[^}]*animation:neonDrop[^;]*infinite", HTML) is not None)
+check("② 撕裂不旋转（用户否掉旋转）",
+      "orbitSpin" not in re.sub(r"/\*[\s\S]*?\*/", "", HTML))
+check("② 撕裂是短促脉冲（静默占多数，不是一直抖）",
+      re.search(r"0%,86%,100%\{transform:translate\(0,0\)", HTML) is not None)
+
 check("⑤ 版本号已前进（> 1.0.1）", _vt(_v) > _vt("1.0.1"), _v)
 
 print()
