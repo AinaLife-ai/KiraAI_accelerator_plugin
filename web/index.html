@@ -251,6 +251,7 @@ body.zen .hud{opacity:1;pointer-events:auto}
    观感上"面板缓缓退开"而不是"啪一下没了"。 */
 body.zen .shell > section,
 body.zen .shell > .tagline,
+body.zen .shell > .front-row,
 body.zen .dock,
 body.zen .shell > header > .brand > div,
 body.zen .shell > header > .brand > .mark{
@@ -364,7 +365,7 @@ h1{margin:0;font-size:15px;letter-spacing:.3px;font-weight:600}
 .wordmark.neon-bead{filter:drop-shadow(0 0 9px var(--nc))}
 
 /* 弹珠绕字一圈：一个小发光点沿文字外框环行 */
-@keyframes orbitSpin{from{transform:rotate(0)}to{transform:rotate(360deg)}}
+to{transform:rotate(360deg)}}
 /* aurora：渐变在文字里缓慢流动（极光感） */
 @keyframes neonAurora{
   0%{background-position:0% 50%}
@@ -435,7 +436,31 @@ h1{margin:0;font-size:15px;letter-spacing:.3px;font-weight:600}
    ring 改为**字内**的环流：光带在文字内部自左向右绕行一圈。 */
 
 
+/* ★★★ neon-orbit：原来是 `rotate(0→360deg)` —— **整个单词绕中心转**，
+   用户明确说"太难看了，不要这种"。改成**赛博朋克式的数字撕裂/脉冲故障**
+   （经典的 glitch：整体保持可读，靠**周期性错位切片 + 色散残影**制造"信号撕裂"）。
+   关键取舍：
+     · **不旋转**（那会毁掉可读性，也正是被否掉的观感）
+     · **不是一直抖**（持续抖动=廉价）；而是**静默—撕裂—复位**的脉冲节奏，
+       每轮位置随机 ⇒ 像信号不稳，而不是像元素在跳。
+     · 撕裂只在**短促的一瞬**（占周期约 12%），其余时间干净可读。 */
 .wordmark.neon-orbit{filter:drop-shadow(0 0 8px var(--nc))}
+.wordmark.neon-orbit > span{
+  background-image:linear-gradient(180deg,var(--nc),var(--viol),var(--nc));
+  -webkit-background-clip:text;background-clip:text;color:transparent;
+  text-shadow:none;
+}
+.wordmark.neon-orbit.neon-glitch > span{
+  animation:neonGlitch var(--gl-dur,2.6s) steps(1,end) var(--gl-delay,0s) infinite;
+}
+/* 撕裂：极短促的横向错位 + 轻微色散，随后立刻复位 */
+@keyframes neonGlitch{
+  0%,86%,100%{transform:translate(0,0);filter:none}
+  87%{transform:translate(-2px,0);filter:drop-shadow(2px 0 0 rgba(255,0,110,.85))}
+  89%{transform:translate(2.5px,0);filter:drop-shadow(-2px 0 0 rgba(0,225,255,.85))}
+  91%{transform:translate(-1.5px,-1px);filter:drop-shadow(1.5px 0 0 rgba(255,0,110,.7))}
+  93%{transform:translate(1px,1px);filter:none}
+}
 /* ★★★ 修复（实测：这一档原来只有**静态**阴影，完全没动 ——
    用户报「有几个模式像完全没特效」）。
    orbitSpin 关键帧早就定义了却从未被引用，现在真正用起来：
@@ -448,7 +473,6 @@ h1{margin:0;font-size:15px;letter-spacing:.3px;font-weight:600}
   -webkit-background-clip:text;background-clip:text;
   color:transparent;-webkit-text-stroke:1.1px var(--nc);
 }
-.wordmark.neon-orbit{animation:orbitSpin 7s linear infinite}
 
 /* ═══ ★★★ `neon-drop`：**由上往下的随机扫光**（用户点名给 boost 加） ═══
    与现有几档的区别：
@@ -482,11 +506,15 @@ h1{margin:0;font-size:15px;letter-spacing:.3px;font-weight:600}
   100%{background-position:var(--drop-x,50%) -60%}
 }
 /* 初始不跑（JS 每轮重掷参数后加 .neon-drop-run 才起跑）—— 这样每次
-   起跑用的都是**新的随机值**，而不是页面加载时定死的那一份。 */
+   起跑用的都是**新的随机值**，而不是页面加载时定死的那一份。
+   ★★ 改成 `infinite`：用户反馈"boost 字内部扫描好像还没看到"。
+   原因是它是**一次性**动画（`1 both`）—— 跑完就静默，而字内扫光又只在
+   9 档里占一档，撞见的窗口太窄。改成无限循环后，只要轮到这个模式就**一直在扫**，
+   配合每轮重掷的时长/位置 ⇒ 持续可见且不呆板。 */
 .wordmark.neon-drop.neon-drop-run .o,
 .wordmark.neon-drop.neon-drop-run .e{
   animation:neonDrop var(--drop-dur,2.4s) cubic-bezier(.4,0,.6,1)
-            var(--drop-delay,0s) 1 both;
+            var(--drop-delay,0s) infinite;
 }
 /* ★ 用户明确不要"往外扩的外圈"，所以这里**不再**画环绕文字的大圆环。
    改为**字内一颗弹珠流动**（见 .wordmark.neon-bead）—— 同样是"跑动"的感觉，
@@ -779,63 +807,52 @@ input[type=number]{font-variant-numeric:tabular-nums}
 input:focus,select:focus,textarea:focus{outline:none;border-color:var(--violet);box-shadow:0 0 0 3px rgba(139,124,255,.16)}
 textarea{min-height:64px;resize:vertical;font-family:ui-monospace,Menlo,monospace;font-size:11.5px}
 select{appearance:none;background-image:none;cursor:pointer}
-/* ═══ ★ 面板外链按钮：在新标签页打开独立前端 ═══ */
+/* ═══ ★ 面板外链按钮：放在小字下方居中，随欣赏模式一起隐藏 ═══ */
+.front-row{display:flex;justify-content:center;margin:3px 0 0}   /* 居中到小字下方 */
 .open-front{
   display:inline-flex;align-items:center;justify-content:center;
-  width:30px;height:30px;flex:none;margin-left:auto;margin-right:10px;
-  border-radius:9px;cursor:pointer;position:relative;
-  color:var(--dim2);background:rgba(255,255,255,.04);
+  width:24px;height:24px;flex:none;margin:0;padding:0;          /* ★ 缩小到 24（原 30） */
+  border-radius:8px;cursor:pointer;position:relative;
+  color:var(--dim);background:linear-gradient(96deg,rgba(255,92,168,.10),rgba(139,124,255,.10));
   border:1px solid var(--edge);
-  transition:color .22s, background .22s, transform .22s, border-color .22s;
+  transition:color .22s,background .22s,transform .22s,border-color .22s,box-shadow .22s;
 }
-.open-front .ico{font-size:15px;position:relative;z-index:1}
-/* 持续呼吸光晕（用户要的"持续特效"） */
-.open-front::after{
-  content:"";position:absolute;inset:-2px;border-radius:11px;pointer-events:none;
-  box-shadow:0 0 0 0 rgba(139,124,255,0);
-  animation:ofBreath 3.2s ease-in-out infinite;
-}
-@keyframes ofBreath{
-  0%,100%{box-shadow:0 0 0 0 rgba(139,124,255,0);   opacity:.55}
-  50%    {box-shadow:0 0 12px 2px rgba(139,124,255,.42); opacity:1}
-}
+.open-front .ico{width:13px;height:13px;font-size:13px;stroke-width:2;position:relative;z-index:1;
+  animation:ofGlow 3.4s ease-in-out infinite}     /* 持续动效做在**图标自身** */
 .open-front:hover{
   color:var(--ink);border-color:var(--violet);
   background:linear-gradient(96deg,rgba(255,92,168,.20),rgba(139,124,255,.20));
-  transform:translateY(-1.5px);
+  transform:translateY(-1px);
+  box-shadow:0 0 0 3px rgba(139,124,255,.14);
 }
-.open-front:active{transform:translateY(0) scale(.94)}
-/* 点击时的环形扩散反馈 */
-.open-front::before{
-  content:"";position:absolute;inset:0;border-radius:9px;pointer-events:none;
-  border:1px solid var(--violet);opacity:0;
+.open-front:active{transform:scale(.94)}
+.open-front.of-ping{animation:ofPing .5s ease-out}
+/* ★ 不要 `::after{inset:-2px;border:1px}` 那种外圈 —— 那会在按钮外再套一个方框，
+   看起来就像**两个按钮**（用户报"错误的出现了两个"正是它）。
+   持续动效改成图标自身的柔光呼吸，形状只有一个。 */
+@keyframes ofGlow{
+  0%,100%{filter:drop-shadow(0 0 2px rgba(139,124,255,.35));opacity:.74}
+  50%    {filter:drop-shadow(0 0 7px rgba(139,124,255,.85));opacity:1}
 }
-.open-front.of-ping::before{animation:ofPing .55s ease-out}
 @keyframes ofPing{
-  0%  {opacity:.9; transform:scale(1)}
-  100%{opacity:0;  transform:scale(1.9)}
+  0%  {transform:scale(1)}
+  40% {transform:scale(.88)}
+  100%{transform:scale(1)}
 }
 
-.icon-btn{position:relative;display:inline-flex;align-items:center;justify-content:center;
-  width:30px;height:30px;padding:0;border-radius:9px;cursor:pointer;flex:none;
-  color:var(--ink);background:linear-gradient(96deg,rgba(255,92,168,.12),rgba(139,124,255,.12));
-  border:1px solid var(--edge);transition:transform .22s,border-color .22s,box-shadow .22s;
-  animation:btnBreath 3.6s ease-in-out infinite}
-.icon-btn .ico{width:15px;height:15px;stroke-width:2}
-.icon-btn:hover{transform:translateY(-1px) scale(1.06);border-color:var(--violet);
-  box-shadow:0 0 0 3px rgba(139,124,255,.16),0 4px 14px rgba(139,124,255,.28)}
-.icon-btn:active{transform:scale(.94)}
+
+
+
 /* 常驻柔光呼吸 + 一圈缓慢扩散的光环（"持续特效"） */
-@keyframes btnBreath{0%,100%{box-shadow:0 0 0 0 rgba(139,124,255,0)}
+
   50%{box-shadow:0 0 12px 1px rgba(139,124,255,.30)}}
-@keyframes btnHalo{0%{opacity:.5;transform:scale(.86)}70%{opacity:0;transform:scale(1.5)}
+70%{opacity:0;transform:scale(1.5)}
   100%{opacity:0;transform:scale(1.5)}}
-.icon-btn::after{content:"";position:absolute;inset:-2px;border-radius:11px;pointer-events:none;
-  border:1px solid var(--violet);animation:btnHalo 3.6s ease-out infinite}
+
 @media (prefers-reduced-motion:reduce){
   /* ★ 用户明确要的按钮特效：reduce 下**保留**（放慢即可），不关掉 */
-  .icon-btn{animation-duration:6s}
-  .icon-btn::after{animation-duration:6s}
+  
+  
 }
 .wrap-multi{display:flex;flex-direction:column;gap:7px}
 .multi-chips{display:flex;flex-wrap:wrap;gap:6px;min-height:22px;align-items:center}
@@ -1356,14 +1373,6 @@ window.__accelSplashShownAt = (window.performance && performance.now())
     </div>
     <!-- ★ 在新标签页打开独立前端：面板嵌在框架里时空间受限，
          单独开一页壁纸与特效更完整。图标沿用内联 symbol 体系。 -->
-    <button class="open-front" id="btn-open-front" type="button"
-            title="在新标签页打开前端" aria-label="在新标签页打开前端">
-      <svg class="ico"><use href="#i-external"/></svg>
-    </button>
-    <button class="icon-btn" id="open-panel" type="button"
-            title="在新标签页打开完整面板" aria-label="在新标签页打开完整面板">
-      <svg class="ico"><use href="#i-external"/></svg>
-    </button>
     <div class="status" id="conn">
       <svg class="ico"><use href="#i-activity"/></svg><span id="conn-text">连接中</span>
       <!-- ★ 心电图：**真实的内联 SVG**，用 stroke-dashoffset 扫过。
@@ -1409,6 +1418,15 @@ window.__accelSplashShownAt = (window.performance && performance.now())
     <span class="o" style="animation-delay:.02s">K</span><span class="o" style="animation-delay:.06s">i</span><span class="o" style="animation-delay:.10s">r</span><span class="o" style="animation-delay:.14s">a</span><span style="animation-delay:.18s">&nbsp;</span><span class="e" style="animation-delay:.24s">B</span><span class="e" style="animation-delay:.28s">o</span><span class="e" style="animation-delay:.32s">o</span><span class="e" style="animation-delay:.36s">s</span><span class="e" style="animation-delay:.40s">t</span>
   </h2>
   <p class="tagline">在不影响质量与兼容的前提下提速 —— 强制流式 · 抢先发送 · 按需思考</p>
+
+  <!-- ★ 独立前端入口：用户要求放在**小字的破折号正下方居中**，
+       不遮挡其他内容，并随欣赏模式一起隐藏（已加进 body.zen 的隐藏列表）。 -->
+  <div class="front-row">
+    <button class="open-front" id="btn-open-front" type="button"
+            title="在新标签页打开前端" aria-label="在新标签页打开前端">
+      <svg class="ico"><use href="#i-external"/></svg>
+    </button>
+  </div>
 
   <!-- 实时指标 -->
   <section class="card" style="animation-delay:.30s">
@@ -2470,64 +2488,84 @@ function fxIris(to, from, rim){
   eatAway(from, wpLastDur);                 // 旧图被吃掉
 }
 
-/* ── 燃纸：前图像被点燃的纸那样**不规则地烧穿**，露出后图 ──
+/* ── 燃纸：纸被**多处随机点燃**，各自向外慢慢烧穿，最后连成一片露出后图 ──
 
-   用户要的语义："前图像被点燃的纸钱那样，随机退化露出后图"；
-   并明确两点：**不要真的火**、**不要焦边** —— 要的是**燃烧的动感**本身。
-   所以这里**不加任何边缘层**，动感完全由"烧"的节奏与顺序表达：
-     · 从随机一点起，边界**不规则**（距离 + 噪声，不是整齐的圆）
-     · 有**迸发感**：偶尔连着烧穿一小片、再慢下来 —— 纸张引燃就是这个节奏，
-       匀速推进反而像"擦除"，不像"烧"
-     · 被烧的那一版会**先泛起暖色再变亮**（受热感），随后才被吃掉
-       —— 这是"烧"的关键观感，而且**不产生任何焦黑边缘**
-   实现用网格 + 分帧批处理（每帧最多 24 块），开销与帧数成正比而不是块数。 */
+   用户要的语义："纸张被多个地方随机点燃，慢慢燃烧出底图"。
+   要点（这是与"擦除"的根本区别）：
+     · **多个点燃点**（3~6 个，随机位置），不是一个圆心扩散 —— 真实纸张
+       总是几处同时起燃，火线各自蔓延，中途**相遇合并**，剩下未燃的"孤岛"最后才被吃掉。
+     · **每处速率不同**：有的烧得快、有的慢 ⇒ 边界此消彼长，不是同心圆。
+     · **未燃区是连通的孤岛**：因为取"到最近火线的时间"，两点之间会形成
+       马鞍形的**延迟脊**，观感就是"两块火各自烧过来、最后在中间接上"。
+     · 边缘**不规则**（噪声），且**不用明火、不用焦边** —— 动感靠受热暖调 +
+       速度不均 + 火线合并来表现。
+   实现：网格 + 分帧批处理（每帧 ≤24 块），开销随帧数而不是块数。 */
 function fxBurn(to, from, rim){
-  const dur = WP_DUR * 1.15;                  // 比普通过渡略长，看得清蔓延
+  const dur = WP_DUR * 1.25;
   const W = Math.max(window.innerWidth, 320);
   const H = Math.max(window.innerHeight, 320);
-  const cell = Math.max(26, Math.min(64, Math.round(Math.min(W, H) * 0.055)));
+  const cell = Math.max(24, Math.min(58, Math.round(Math.min(W, H) * 0.05)));  // 略细 ⇒ 边缘更自然
   const cols = Math.max(3, Math.ceil(W / cell));
   const rows = Math.max(3, Math.ceil(H / cell));
   const n = cols * rows;
 
-  /* 起点随机（留边距），且蔓延方向随机偏一下 ⇒ 每次都不同 */
-  const ox = (0.12 + Math.random() * 0.76) * cols;
-  const oy = (0.12 + Math.random() * 0.76) * rows;
-  const biasX = (Math.random() - 0.5) * 0.55;
-  const biasY = (Math.random() - 0.5) * 0.55;
+  /* ★ 多个点燃点（3~6 个）。位置随机但**互相拉开**，否则会挤成一团、
+     看起来又像单点扩散。做法：逐个抽点，与已有点保持最小间距。 */
+  const P = [];
+  const want = 3 + Math.floor(Math.random() * 4);          // 3~6 处
+  let guard = 0;
+  while (P.length < want && guard++ < 200){
+    const c = (0.08 + Math.random() * 0.84) * cols;
+    const r = (0.08 + Math.random() * 0.84) * rows;
+    const minD = Math.min(cols, rows) * 0.22;              // 最小间距
+    if (P.every(q => Math.hypot(q.c - c, q.r - r) >= minD)){
+      P.push({ c, r,
+               rate: 0.62 + Math.random() * 0.86,          // ★ 每处速率不同
+               t0:   Math.random() * 0.16 });              // ★ 起燃时刻也错开一点
+    }
+  }
+  if (!P.length) P.push({ c: cols / 2, r: rows / 2, rate: 1, t0: 0 });
 
-  /* 每块一个"点燃时刻"：距离归一化 + 噪声 ⇒ 边界锯齿化；
-     再叠一层**分组迸发**（见下）做出"呼"地一下的节奏。 */
+  /* 每块的点燃时刻 = 各火线里"最早烧到它"的那条。
+     取 min 就自然形成了**火线相遇的延迟脊**（马鞍形），
+     这正是"多处同时烧、最后连起来"的观感来源。 */
   const delays = new Float32Array(n);
   let maxT = 0;
   for (let r = 0; r < rows; r++){
     for (let c = 0; c < cols; c++){
-      const dx = (c + 0.5 - ox) * (1 + biasX);
-      const dy = (r + 0.5 - oy) * (1 + biasY);
-      let tt = Math.sqrt(dx * dx + dy * dy) + Math.random() * 0.42;
-      /* ★ 迸发：把时刻按 0.75 的幂拉伸 ⇒ 近处几块挤在一起（一下子烧开），
-         远处逐渐拉开（慢下来）。这是"燃烧"而非"匀速擦除"的关键。 */
-      tt = Math.pow(tt / 1.6, 0.75) * 1.6;
-      delays[r * cols + c] = tt;
-      if (tt > maxT) maxT = tt;
+      let best = Infinity;
+      for (const q of P){
+        const dx = c + 0.5 - q.c, dy = r + 0.5 - q.r;
+        const t = q.t0 + Math.sqrt(dx * dx + dy * dy) / q.rate;
+        if (t < best) best = t;
+      }
+      /* 噪声 ⇒ 不规则边缘（不是同心圆） */
+      best += Math.random() * 0.55;
+      /* 迸发：把时刻做幂拉伸 ⇒ 起燃瞬间快、之后慢下来（纸张引燃的手感） */
+      best = Math.pow(best / 2.2, 0.78) * 2.2;
+      delays[r * cols + c] = best;
+      if (best > maxT) maxT = best;
     }
   }
 
-  to.style.opacity = "1";                     // 后图**一直在下面**，由前图烧穿露出
-  anim(to, [{transform:"scale(1.045)"},{transform:"scale(1)"}],
+  /* 两层可见性都**显式用动画写**（踩过的坑：wpLoad 已 remove("on")，
+     `.wp-img` 是 opacity:0，若不显式写就会在**全透明图层上烧** ⇒ 看起来是硬切）。 */
+  anim(from, [{opacity:1},{opacity:1}], {duration: dur * 0.88, easing:"linear"});
+  anim(to,   [{opacity:0},{opacity:1}], {duration: Math.round(dur * 0.45),
+                                         easing:"cubic-bezier(.3,0,.5,1)"});
+  anim(to,   [{transform:"scale(1.045)"},{transform:"scale(1)"}],
        {duration: dur, easing:"cubic-bezier(.33,0,.55,1)"});
 
-  /* ★ 受热感：被烧的那一版**先泛暖再变亮**（不是变黑！）
-     这一步替代了原来的焦黑层 —— 没有任何边缘，但一眼看得出"在烧"。 */
+  /* 受热感：被烧的那一版**先泛暖再变亮**（不是变黑！）—— 无焦边、无明火，
+     但一眼看得出"在烧"。 */
   anim(from, [
     {filter:"sepia(0) saturate(1) brightness(1)"},
-    {filter:"sepia(.30) saturate(1.5) brightness(1.10)", offset:.22},
-    {filter:"sepia(.52) saturate(1.85) brightness(1.22)", offset:.58},
-    {filter:"sepia(.62) saturate(2.0) brightness(1.34)", offset:.85},
-    {filter:"sepia(.5) saturate(1.6) brightness(1.15)", offset:1},
-  ], {duration: dur * 0.86, easing:"cubic-bezier(.4,0,.6,1)"});
+    {filter:"sepia(.26) saturate(1.42) brightness(1.08)", offset:.24},
+    {filter:"sepia(.46) saturate(1.72) brightness(1.18)", offset:.56},
+    {filter:"sepia(.60) saturate(1.92) brightness(1.30)", offset:.84},
+    {filter:"sepia(.48) saturate(1.5) brightness(1.12)", offset:1},
+  ], {duration: dur * 0.88, easing:"cubic-bezier(.4,0,.6,1)"});
 
-  /* 逐块挖空（不做任何焦边层） */
   const rectFor = (c, r) => {
     const x0 = (c * 100 / cols), y0 = (r * 100 / rows);
     const w = 100 / cols, h = 100 / rows;
@@ -2538,10 +2576,9 @@ function fxBurn(to, from, rim){
   for (let i = 0; i < n; i++) rects.push(rectFor(i % cols, Math.floor(i / cols)));
   from.style.clipPath = "inset(0% 0% 0% 0%)";
 
-  const spread = dur * 0.60;
+  const spread = dur * 0.66;
   const perBlock = spread / Math.max(maxT, 1e-6);
-  const order = Array.from({length: n}, (_, i) => i)
-    .sort((a, b) => delays[a] - delays[b]);
+  const order = Array.from({length:n}, (_, i) => i).sort((a, b) => delays[a] - delays[b]);
   const fireAt = order.map(i => delays[i] * perBlock);
 
   let cursor = 0, t0 = null, rafId = 0, stopped = false;
@@ -2549,9 +2586,8 @@ function fxBurn(to, from, rim){
     if (stopped) return;
     if (t0 === null) t0 = now;
     const el = now - t0;
-    /* 每帧最多 24 块 —— 防止一次重排太多导致掉帧 */
     let done = 0;
-    while (cursor < n && fireAt[cursor] <= el && done < 24){
+    while (cursor < n && fireAt[cursor] <= el && done < 24){   // 每帧 ≤24 块
       from.style.clipPath = rects[order[cursor++]];
       done++;
     }
@@ -2559,13 +2595,11 @@ function fxBurn(to, from, rim){
   };
   rafId = requestAnimationFrame(step);
 
-  /* 收尾：烧完后前图退尽（此时基本已被吃掉），避免残影 */
   const endT = setTimeout(() => {
-    anim(from, [{opacity:1},{opacity:0}], {duration: dur * 0.28, easing:"linear"});
-  }, dur * 0.62);
+    anim(from, [{opacity:1},{opacity:0}], {duration: dur * 0.26, easing:"linear"});
+  }, dur * 0.70);
 
   wpLastDur = dur;
-
   return () => {
     stopped = true;
     try { cancelAnimationFrame(rafId); } catch (e) { /* 老 WebView */ }
@@ -3337,27 +3371,44 @@ function rollNeon(){
      随机四项：横向位置 / 时长 / 起始延迟 / 轮间停顿。
      重掷在**本轮结束之后**（而不是固定节拍），所以看不到规律。 */
   if (pick === "neon-drop") startDropCycle(wm);
+  /* ★ neon-orbit 的撕裂同样要**每轮重掷**（时长/起始延迟随机）⇒ 看不出节拍。
+     并且要加 `.neon-glitch` 类才起跑（CSS 里挂在那个类下面）。 */
+  if (pick === "neon-orbit") startGlitchCycle(wm);
+}
+
+/** 让 `neon-orbit` 的撕裂脉冲每次时长/相位都不同（避免看出固定节拍）。 */
+function startGlitchCycle(wm){
+  if (window.__accelGlitchTimer){ clearInterval(window.__accelGlitchTimer); window.__accelGlitchTimer = null; }
+  const roll = ()=>{
+    wm.style.setProperty("--gl-dur", (2.0 + Math.random() * 2.4).toFixed(2) + "s");
+    wm.style.setProperty("--gl-delay", (-Math.random() * 2.0).toFixed(2) + "s");
+    wm.classList.remove("neon-glitch");
+    void wm.offsetWidth;                       // 强制 reflow ⇒ 新参数真的生效
+    wm.classList.add("neon-glitch");
+  };
+  roll();
+  // 每 6~13s 再重掷一次参数（观感上是"偶发的信号不稳"，不是规律闪烁）
+  window.__accelGlitchTimer = setInterval(roll, 6000 + Math.random() * 7000);
 }
 
 /** 让 `neon-drop` 每轮重新掷随机参数并重新起跑（由上往下的随机扫光）。 */
 function startDropCycle(wm){
-  if (window.__accelDropTimer){ clearTimeout(window.__accelDropTimer); window.__accelDropTimer = null; }
-  const fire = ()=>{
-    // 每次都重掷 ⇒ 位置、快慢、节奏都不同
-    const dur  = (1.6 + Math.random() * 1.6).toFixed(2);          // 1.6~3.2s
-    const pos  = (15 + Math.random() * 70).toFixed(1);            // 15%~85%
-    const hold = 800 + Math.random() * 2700;                      // 停顿 0.8~3.5s
-    const delay = Math.random() * 900;                            // 起始抖动
+  if (window.__accelDropTimer){ clearInterval(window.__accelDropTimer); window.__accelDropTimer = null; }
+  /* 因为 CSS 已改成 `infinite`，这里**不需要"跑完再起"** —— 只要定期换参数，
+     扫光就会以新的位置/速度继续跑。观感：一直在扫，但节奏不固定。 */
+  const roll = ()=>{
+    const dur = (1.5 + Math.random() * 1.7).toFixed(2);      // 1.5~3.2s 一轮
+    const pos = (12 + Math.random() * 76).toFixed(1);        // 12%~88% 横向位置
     wm.style.setProperty("--drop-dur", dur + "s");
     wm.style.setProperty("--drop-x", pos + "%");
-    // 重新触发动画（必须先把 animation 清掉再加回来，否则浏览器认为"没变"）
+    wm.style.setProperty("--drop-delay", (-Math.random() * 2.5).toFixed(2) + "s");
     wm.classList.remove("neon-drop-run");
-    void wm.offsetWidth;                                          // 强制 reflow
+    void wm.offsetWidth;                                     // 强制 reflow ⇒ 新参数生效
     wm.classList.add("neon-drop-run");
-    wm.style.setProperty("--drop-delay", (delay / 1000).toFixed(2) + "s");
-    window.__accelDropTimer = setTimeout(fire, delay + Number(dur) * 1000 + hold);
   };
-  fire();
+  roll();
+  // 每 4~9s 换一次节奏（比之前短，保证"看得到在扫"）
+  window.__accelDropTimer = setInterval(roll, 4000 + Math.random() * 5000);
 }
 
 let neonTimer = null;

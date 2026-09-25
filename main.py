@@ -1402,31 +1402,62 @@ class AcceleratorPlugin(BasePlugin):
     async def api_providers(self):
         """列出**已配置的提供商与模型**，供面板的多选下拉使用。
 
-        ★ 为什么要这个 API：框架的 source:'model' 只对**框架自己的配置页**生效；
+        ★ 为什么要这个 API：框架的 `source:'model'` 只对**框架自己的配置页**生效；
           插件自带的侧边栏面板是独立前端，拿不到那份列表，只能自己问后端。
-          返回扁平列表，每项同时给出"模型级 / 提供商级 / 名称"三种取值 ——
-          用户点哪个都能匹配（后端三种都认）。
+
+        ★★ 必须用 `self.ctx.provider_mgr` —— **不要自己 new ProviderManager**。
+          框架里它是 `ProviderManager(db, kira_config)` 需要两个位置参数，
+          自己 new 会直接 TypeError（v1.0.2 就是这么炸的，线上日志刷了一屏）。
+          上下文里框架已经把**同一个单例**注入好了，直接用即可。
+
+        返回扁平列表，每项同时给出"模型级 / 提供商级 / 名称"三种取值 ——
+        用户点哪个都能匹配（后端三种都认）。
         """
         out = []
         try:
-            from core.provider.provider_manager import ProviderManager
-            mgr = ProviderManager()
-            # 兼容不同框架版本：先试 async，再试 sync
-            provs = None
-            for attr in ("get_all_providers", "list_providers", "providers"):
-                v = getattr(mgr, attr, None)
-                if v is None:
-                    continue
+            mgr = getattr(self.ctx, "provider_mgr", None)
+            if mgr is None:
+                # 兜底：有些框架版本把管理器挂在别处。**仍然不要自己 new** ——
+                # 宁可返回空列表让面板退化为可手填，也不要抛异常刷日志。
+                mgr = getattr(self.ctx, "provider_manager", None)
+            if mgr is None:
+                logger.warning("[accel] 上下文里拿不到 provider_mgr ⇒ 面板退化为可手填")
+                return {"providers": []}
+
+            # 用框架已有的枚举方法（同步，返回 {provider_id: BaseProvider}）
+            allp = {}
+            for attr in ("get_all_providers",):
+                fn = getattr(mgr, attr, None)
+                if callable(fn):
+                    try:
+                        allp = fn() or {}
+                    except Exception:  # noqa: BLE001
+                        logger.exception("[accel] %s() 调用失败", attr)
+                    break
+
+            for pid, p in (allp or {}).items():
+                pid = str(pid or "")
+                # 名字优先查配置（get_provider_info 会给出友好的 provider_name）
+                pname = pid
                 try:
-                    provs = await v() if callable(v) else v
-                except TypeError:
-                    provs = v
-                break
-            for p in (provs or []):
-                pid = getattr(p, "id", None) or getattr(p, "provider_id", "") or ""
-                pname = getattr(p, "name", None) or getattr(p, "provider_name", "") or pid
-                models = getattr(p, "models", None) or {}
-                llm = (models.get("llm") if isinstance(models, dict) else None) or {}
+                    info = mgr.get_provider_info(pid)
+                    if info is not None:
+                        pname = getattr(info, "provider_name", None) or pid
+                except Exception:  # noqa: BLE001
+                    pass
+
+                # 模型列表：优先 get_models()（框架的权威来源），退回对象属性
+                models = None
+                try:
+                    gm = getattr(mgr, "get_models", None)
+                    if callable(gm):
+                        models = gm(pid)
+                except Exception:  # noqa: BLE001
+                    models = None
+                if not isinstance(models, dict):
+                    models = getattr(p, "models", None) or {}
+                llm = models.get("llm") if isinstance(models, dict) else None
+
                 if isinstance(llm, dict) and llm:
                     for mid in llm.keys():
                         out.append({"value": f"{pid}:{mid}",
@@ -1434,10 +1465,12 @@ class AcceleratorPlugin(BasePlugin):
                                     "provider_id": pid, "provider_name": pname,
                                     "model_id": mid})
                 else:
+                    # 没有登记模型也要给出提供商本身（后端认纯 providerId）
                     out.append({"value": pid, "label": pname,
                                 "provider_id": pid, "provider_name": pname,
                                 "model_id": ""})
         except Exception:  # noqa: BLE001
+            # 这里失败**不能**影响插件其余功能：面板退化为可手填即可。
             logger.exception("[accel] 列出提供商失败（面板退化为可手填）")
         return {"providers": out}
 

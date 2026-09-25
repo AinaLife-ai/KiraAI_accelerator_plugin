@@ -870,7 +870,9 @@ check("★ HUD 有 pointer-events:none（不挡点击）",
       re.search(r"\.hud\{[^}]*pointer-events:none", HTML) is not None)
 # ⚠️ 判 emoji 要用 re 的 \U0001F300-\U0001FAFF（或 \u{...}），
 #   写成 [\u1F300-...] 在 **str** 模式里是**逐字符**解释的，匹配不到 ⇒ 自己误报。
-_hud_block = HTML.split('class="hud"')[1][:1800]
+# ⚠️ 判据前**必须剥掉 HTML 注释** —— 注释里的 ★ 等符号会被 emoji 区间命中，
+#   造成假红（结构一改、注释一挪位就会触发）。本判据只关心**真实元素**。
+_hud_block = re.sub(r"<!--[\s\S]*?-->", "", HTML.split('class="hud"')[1][:2400])
 check("★ 用内联 SVG 图标（不是 emoji）",
       "use href=\"#i-" in _hud_block
       and not re.search(r"[\U0001F300-\U0001FAFF\u2600-\u27BF]", _hud_block))
