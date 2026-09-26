@@ -56,6 +56,8 @@ run "★抢发后的消息ID对齐"     tests/test_early_sent_alignment.py
 run "★抢发交接处的节奏"       tests/test_pacing_handoff.py
 run "★重复发送：回退策略"     tests/test_dup_send_guard.py
 run "★重复发送：全链路"       tests/test_dup_send_e2e.py
+run "★重复发送：多步循环"     tests/test_dup_send_multistep.py
+run "★与xml修复器兼容（剥离）" tests/test_compat_xmlfixer.py
 run "★抢发兼容AFTER_XML_PARSE" tests/test_after_xml_parse.py
 run "★文本被改写后的剥离"     tests/test_strip_when_text_rewritten.py
 run "★前端审计（层级/开屏/墨渗）" tests/test_frontend_audit.py

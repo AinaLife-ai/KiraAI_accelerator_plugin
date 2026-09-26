@@ -27,21 +27,26 @@ def check(name, ok, detail=""):
     print(f"  {'✓' if ok else '✗'} {name}" + (f"  [{detail}]" if detail else ""))
 
 
-print("═══ 1) 台账必须在**消费完**就清，而不是只等下一轮")
-# 找 finally 块
-# ⚠️ 用**唯一**锚点定位那段 finally：文件里有多个 finally 块，
-#    按 "_install_early_sent_strip" 起算会算到别处（上一版就这么找错了）。
-_anchor = "本轮已消费完，清掉标记"
-assert _anchor in MAIN, "找不到 finally 里的注释锚点"
-_j = MAIN.index(_anchor)
-_seg_start = MAIN.rindex("finally:", 0, _j)
-fin = MAIN[_seg_start:_j + 1400]
-seg = MAIN[MAIN.index("_install_early_sent_strip"):_j + 1400]
-check("★ finally 里清了 _sent_ledger（消费完立即清）",
-      "plugin._sent_ledger.pop(sid_now, None)" in fin)
-check("★ finally 里也清了 _resp_by_sid", "plugin._resp_by_sid.pop(sid_now, None)" in fin)
-check("★ 清台账与清响应在**同一个** finally 块里（顺序一致才不会有窗口）",
-      fin.index("_resp_by_sid.pop") < fin.index("_sent_ledger.pop"))
+print("═══ 1) 台账的生命周期：**活到轮结束**，但**只消费一次**")
+# ★★★ 这条契约是两轮修正的结果，两个方向都不能过头：
+#   · 只"消费完就清"（旧）⇒ 多步 loop 的第二步 n=0 ⇒ **整批重复**（用户截图）
+#   · 只"留到轮结束"（过头）⇒ 第二步拿台账按序号切 ⇒ **误切 = 丢内容**
+#   ⇒ 正确契约：台账**留到轮结束**（`final_result` 清），但**只有第一次调用消费它**。
+_fin_i = MAIN.find("finally:")
+_fin = MAIN[_fin_i:_fin_i + 1200]
+check("★ finally 里**不再**清台账（否则多步第二次数不到 ⇒ 整批重复）",
+      "_sent_ledger.pop" not in _fin)
+check("★ 轮结束统一清理（final_result 里调 _clear_round_state）",
+      "_clear_round_state" in MAIN
+      and re.search(r"async def observe_final[\s\S]{0,500}?_clear_round_state", MAIN) is not None)
+check("★ 轮结束清理**同时**清台账 / 消费标记 / 响应缓存",
+      all(k in MAIN[MAIN.find("def _clear_round_state"):MAIN.find("def _clear_round_state") + 800]
+          for k in ("_sent_ledger.pop", "_ledger_consumed.pop", "_resp_by_sid.pop")))
+check("★★ 有「只消费一次」的标记（后续步不得再按序号剥 ⇒ 不丢内容）",
+      "_ledger_consumed" in MAIN
+      and "plugin._ledger_consumed[sid_now] = True" in MAIN)
+check("★★ 已消费时 n 归零（后续步原样交出）",
+      re.search(r"_ledger_consumed\.get\(sid_now\)[\s\S]{0,160}?n = 0", MAIN) is not None)
 
 print()
 print("═══ 2) ★★★ 台账是权威来源（不是兜底），且拿不到标记时不该告警")
@@ -54,20 +59,21 @@ print("═══ 2) ★★★ 台账是权威来源（不是兜底），且拿�
 #     ③ if ledger: n = len(ledger); segs = list(ledger)   ← **台账胜出**
 #   所以不能拿"取值顺序"当判据（那样必然报错，上一版就这么自己误判）。
 #   要断言的是**决策结构**：`if ledger:` 分支里必须写入 n 与 segs（即台账胜出）。
-_lb = seg[seg.index("if ledger:"):seg.index("elif n > 0 and not segs:")]
+_i0 = MAIN.index("if ledger:")
+_lb = MAIN[_i0:MAIN.index("elif n > 0 and not segs:", _i0)]
 check("★ 台账优先：`if ledger:` 分支里就用台账覆盖 n 与 segs",
       "n = len(ledger)" in _lb and "segs = list(ledger)" in _lb)
 check("★ 且该分支在按序号剥离之前（不会被绕过）",
-      seg.index("if ledger:") < seg.index("strip_early_sent_smart("))
+      MAIN.index("if ledger:") < MAIN.index("strip_early_sent_smart("))
 
 # 去掉注释后再查（注释里会引用旧文案，说明"曾经这么报"）
-_code = re.sub(r"(?m)^\s*#.*$", "", seg)
+_code = re.sub(r"(?m)^\s*#.*$", "", MAIN)
 check("★★ 拿不到响应标记时不再打 warning（原来一直刷屏、且误导）",
       "响应标记缺失，改用本轮台账剥离" not in _code)
 check("★ 只在『两边段数不一致』时才告警（真异常）",
-      "已发段数不一致" in seg)
+      "已发段数不一致" in MAIN)
 check("★ 台账为空且拿不到段原文时也留线索",
-      "拿不到段原文" in seg)
+      "拿不到段原文" in MAIN)
 
 print()
 print("═══ 3) 行为模拟：同一轮被调用两次（多步 loop）")

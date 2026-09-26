@@ -167,6 +167,8 @@ class AcceleratorPlugin(BasePlugin):
         #   （响应标记丢失时的兜底；存原文而不是只存个数，
         #     这样兜底时也能按内容剥离，对文本被改写同样稳健）
         self._sent_ledger: dict[str, list] = {}
+        #: 本轮台账是否已被消费（用于区分"第一步"与"后续步"）
+        self._ledger_consumed: dict[str, bool] = {}
         self._proxy_cache: dict[tuple, LLMClientProxy] = {}
         self._stats = {
             "turns": 0, "steps": 0,
@@ -350,8 +352,27 @@ class AcceleratorPlugin(BasePlugin):
         except Exception:  # noqa: BLE001
             logger.exception("[accel] 观测失败")
 
+    def _clear_round_state(self, sid):
+        """一轮真正结束时清理"本轮状态"（台账 / 响应缓存）。
+
+        ★ 为什么必须等到**轮结束**而不是"每次 send_xml_messages 返回"：
+          框架的多步 agent loop 每一步都会调用 send_xml_messages，
+          若在每次调用后就清台账，**第二步就剥离不了**（n=0）
+          ⇒ 整批重复发送（用户线上现象）。
+        """
+        try:
+            if sid:
+                self._sent_ledger.pop(sid, None)
+                self._ledger_consumed.pop(sid, None)
+                self._resp_by_sid.pop(sid, None)
+        except Exception:  # noqa: BLE001
+            logger.exception("[accel] 清理本轮发送状态失败（不影响发送）")
+
     @on.final_result(priority=Priority.SYS_LOW)
     async def observe_final(self, event: KiraMessageBatchEvent, final_result, *_):
+        # ★ 无论观测是否开启，**都要**清理本轮发送状态（否则台账会残留到下一轮，
+        #   下一轮若文本恰好相同就会被误剥离 = 丢内容）。
+        self._clear_round_state(getattr(event, "sid", None))
         if not self.observe_enabled:
             return
         try:
@@ -1194,6 +1215,23 @@ class AcceleratorPlugin(BasePlugin):
                 from .early_sent import early_sent_segments, strip_early_sent_smart
                 segs = early_sent_segments(resp) if resp is not None else []
                 ledger = plugin._sent_ledger.get(sid_now, []) if sid_now else []
+                # ★★★ 「已经剥过一轮 = 台账已消费」的标记。
+                #
+                #   为什么要它：框架的多步 agent loop（message_manager.py:793）
+                #   **每一步**都调一次 send_xml_messages，而抢发只发生在**第一步**
+                #   （后续步的文本是新生成的，从没发过）。
+                #   若第二步还拿台账去剥，就是**拿不相关的文本按序号切**
+                #   ⇒ 可能把该发的内容切掉 = **丢内容**（比重复更严重）。
+                #
+                #   所以：台账只在**第一次**调用时消费，之后置为已消费。
+                #   而"整批重复"的根因是台账**在第一次调用后就被 pop**
+                #   ⇒ 第一步之外的路径拿不到它。两者一起修才对：
+                #     · 台账活到轮结束（避免第二步 n=0 ⇒ 整批重复）
+                #     · 但只消费一次（避免第二步按序号误切 ⇒ 丢内容）
+                if sid_now and plugin._ledger_consumed.get(sid_now):
+                    ledger = []
+                    segs = []
+                    n = 0
                 if ledger:
                     # 台账优先（更权威）
                     if n > 0 and n != len(ledger):
@@ -1204,6 +1242,8 @@ class AcceleratorPlugin(BasePlugin):
                         )
                     n = len(ledger)
                     segs = list(ledger)
+                    if sid_now:
+                        plugin._ledger_consumed[sid_now] = True   # ★ 只消费一次
                 elif n > 0 and not segs:
                     # 台账没有、标记在但段原文不在（理论上不该发生）
                     # ⇒ 只能按序号剥离，留一条线索
@@ -1270,11 +1310,22 @@ class AcceleratorPlugin(BasePlugin):
                         return (early + list(rest or []))
                     return rest
                 finally:
-                    # 本轮已消费完，清掉标记，避免影响下一步/下一轮
+                    # ★ 只清"跟这一次调用绑定"的东西（响应标记 / 响应缓存）。
                     if resp is not None:
                         resp.__dict__.pop("_accel_early_sent_count", None)
                     if sid_now:
                         plugin._resp_by_sid.pop(sid_now, None)
+                    # ★★★ **不要在这里清台账** —— 这里踩过一个真 bug：
+                    #
+                    #   框架的多步 agent loop（message_manager.py:793）是
+                    #       async for step in agent_executor.run(...):
+                    #           if not await send_llm_text(llm_resp): break
+                    #   也就是**每一步**都调一次 send_xml_messages。
+                    #   原来台账在这里 pop ⇒ 第二步时台账已空 ⇒ n=0 ⇒ 不剥离
+                    #   ⇒ 该步文本被**整段再发一遍** ⇒ 用户截图里"整批消息重复"。
+                    #
+                    #   台账的清理由 `final_result`（真正的一轮结束）负责 ——
+                    #   见 `_clear_round_state`。
                         # ★★ 台账也要**消费完立即清**。
                         #   原来它只等"下一轮开始"才清，于是同一轮内只要
                         #   `send_xml_messages` 被调用第二次（多步 loop / 框架的其它
