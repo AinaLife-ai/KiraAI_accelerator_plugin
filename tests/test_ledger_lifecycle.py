@@ -42,11 +42,13 @@ check("★ 轮结束统一清理（final_result 里调 _clear_round_state）",
 check("★ 轮结束清理**同时**清台账 / 消费标记 / 响应缓存",
       all(k in MAIN[MAIN.find("def _clear_round_state"):MAIN.find("def _clear_round_state") + 800]
           for k in ("_sent_ledger.pop", "_ledger_consumed.pop", "_resp_by_sid.pop")))
-check("★★ 有「只消费一次」的标记（后续步不得再按序号剥 ⇒ 不丢内容）",
+# ★ 标记已从「纯布尔」升级为「时间戳」—— 因为钩子可能被跳过，
+#   纯布尔会永久卡在 True ⇒ 每轮都重复（线上"更明显了"的根因）。
+check("★★ 有「只消费一次」的标记（且带时效，可自愈）",
       "_ledger_consumed" in MAIN
-      and "plugin._ledger_consumed[sid_now] = True" in MAIN)
+      and "plugin._ledger_consumed[sid_now] = time.time()" in MAIN)
 check("★★ 已消费时 n 归零（后续步原样交出）",
-      re.search(r"_ledger_consumed\.get\(sid_now\)[\s\S]{0,160}?n = 0", MAIN) is not None)
+      re.search(r"_cons_ts[\s\S]{0,160}?n = 0", MAIN) is not None)
 
 print()
 print("═══ 2) ★★★ 台账是权威来源（不是兜底），且拿不到标记时不该告警")
