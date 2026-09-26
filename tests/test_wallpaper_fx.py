@@ -51,11 +51,13 @@ FX = {
     "fxIris":   ["clipPath"],
     "fxWipe":   ["clipPath"],
     "fxZoom":   ["transform"],
-    "fxBurn":   ["clipPath", "filter"],      # 挖空 + 受热暖调
+    "fxBurn":   ["maskImage", "filter"],     # blob 挖空 + 受热暖调
 }
 for fn, needs in FX.items():
     i = JS.find("function " + fn)
-    seg = JS[i:i + 6000] if i > 0 else ""
+    # ⚠️ 窗口要够大：fxBurn 已长到 4500+ 字符，6000 会把尾部（含 wpLastDur）截掉
+    #   ⇒ 判据假红。取 12000 留足余量。
+    seg = JS[i:i + 12000] if i > 0 else ""
     check(f"★ {fn} 存在", i > 0)
     for nd in needs:
         check(f"  {fn} 驱动 {nd}", nd in seg)
@@ -80,15 +82,18 @@ check("★ 无焦边层（用户明确不要）", "scorch" not in _b)
 check("★ 两层可见性都显式写动画（否则烧在透明层上=硬切）",
       "anim(from, [{opacity:1},{opacity:1}]" in _b)
 check("★ 无明火（用户明确不要）", not re.search(r"\bfire\b|flame", _b, re.I))
+check("  fxBurn 上报真实时长 wpLastDur", "wpLastDur = dur" in _b)
 check("★ 有燃烧动感：受热暖调", "sepia(" in _b)
-check("★ 有燃烧动感：迸发节奏（幂拉伸，非匀速）", "Math.pow(" in _b)
-check("★ 边缘不规则（随机噪声）", re.search(r"Math\.random\(\) \* 0\.5", _b) is not None)
+check("★ 有燃烧动感：受热暖调 + 火线发光", "sepia(" in _b and "screen" in _b)
+check("★ 边缘不规则（多次谐波扰动）", "Math.sin(lobes * th + ph + wob)" in _b)
 # ★ 用户要求改成"多个地方随机点燃" ⇒ 起点不再是单个
 check("★ 多处随机点燃（3~6 个火源）",
       re.search(r"3 \+ Math\.floor\(Math\.random\(\) \* 4\)", _b) is not None)
-check("★ 每处速率不同（非同心圆）", "rate:" in _b and "0.62 + Math.random()" in _b)
-check("★ 火线相遇取最早（自然形成延迟脊）", "if (t < best) best = t;" in _b)
-check("★ 分帧批处理（不每块一个定时器）", "requestAnimationFrame" in _b and "done < 24" in _b)
+check("★ 每处速率不同（否则是同心圆）", "rate:" in _b)
+check("★ 火线为连续曲线（blob，非网格方块）", "blob(" in _b and "Q" in _b)
+check("★ 用 mask 挖洞（evenodd 单路径）", "evenodd" in _b and "maskImage" in _b)
+check("★ 三层边缘：光晕 + 火芯 + 炭化线", "glow" in _b and "core" in _b and "char" in _b)
+check("★ 半径到边缘为止（不会一秒吞屏）", "q.far" in _b)
 check("★ 可取消（收尾清理）", "cancelAnimationFrame" in _b)
 
 print()

@@ -17,8 +17,12 @@ check("① source=model（选项来自已配置模型）", _f.get("source") == "
 check("① allow_custom 兜底（拿不到列表仍可手填）", _f.get("allow_custom") is True)
 _m = re.search(r"not \(\{pname, pid, f\"\{pid\}:\{mid\}\"\} & allowed\)", PY_ALL.get("main.py", ""))
 check("① 后端同时认 model/provider/name 三种取值", bool(_m))
-check("① 面板也支持多选（list → multi_select 同一分支）",
-      'type === "list" || type === "multi_select"' in HTML)
+# ★★★ 这里曾是**真 bug**：我把 `list` 与 `multi_select` 并成同一分支 ⇒
+#   工具黑白名单、壁纸列表等**自由填写的 list 字段**被误改成"选提供商"下拉。
+#   判据必须区分两者：multi_select 走下拉；list 保持文本框。
+check("① multi_select 走多选下拉", 'type === "multi_select"' in HTML)
+check("★★★ list 保持逗号分隔文本框（不得被并进下拉）",
+      'type === "list" || type === "multi_select"' not in HTML and 'type === "list"' in HTML)
 check("① 面板有 /providers 加载（拿不到就退化为手填）",
       "loadProviderOptions" in HTML and "__ACCEL_PROVIDERS__" in HTML)
 check("① 新增 GET /providers API", 'path="/providers"' in PY_ALL.get("main.py", ""))

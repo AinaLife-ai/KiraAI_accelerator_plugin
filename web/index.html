@@ -1853,10 +1853,25 @@ function makeControl(field, key, value, onChange){
     });
     box.appendChild(inp);
 
-  } else if (type === "list" || type === "multi_select"){
-    /* ★ 多选下拉（用户要求：不用自己填、也难以自己填对）。
-       选项由后端 /providers 提供（框架 source:'model' 只作用于框架自己的配置页）。
-       保留一个"手填"入口 —— 万一 API 拿不到列表，用户仍能自己写。 */
+  } else if (type === "list"){
+    /* 自由填写的列表（工具黑白名单、壁纸文件名…）—— 逗号分隔的文本框。 */
+    const inp = el("input", "list-inp"); inp.type = "text";
+    inp.placeholder = "逗号分隔，留空=全部";
+    inp.value = Array.isArray(value) ? value.join(", ")
+              : (typeof value === "string" ? value : "");
+    inp.addEventListener("input", ()=>{
+      const parts = inp.value.split(",").map(x => x.trim()).filter(Boolean);
+      on(parts.length ? parts : []);
+    });
+    box.appendChild(inp);
+
+  } else if (type === "multi_select"){
+    /* ★ **只有 `multi_select` 走下拉**。
+       踩过的坑：我一度把 `type === "list"` 也并进这个分支 ⇒
+       **工具黑白名单**（`section_parallel.whitelist/blacklist`）、壁纸列表等
+       全部被换成了"选提供商"的下拉 —— 那些字段和模型毫无关系，
+       而且它们的语义是**自由填写的名称列表**，必须保留逗号分隔的文本框。
+       ⇒ `list` 与 `multi_select` 是**两种不同控件**，不能合并。 */
     const wrap = el("div", "wrap-multi");
     const chips = el("div", "multi-chips");
     const sel = el("select", "multi-sel");
@@ -2509,123 +2524,177 @@ function fxIris(to, from, rim){
   eatAway(from, wpLastDur);                 // 旧图被吃掉
 }
 
-/* ── 燃纸：纸被**多处随机点燃**，各自向外慢慢烧穿，最后连成一片露出后图 ──
+/* ── 燃纸：纸被多处点燃，火线不规则蔓延、相遇合并，烧出底图 ──
 
-   用户要的语义："纸张被多个地方随机点燃，慢慢燃烧出底图"。
-   要点（这是与"擦除"的根本区别）：
-     · **多个点燃点**（3~6 个，随机位置），不是一个圆心扩散 —— 真实纸张
-       总是几处同时起燃，火线各自蔓延，中途**相遇合并**，剩下未燃的"孤岛"最后才被吃掉。
-     · **每处速率不同**：有的烧得快、有的慢 ⇒ 边界此消彼长，不是同心圆。
-     · **未燃区是连通的孤岛**：因为取"到最近火线的时间"，两点之间会形成
-       马鞍形的**延迟脊**，观感就是"两块火各自烧过来、最后在中间接上"。
-     · 边缘**不规则**（噪声），且**不用明火、不用焦边** —— 动感靠受热暖调 +
-       速度不均 + 火线合并来表现。
-   实现：网格 + 分帧批处理（每帧 ≤24 块），开销随帧数而不是块数。 */
+   为什么重写：上一版用**网格**逐格挖空 ⇒ 边界是**锯齿方块**、每块整块消失
+   ⇒ 观感是"马赛克在消退"，根本不是"纸在烧"。用户指出"再好好想想纸张燃烧
+   到底什么样" —— 关键差别在于：**火线是一条连续曲线**，不是格子。
+
+   真实纸张燃烧的四个视觉特征（本实现逐条对应）：
+     ① **火线是连续的不规则曲线**（不是方块）——用 SVG blob（不规则闭合
+        曲线，极坐标 + 多次谐波扰动）做 mask，天然平滑连绵。
+     ② **火线自身发光**：橙红→亮黄。单独一层描边 blob，略大于烧穿区，
+        叠在上面 ⇒ 看到"一圈在亮的边"在推进。
+     ③ **细窄的炭化线**：火线刚过之处留下一道**很细**的暗线（不是厚黑框）。
+        做法：在烧穿区边缘再描一道 1.5px 的深棕色，随时间淡出。
+     ④ **火线前方受热**：整张纸随进度泛暖变亮（sepia + brightness）。
+     ⑤ **多个火源相遇合并**：多个 blob 取**并集**（同一 mask 里叠多个黑 blob）
+        ⇒ 两个火线靠近时自然连成一片，不出现"各自的圆"。
+
+   性能：mask 用 GPU 合成，逐帧只重新拼一个 SVG 字符串（blob 数 3~6、每个
+   48 个采样点）⇒ 30fps 下开销很低，比 per-frame 的 feTurbulence 滤镜轻得多。 */
 function fxBurn(to, from, rim){
   const dur = WP_DUR * 1.25;
   const W = Math.max(window.innerWidth, 320);
   const H = Math.max(window.innerHeight, 320);
-  const cell = Math.max(24, Math.min(58, Math.round(Math.min(W, H) * 0.05)));  // 略细 ⇒ 边缘更自然
-  const cols = Math.max(3, Math.ceil(W / cell));
-  const rows = Math.max(3, Math.ceil(H / cell));
-  const n = cols * rows;
+  const DIAG = Math.hypot(W, H);
 
-  /* ★ 多个点燃点（3~6 个）。位置随机但**互相拉开**，否则会挤成一团、
-     看起来又像单点扩散。做法：逐个抽点，与已有点保持最小间距。 */
+  /* ① 多个火源（3~6 处），随机位置且互相拉开 —— 否则挤成一团又像单点扩散 */
   const P = [];
-  const want = 3 + Math.floor(Math.random() * 4);          // 3~6 处
+  const want = 3 + Math.floor(Math.random() * 4);
   let guard = 0;
-  while (P.length < want && guard++ < 200){
-    const c = (0.08 + Math.random() * 0.84) * cols;
-    const r = (0.08 + Math.random() * 0.84) * rows;
-    const minD = Math.min(cols, rows) * 0.22;              // 最小间距
-    if (P.every(q => Math.hypot(q.c - c, q.r - r) >= minD)){
-      P.push({ c, r,
-               rate: 0.62 + Math.random() * 0.86,          // ★ 每处速率不同
-               t0:   Math.random() * 0.16 });              // ★ 起燃时刻也错开一点
+  while (P.length < want && guard++ < 240){
+    const x = (0.10 + Math.random() * 0.80) * W;
+    const y = (0.10 + Math.random() * 0.80) * H;
+    const minD = Math.min(W, H) * 0.26;
+    if (P.every(q => Math.hypot(q.x - x, q.y - y) >= minD)){
+      /* ★ 最终半径 = 从该点到**最远的那个角**的距离。
+         为什么：火线以**恒定速度**蔓延，烧到纸边为止 ⇒ 半径线性增长。
+         上一版用"0.72~0.98 × 对角线"，对任何一个火源都远超它到边缘的距离
+         ⇒ 一秒多就把整屏吞掉（实测截图：纸已经全没了，看不到燃烧过程）。 */
+      const far = Math.max(
+        Math.hypot(x, y), Math.hypot(W - x, y),
+        Math.hypot(x, H - y), Math.hypot(W - x, H - y));
+      P.push({
+        x, y, far,
+        rate: 0.88 + Math.random() * 0.26,        // 每处快慢略有不同 ⇒ 边界此消彼长
+        t0:   Math.random() * 0.08,               // 起燃时刻也错开
+        lobes: 3 + Math.floor(Math.random() * 4), // 轮廓的瓣数 ⇒ 形状各异
+        amp: 0.18 + Math.random() * 0.20,         // 不规则程度
+        ph:  Math.random() * Math.PI * 2,
+      });
     }
   }
-  if (!P.length) P.push({ c: cols / 2, r: rows / 2, rate: 1, t0: 0 });
+  if (!P.length) P.push({ x: W/2, y: H/2, far: DIAG * 0.62, rate: 1, t0: 0, lobes: 4, amp: .25, ph: 0 });
 
-  /* 每块的点燃时刻 = 各火线里"最早烧到它"的那条。
-     取 min 就自然形成了**火线相遇的延迟脊**（马鞍形），
-     这正是"多处同时烧、最后连起来"的观感来源。 */
-  const delays = new Float32Array(n);
-  let maxT = 0;
-  for (let r = 0; r < rows; r++){
-    for (let c = 0; c < cols; c++){
-      let best = Infinity;
-      for (const q of P){
-        const dx = c + 0.5 - q.c, dy = r + 0.5 - q.r;
-        const t = q.t0 + Math.sqrt(dx * dx + dy * dy) / q.rate;
-        if (t < best) best = t;
-      }
-      /* 噪声 ⇒ 不规则边缘（不是同心圆） */
-      best += Math.random() * 0.55;
-      /* 迸发：把时刻做幂拉伸 ⇒ 起燃瞬间快、之后慢下来（纸张引燃的手感） */
-      best = Math.pow(best / 2.2, 0.78) * 2.2;
-      delays[r * cols + c] = best;
-      if (best > maxT) maxT = best;
+  /* ② blob：极坐标 + 两层谐波 ⇒ 平滑但**不规则**的闭合曲线（不是圆） */
+  function blob(cx, cy, r, lobes, amp, ph, wob){
+    /* ★ 用"中点 + 二次贝塞尔"平滑，而不是把采样点直接连成多边形。
+       上一版 48 点直连 ⇒ 轮廓是**尖角碎晶**状（实测截图可见），
+       完全不像火线。这里点少（20）但每个点用曲线相连 ⇒ 平滑的有机轮廓。 */
+    const N = 20, pts = [];
+    for (let i = 0; i < N; i++){
+      const th = i / N * Math.PI * 2;
+      const rr = r * (1 + amp * Math.sin(lobes * th + ph + wob)
+                        + amp * 0.32 * Math.sin(lobes * 2.6 * th + ph * 1.8 + wob * 1.3));
+      pts.push([cx + Math.cos(th) * rr, cy + Math.sin(th) * rr]);
     }
+    const mid = (a, b) => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+    const f = (p) => p[0].toFixed(1) + " " + p[1].toFixed(1);
+    let d = "M" + f(mid(pts[N - 1], pts[0]));
+    for (let i = 0; i < N; i++){
+      d += "Q" + f(pts[i]) + " " + f(mid(pts[i], pts[(i + 1) % N]));
+    }
+    return d + "Z";
   }
 
-  /* 两层可见性都**显式用动画写**（踩过的坑：wpLoad 已 remove("on")，
-     `.wp-img` 是 opacity:0，若不显式写就会在**全透明图层上烧** ⇒ 看起来是硬切）。 */
-  anim(from, [{opacity:1},{opacity:1}], {duration: dur * 0.88, easing:"linear"});
-  anim(to,   [{opacity:0},{opacity:1}], {duration: Math.round(dur * 0.45),
+  /* ③ 两层可见性**显式用动画写**（wpLoad 已 remove("on")，不写就会烧在透明层上） */
+  anim(from, [{opacity:1},{opacity:1}], {duration: dur * 0.9, easing:"linear"});
+  anim(to,   [{opacity:0},{opacity:1}], {duration: Math.round(dur * 0.5),
                                          easing:"cubic-bezier(.3,0,.5,1)"});
-  anim(to,   [{transform:"scale(1.045)"},{transform:"scale(1)"}],
+  anim(to,   [{transform:"scale(1.05)"},{transform:"scale(1)"}],
        {duration: dur, easing:"cubic-bezier(.33,0,.55,1)"});
-
-  /* 受热感：被烧的那一版**先泛暖再变亮**（不是变黑！）—— 无焦边、无明火，
-     但一眼看得出"在烧"。 */
+  /* ④ 火线前方受热：整张纸泛暖变亮（不是变黑） */
   anim(from, [
     {filter:"sepia(0) saturate(1) brightness(1)"},
-    {filter:"sepia(.26) saturate(1.42) brightness(1.08)", offset:.24},
-    {filter:"sepia(.46) saturate(1.72) brightness(1.18)", offset:.56},
-    {filter:"sepia(.60) saturate(1.92) brightness(1.30)", offset:.84},
-    {filter:"sepia(.48) saturate(1.5) brightness(1.12)", offset:1},
-  ], {duration: dur * 0.88, easing:"cubic-bezier(.4,0,.6,1)"});
+    {filter:"sepia(.22) saturate(1.38) brightness(1.07)", offset:.25},
+    {filter:"sepia(.40) saturate(1.62) brightness(1.16)", offset:.55},
+    {filter:"sepia(.54) saturate(1.80) brightness(1.26)", offset:.82},
+    {filter:"sepia(.42) saturate(1.45) brightness(1.10)", offset:1},
+  ], {duration: dur * 0.9, easing:"cubic-bezier(.4,0,.6,1)"});
 
-  const rectFor = (c, r) => {
-    const x0 = (c * 100 / cols), y0 = (r * 100 / rows);
-    const w = 100 / cols, h = 100 / rows;
-    return `inset(${y0.toFixed(2)}% ${(100 - x0 - w).toFixed(2)}% `
-         + `${(100 - y0 - h).toFixed(2)}% ${x0.toFixed(2)}%)`;
+  /* ⑤ 三层叠加：
+       ember  火线（暖色发光描边，略大于烧穿区）—— 在纸**上面**
+       char   炭化线（细窄暗线，刚烧过的地方）—— 也在上面
+       from   纸本身，用 mask 挖掉已烧毁区域 ⇒ 露出下面的 to */
+  const mk = (css) => { const d = document.createElement("div");
+    d.className = "s-strip"; d.style.cssText = css; from.parentNode.appendChild(d); return d; };
+  /* 三层边缘（从外到内）：光晕 → 火芯 → 炭化线
+       · glow：宽描边 + 模糊 ⇒ 火线外的**灼热光晕**（screen 混合，在深色图上很亮）
+       · core：细描边、亮黄白 ⇒ **火芯**（真正在烧的那条线）
+       · char：更细的暗描边 ⇒ 刚烧过留下的**细窄炭化线**（不是厚黑框） */
+  const glow = mk("position:absolute;inset:0;pointer-events:none;z-index:3;"
+    + "mix-blend-mode:screen;opacity:.85;filter:blur(7px)");
+  const core = mk("position:absolute;inset:0;pointer-events:none;z-index:4;"
+    + "mix-blend-mode:screen;opacity:.95");
+  const char = mk("position:absolute;inset:0;pointer-events:none;z-index:2;"
+    + "mix-blend-mode:multiply;opacity:.8");
+
+  const svgURI = (paths, paint) =>
+    "url(\"data:image/svg+xml;charset=utf-8," +
+    encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 '
+      + W + " " + H + '">' + paint(paths) + "</svg>") + "\")";
+
+  /* ★ 用 **fill-rule="evenodd" 单路径**挖洞：
+     外框矩形 + 各个 blob 子路径 ⇒ blob 内部变成洞（透明）。
+     上一版用嵌套 `<defs><mask>` + `mask="url(#m)"` 的写法**实测没生效**
+     （截图里整屏都是纸、完全没挖开），换成 evenodd 更简单也更可靠。 */
+  const maskPaint = (paths) =>
+    '<path fill="#fff" fill-rule="evenodd" d="M0 0H' + W + "V" + H + "H0Z"
+    + paths.join("") + '"/>';
+  const strokePaint = (color, w) => (paths) =>
+    '<g fill="none" stroke="' + color + '" stroke-width="' + w + '" '
+    + 'stroke-linejoin="round">' + paths.map(d => '<path d="' + d + '"/>').join("") + "</g>";
+
+  const applyMask = (uri) => {
+    from.style.webkitMaskImage = uri; from.style.maskImage = uri;
+    from.style.webkitMaskSize = "100% 100%"; from.style.maskSize = "100% 100%";
   };
-  const rects = [];
-  for (let i = 0; i < n; i++) rects.push(rectFor(i % cols, Math.floor(i / cols)));
-  from.style.clipPath = "inset(0% 0% 0% 0%)";
 
-  const spread = dur * 0.66;
-  const perBlock = spread / Math.max(maxT, 1e-6);
-  const order = Array.from({length:n}, (_, i) => i).sort((a, b) => delays[a] - delays[b]);
-  const fireAt = order.map(i => delays[i] * perBlock);
-
-  let cursor = 0, t0 = null, rafId = 0, stopped = false;
+  let t0 = null, rafId = 0, stopped = false;
   const step = (now) => {
     if (stopped) return;
     if (t0 === null) t0 = now;
-    const el = now - t0;
-    let done = 0;
-    while (cursor < n && fireAt[cursor] <= el && done < 24){   // 每帧 ≤24 块
-      from.style.clipPath = rects[order[cursor++]];
-      done++;
+    const el = (now - t0) / Math.max(dur * 0.86, 1);       // 0..1
+
+    /* 每个火源按自己的速率扩张；速率与起燃时刻不同 ⇒ 火线此消彼长 */
+    const holes = [], lines = [], cores = [], chars = [];
+    for (const q of P){
+      const k = Math.max(0, Math.min(1, (el - q.t0) / Math.max(q.rate, 1e-6)));
+      if (k <= 0) continue;
+      /* ★ 半径**线性**增长 = 火线匀速推进（这是"烧"区别于"淡出"的关键节奏）。
+         起步给一个小底径，否则最初几帧是看不见的点。 */
+      const r = 6 + q.far * k * k;            // k² ⇒ 起燃由小渐大，更像"点燃"
+      const wob = el * 0.9;                                // 让轮廓缓慢蠕动（火在爬）
+      holes.push(blob(q.x, q.y, r, q.lobes, q.amp, q.ph, wob));
+      lines.push(blob(q.x, q.y, r * 1.05, q.lobes, q.amp, q.ph, wob));   // 光晕：最外
+      cores.push(blob(q.x, q.y, r * 1.018, q.lobes, q.amp, q.ph, wob));  // 火芯：贴着洞
+      chars.push(blob(q.x, q.y, r * 0.985, q.lobes, q.amp, q.ph, wob));  // 炭化：略小
     }
-    if (cursor < n){ rafId = requestAnimationFrame(step); }
+    if (holes.length){
+      applyMask(svgURI(holes, maskPaint));
+      glow.style.backgroundImage = svgURI(lines, strokePaint("rgba(255,140,40,.85)", 9));
+      core.style.backgroundImage = svgURI(cores, strokePaint("rgba(255,242,190,.98)", 2.4));
+      char.style.backgroundImage = svgURI(chars, strokePaint("rgba(58,30,16,.8)", 2));
+    }
+    if (el < 1){ rafId = requestAnimationFrame(step); }
+    else {
+      /* 收尾：整张纸烧尽 */
+      applyMask("none");
+      anim(from, [{opacity:1},{opacity:0}], {duration: dur * 0.18, easing:"linear"});
+      anim(glow, [{opacity:.85},{opacity:0}], {duration: dur * 0.18, easing:"linear"});
+      anim(core, [{opacity:.95},{opacity:0}], {duration: dur * 0.18, easing:"linear"});
+      anim(char,  [{opacity:.85},{opacity:0}], {duration: dur * 0.18, easing:"linear"});
+    }
   };
   rafId = requestAnimationFrame(step);
-
-  const endT = setTimeout(() => {
-    anim(from, [{opacity:1},{opacity:0}], {duration: dur * 0.26, easing:"linear"});
-  }, dur * 0.70);
 
   wpLastDur = dur;
   return () => {
     stopped = true;
     try { cancelAnimationFrame(rafId); } catch (e) { /* 老 WebView */ }
-    clearTimeout(endT);
-    try { from.style.clipPath = ""; } catch (e) { /* 无所谓 */ }
+    [glow, core, char].forEach(n => { try { n.remove(); } catch (e) { /* 已走 */ } });
+    try { applyMask("none"); from.style.clipPath = ""; } catch (e) { /* 无所谓 */ }
   };
 }
 
