@@ -346,6 +346,45 @@ A：把你的图（webp/jpg/png）丢进 `wallpapers/` 目录，面板里就会�
 <details>
 <summary><b>📜 更新日志</b>（点击展开）</summary>
 
+### v1.0.10
+
+**★★★ 燃纸 / 墨染等特效完全失效并硬切的真根因：一个自由变量**
+
+`fxBurn` 里写了：
+
+```js
+function fxBurn(to, from, rim){          // ← 参数里没有 id / fromId
+  const stFrom = wpStage(fromId), stTo = wpStage(id);   // ← 它们是 _wpTransition 的局部变量
+```
+
+⇒ 运行时 **`ReferenceError: fromId is not defined`**，函数**第一行就抛错**。
+而它抛错的位置在调度器中间：
+
+```js
+wpCleanup = fxBurn(to, from, rim);      // ← 抛错
+wpStage(id).classList.add("on");        // ← 永远不执行（新图从未显示）
+await sleep(wpLastDur + 260);           // ← 永远不执行
+wpSettle(id, fromId);                   // ← 永远不执行
+```
+
+⇒ 整条链落到外层 `catch`，用**旧层**收尾 ⇒ 观感就是
+**"特效完全没效果 + 硬切"**。墨染等其它特效受影响，是因为这次切换根本没走完。
+
+**修法（三层）：**
+
+| 层 | 做法 |
+|---|---|
+| ① 修根因 | `fxBurn(to, from, rim, id, fromId)`，调度处传全参数 |
+| ② 隔离风险 | 调度处对**每个特效单独 try/catch** —— 一个特效失败只记警告，**照常 `add("on")` 并按标准时长收尾**（退化为普通淡入） |
+| ③ 入口自检 | 缺参时明确告警，而不是运行到一半才炸 |
+
+**为什么会漏掉**：JS 对未定义变量**只在运行到那一行时才报错**，语法检查完全看不出来。
+所以新增判据直接扫每个 `fx*` 函数体，找出「既不是参数、也不是体内声明」的
+`id` / `fromId` 家族标识符 —— 反向验证精准命中 `['fromId', 'id']`。
+
+**排查方式**：这次是**逐个特效在真浏览器里调用并捕获异常**跑出来的
+（8 个特效全部通过），而不是读代码推断。
+
 ### v1.0.9
 
 **★★★ 修掉我上一版引入的 bug —— 它让重复发送"更明显了"**
