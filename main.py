@@ -441,14 +441,23 @@ class AcceleratorPlugin(BasePlugin):
         """
         try:
             now = time.time()
-            for d in (getattr(self, "_ledger_ts", None),):
-                if not isinstance(d, dict):
+            # ⚠️ 必须遍历**四个字典的键并集**，不能只看 _ledger_ts ——
+            #    否则某些键（比如只写过 `_ledger_consumed` 的）永远清不掉 ⇒
+            #    多群聊场景下这几个字典会**随会话数缓慢增长**（内存泄漏）。
+            keys = set()
+            for d in (self._ledger_ts, self._sent_ledger, self._ledger_consumed,
+                      self._resp_by_sid):
+                if isinstance(d, dict):
+                    keys |= set(d.keys())
+            for k in keys:
+                ts = float(self._ledger_ts.get(k, 0) or 0) if isinstance(self._ledger_ts, dict) else 0
+                # 没有时间戳的（陈旧遗留）按「更早」处理 ⇒ 一并清掉
+                if ts and (now - ts) <= 600:
                     continue
-                for k in [k for k, ts in d.items() if now - float(ts or 0) > 600]:
-                    d.pop(k, None)
-                    self._sent_ledger.pop(k, None)
-                    self._ledger_consumed.pop(k, None)
-                    self._resp_by_sid.pop(k, None)
+                self._ledger_ts.pop(k, None)
+                self._sent_ledger.pop(k, None)
+                self._ledger_consumed.pop(k, None)
+                self._resp_by_sid.pop(k, None)
         except Exception:  # noqa: BLE001
             logger.exception("[accel] 陈旧状态清理失败（不影响请求）")
 
