@@ -37,8 +37,13 @@ check("② drop 有描边 ⇒ 字不会被遮住", re.search(r"neon-drop[^{]*\{[
 #   （剥注释后再判 —— 注释里提到 orbitSpin 会假红）
 _nc_v = re.sub(r"/\*[\s\S]*?\*/", "", HTML)
 check("② orbit 不再绕中心旋转（用户否掉了）", "orbitSpin" not in _nc_v)
-check("② orbit 换成撕裂脉冲（glitch）",
-      "@keyframes neonGlitch" in HTML and "neon-glitch" in HTML)
+check("② orbit 换成撕裂脉冲（glitch）", "neonGlitch" in HTML or "glitchBody" in HTML)
+# ★ 重做后：必须**真的**有 ① 色散分层 ② 横移+斜切 ③ 静默占多数
+check("② 有红/青双色散层（伪元素复制字符）",
+      "glitchR" in HTML and "glitchC" in HTML and "attr(data-ch)" in HTML)
+check("② 有横移 + 斜切（不只是抖一下）", "skewX(" in HTML and "glitchBody" in HTML)
+check("② 静默占多数（88% 时间位移为 0）", "0%,87%,100%" in HTML)
+check("② 字母带 data-ch（色散层才能复制字）", "dataset.ch" in HTML)
 check("② ring 真正启用（neonRing 被引用）",
       re.search(r"neon-ring[^{]*\{[^}]*animation:\s*neonRing", HTML) is not None)
 check("② NEON_MODES 含 neon-drop", "neon-drop" in re.search(r"const NEON_MODES\s*=\s*\[([^\]]*)\]", HTML).group(1))
@@ -83,8 +88,7 @@ check("② 字内扫描持续（infinite，不是跑一次就停）",
       re.search(r"neon-drop-run[^{]*\{[^}]*animation:neonDrop[^;]*infinite", HTML) is not None)
 check("② 撕裂不旋转（用户否掉旋转）",
       "orbitSpin" not in re.sub(r"/\*[\s\S]*?\*/", "", HTML))
-check("② 撕裂是短促脉冲（静默占多数，不是一直抖）",
-      re.search(r"0%,86%,100%\{transform:translate\(0,0\)", HTML) is not None)
+check("② 静默占多数（88% 时间位移为 0）", "0%,87%,100%" in HTML)
 
 
 print()
@@ -106,6 +110,12 @@ print("═══ 英文箴言总数 ═══")
 _mo = re.search(r"const MOTTOES = \[([\s\S]*?)\];", HTML)
 _items = re.findall(r'"([^"]+)"', _mo.group(1)) if _mo else []
 check("★ 英文箴言 19 条", len(_items) == 19, f"{len(_items)} 条")
+
+
+# ★ 用户要求：list 做成**标签式**（回车一个就是一个），比逗号长文本框美观好输入
+check("① list 是标签式输入（回车添加）", '"Enter"' in HTML and "chip-list" in HTML)
+check("① 支持 × 删除与退格删末项", "chip-list-x" in HTML and "Backspace" in HTML)
+check("① 粘贴多项也能拆分（逗号/顿号/换行）", "split(/[,，" in HTML)
 
 check("⑤ 版本号已前进（> 1.0.1）", _vt(_v) > _vt("1.0.1"), _v)
 

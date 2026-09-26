@@ -106,6 +106,15 @@ _sx = [x for x in _sc["section_appearance"]["fields"]["wallpaper_effect"]["optio
 check("★ JS 与 schema 的特效清单一致", sorted(_js) == sorted(_sx), f"{_js} vs {_sx}")
 
 print()
+print("═══ 燃纸层级（纸必须在**上层**才看得到被烧）═══")
+# ⚠️ 踩过：给 .wp-img 设 z-index **没用** —— from/to 分属两个 .wp-stage，
+#    跨 stage 的堆叠顺序由 stage 自己决定。判据因此直接查 stage 上的赋值。
+check("★ z-index 设在 **stage** 上（不是 .wp-img）",
+      "stFrom.style.zIndex" in _b and "from.style.zIndex" not in _b)
+check("★ 收尾还原 stage 层级", 'stFrom.style.zIndex = ""' in _b)
+check("★ 收尾显式隐藏纸（不只靠动画 fill）", 'from.style.opacity = "0"' in _b)
+
+print()
 if _fail:
     print(f"❌ {len(_fail)} 项未通过: {_fail[:6]}")
     sys.exit(1)

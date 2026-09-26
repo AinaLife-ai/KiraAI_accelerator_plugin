@@ -444,22 +444,65 @@ to{transform:rotate(360deg)}}
      · **不是一直抖**（持续抖动=廉价）；而是**静默—撕裂—复位**的脉冲节奏，
        每轮位置随机 ⇒ 像信号不稳，而不是像元素在跳。
      · 撕裂只在**短促的一瞬**（占周期约 12%），其余时间干净可读。 */
+/* ★★★ 赛博故障（glitch）：**把文字切成横条、各条错位 + 红青分离**。
+
+   上一版做小了 —— 只是整个词**左右抖 2px**，那叫"抖一下"，不是故障撕裂。
+   真正的 glitch 有三个可辨认的特征，缺一个都不像：
+     ① **横条错位**：字面被切成若干水平条，每条**独立**左右平移（幅度可达十几 px）
+     ② **色散分离**：红/青两色的残影沿 X 偏移 ⇒ RGB 分离（CRT 信号丢失感）
+     ③ **瞬态**：只在极短的一瞬发生，其余时间完全干净（持续抖 = 廉价）
+   做法：用 **重复线性渐变把文字自身裁成横条**（`background-clip:text` +
+   多层 `repeating-linear-gradient` 作为"色带"），逐层给不同的 X 偏移。
+   这样条纹位移、色散都在**字内部**发生，不会影响周围布局。
+
+   ★ 可读性护栏：条纹只错位、**不改透明度**，所以任何一帧都仍然可读；
+   周期里约 88% 的时间位移为 0（完全静止）。 */
 .wordmark.neon-orbit{filter:drop-shadow(0 0 8px var(--nc))}
-.wordmark.neon-orbit > span{
-  background-image:linear-gradient(180deg,var(--nc),var(--viol),var(--nc));
-  -webkit-background-clip:text;background-clip:text;color:transparent;
-  text-shadow:none;
+/* ★ 只加定位上下文，**不改字母原本的颜色** —— KIRA 是渐变实心、
+   BOOST 是描边，那是既有的设计；glitch 只在其上叠红/青色散。 */
+.wordmark.neon-orbit > span{position:relative}
+/* 故障条：整词的三条带，各自独立横移（用 ::before/::after 造两层色散） */
+.wordmark.neon-orbit.neon-glitch > span::before,
+.wordmark.neon-orbit.neon-glitch > span::after{
+  content:attr(data-ch);
+  position:absolute;left:0;top:0;
+  pointer-events:none;
+  mix-blend-mode:screen;
 }
-.wordmark.neon-orbit.neon-glitch > span{
-  animation:neonGlitch var(--gl-dur,2.6s) steps(1,end) var(--gl-delay,0s) infinite;
+.wordmark.neon-orbit.neon-glitch > span::before{
+  color:#ff2f6d;                        /* 红分色 */
+  animation:glitchR var(--gl-dur,2.6s) steps(1,end) var(--gl-delay,0s) infinite;
 }
-/* 撕裂：极短促的横向错位 + 轻微色散，随后立刻复位 */
-@keyframes neonGlitch{
-  0%,86%,100%{transform:translate(0,0);filter:none}
-  87%{transform:translate(-2px,0);filter:drop-shadow(2px 0 0 rgba(255,0,110,.85))}
-  89%{transform:translate(2.5px,0);filter:drop-shadow(-2px 0 0 rgba(0,225,255,.85))}
-  91%{transform:translate(-1.5px,-1px);filter:drop-shadow(1.5px 0 0 rgba(255,0,110,.7))}
-  93%{transform:translate(1px,1px);filter:none}
+.wordmark.neon-orbit.neon-glitch > span::after{
+  color:#22e6ff;                        /* 青分色 */
+  animation:glitchC var(--gl-dur,2.6s) steps(1,end) var(--gl-delay,0s) infinite;
+}
+/* 本体：整词短促横移 + 轻微斜切（撕裂感） */
+.wordmark.neon-orbit.neon-glitch{
+  animation:glitchBody var(--gl-dur,2.6s) steps(1,end) var(--gl-delay,0s) infinite;
+}
+/* 三套关键帧：位移量/方向/时刻都不同 ⇒ 不是整齐地一起动 = 真正的撕裂
+   （88% 的时间全为 0 ⇒ 干净可读；只在 2~3 帧内爆发） */
+@keyframes glitchBody{
+  0%,87%,100%{transform:translate(0,0) skewX(0)}
+  88%{transform:translate(-9px,0) skewX(-6deg)}
+  90%{transform:translate(11px,-1px) skewX(4deg)}
+  92%{transform:translate(-5px,1px) skewX(-2deg)}
+  94%{transform:translate(3px,0) skewX(0)}
+}
+@keyframes glitchR{
+  0%,87%,100%{transform:translate(0,0);opacity:0}
+  88%{transform:translate(-13px,-2px);opacity:.85}
+  90%{transform:translate(9px,2px);opacity:.7}
+  92%{transform:translate(-7px,-1px);opacity:.8}
+  94%{transform:translate(2px,1px);opacity:0}
+}
+@keyframes glitchC{
+  0%,87%,100%{transform:translate(0,0);opacity:0}
+  88%{transform:translate(12px,2px);opacity:.8}
+  90%{transform:translate(-10px,-2px);opacity:.7}
+  92%{transform:translate(8px,1px);opacity:.75}
+  94%{transform:translate(-3px,-1px);opacity:0}
 }
 /* ★★★ 修复（实测：这一档原来只有**静态**阴影，完全没动 ——
    用户报「有几个模式像完全没特效」）。
@@ -865,6 +908,22 @@ select{appearance:none;background-image:none;cursor:pointer}
   font-size:13px;line-height:1;padding:0 2px;transition:color .18s,transform .18s}
 .chip-multi .chip-x:hover{color:var(--pink);transform:scale(1.22)}
 .multi-sel{font-size:11.5px}
+/* 标签式 list 输入（工具黑白名单等）——与框架 TagInput 观感一致 */
+.wrap-list{display:flex;flex-wrap:wrap;gap:6px;align-items:center;
+  min-height:30px;padding:4px 6px;border-radius:8px;border:1px solid var(--edge);
+  background:rgba(255,255,255,.03);cursor:text;transition:border-color .18s,box-shadow .18s}
+.wrap-list:focus-within{border-color:var(--violet);box-shadow:0 0 0 3px rgba(139,124,255,.13)}
+.list-chips{display:flex;flex-wrap:wrap;gap:5px;align-items:center}
+.chip-list{display:inline-flex;align-items:center;gap:4px;font-size:11.5px;
+  padding:2px 5px 2px 8px;border-radius:999px;color:var(--ink);
+  background:linear-gradient(96deg,rgba(139,124,255,.20),rgba(90,200,255,.18));
+  border:1px solid var(--edge);animation:chipIn .3s cubic-bezier(.2,.9,.3,1.3)}
+.chip-list-tx{max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chip-list-x{border:0;background:transparent;color:var(--dim);cursor:pointer;
+  font-size:13px;line-height:1;padding:0 2px;transition:color .18s,transform .18s}
+.chip-list-x:hover{color:var(--pink);transform:scale(1.22)}
+.list-inp{flex:1 1 90px;min-width:90px;border:0;outline:0;background:transparent;
+  color:var(--ink);font-size:12px;padding:2px 2px}
 .f-ctl .wrap-sel{position:relative}
 .f-ctl .wrap-sel .ico{position:absolute;right:11px;top:50%;transform:translateY(-50%);
   pointer-events:none;color:var(--dim2);font-size:13px}
@@ -1854,16 +1913,50 @@ function makeControl(field, key, value, onChange){
     box.appendChild(inp);
 
   } else if (type === "list"){
-    /* 自由填写的列表（工具黑白名单、壁纸文件名…）—— 逗号分隔的文本框。 */
+    /* ★ 标签式输入（TagInput 风格，与框架 `TagInput.vue` 一致）：
+         · **回车**（或逗号）⇒ 把当前输入变成一个标签
+         · **点 ×** ⇒ 删掉那个标签
+         · **退格**（输入框为空时）⇒ 删掉最后一个
+       用户要的就是这个：一次一个，比"逗号分隔的长文本框"美观、也好输入。
+       ⚠️ 上一版我用 `||` 把 list 并进了 multi_select 分支（做成模型下拉），
+          那是错的：list 是**自由填写**的名单。这里给出正确的控件。 */
+    const cur = Array.isArray(value) ? value.slice()
+              : (typeof value === "string" && value ? value.split(",").map(s => s.trim()).filter(Boolean) : []);
+    const wrap = el("div", "wrap-list");
+    const chips = el("div", "list-chips");
     const inp = el("input", "list-inp"); inp.type = "text";
-    inp.placeholder = "逗号分隔，留空=全部";
-    inp.value = Array.isArray(value) ? value.join(", ")
-              : (typeof value === "string" ? value : "");
-    inp.addEventListener("input", ()=>{
-      const parts = inp.value.split(",").map(x => x.trim()).filter(Boolean);
-      on(parts.length ? parts : []);
+    function paint(){
+      chips.textContent = "";
+      cur.forEach((v, i)=>{
+        const c = el("span", "chip-list");
+        const tx = el("span", "chip-list-tx"); tx.textContent = v;
+        const x = el("button", "chip-list-x"); x.type = "button"; x.textContent = "×";
+        x.title = "移除";
+        x.addEventListener("click", (e)=>{ e.preventDefault(); cur.splice(i, 1); paint(); on(cur.slice()); });
+        c.appendChild(tx); c.appendChild(x); chips.appendChild(c);
+      });
+      inp.placeholder = cur.length ? "" : "输入后按回车添加（留空=全部）";
+    }
+    function commit(){
+      /* 支持一次粘贴多项：按逗号/顿号/换行拆开，逐项加入 */
+      const parts = inp.value.split(/[,，、\n]/).map(s => s.trim()).filter(Boolean);
+      if (!parts.length) return;
+      parts.forEach(p => { if (!cur.includes(p)) cur.push(p); });
+      inp.value = ""; paint(); on(cur.slice());
+    }
+    inp.addEventListener("keydown", (e)=>{
+      if (e.key === "Enter"){ e.preventDefault(); commit(); }
+      else if (e.key === "Backspace" && !inp.value && cur.length){
+        e.preventDefault(); cur.pop(); paint(); on(cur.slice());
+      }
     });
-    box.appendChild(inp);
+    /* 逗号/顿号也直接成标签（符合直觉），其余字符正常输入 */
+    inp.addEventListener("input", ()=>{ if (/[,，、]/.test(inp.value)) commit(); });
+    inp.addEventListener("blur", commit);          // 失焦也提交，避免填了忘按回车
+    wrap.addEventListener("click", ()=> inp.focus());
+    paint();
+    wrap.appendChild(chips); wrap.appendChild(inp);
+    box.appendChild(wrap);
 
   } else if (type === "multi_select"){
     /* ★ **只有 `multi_select` 走下拉**。
@@ -2598,6 +2691,17 @@ function fxBurn(to, from, rim){
     return d + "Z";
   }
 
+  /* ★★★ 层级：燃纸的语义是"**上面这张纸**被烧掉、露出下面的新图"。
+     但 DOM 里 wp-b 在 wp-a 之后 ⇒ 新图默认在**上层**，而旧的"纸"在下层
+     ⇒ 我挖的是**下层的 mask**，被新图整个盖住 ⇒ 观感是"燃完了前图还在"。
+     ⚠️ 这里踩了一次：给 `.wp-img` 设 `z-index` **没有用** ——
+        from 与 to 分属**两个不同的 `.wp-stage`**，跨 stage 的堆叠顺序由
+        **stage 自己**决定，子元素的 z-index 管不到外面。
+     ⇒ 必须把 z-index 设在 **stage** 上。 */
+  const stFrom = wpStage(fromId), stTo = wpStage(id);
+  if (stFrom) stFrom.style.zIndex = "2";   // 纸在上
+  if (stTo)   stTo.style.zIndex   = "1";   // 新图在下（被烧出来）
+
   /* ③ 两层可见性**显式用动画写**（wpLoad 已 remove("on")，不写就会烧在透明层上） */
   anim(from, [{opacity:1},{opacity:1}], {duration: dur * 0.9, easing:"linear"});
   anim(to,   [{opacity:0},{opacity:1}], {duration: Math.round(dur * 0.5),
@@ -2679,7 +2783,11 @@ function fxBurn(to, from, rim){
     }
     if (el < 1){ rafId = requestAnimationFrame(step); }
     else {
-      /* 收尾：整张纸烧尽 */
+      /* 收尾：整张纸烧尽。
+         ★ 除了动画，**再显式写一次 opacity:0** —— 只靠 WAAPI 的
+         `fill:forwards` 在某些 WebView 上会被后续清理覆盖，
+         表现就是"烧完了前图还在"。双保险。 */
+      from.style.opacity = "0";
       applyMask("none");
       anim(from, [{opacity:1},{opacity:0}], {duration: dur * 0.18, easing:"linear"});
       anim(glow, [{opacity:.85},{opacity:0}], {duration: dur * 0.18, easing:"linear"});
@@ -2694,7 +2802,12 @@ function fxBurn(to, from, rim){
     stopped = true;
     try { cancelAnimationFrame(rafId); } catch (e) { /* 老 WebView */ }
     [glow, core, char].forEach(n => { try { n.remove(); } catch (e) { /* 已走 */ } });
-    try { applyMask("none"); from.style.clipPath = ""; } catch (e) { /* 无所谓 */ }
+    try {
+      applyMask("none"); from.style.clipPath = "";
+      /* 还原 stage 层级，别影响下一次切换 */
+      if (stFrom) stFrom.style.zIndex = "";
+      if (stTo)   stTo.style.zIndex   = "";
+    } catch (e) { /* 无所谓 */ }
   };
 }
 
@@ -3049,7 +3162,11 @@ function buildWordmark(){
     }
     const s = document.createElement("span");
     s.className = "L " + (i < 4 ? "o" : "e");   // KIRA 渐变实心 / BOOST 描边
-    s.textContent = ch; host.appendChild(s);
+    s.textContent = ch;
+    /* ★ 供 glitch 的 ::before / ::after 复制同一个字（红/青分色层）。
+       用 `attr(data-ch)` 而不是把伪元素的内容写死，这样字母换了也不用改 CSS。 */
+    s.dataset.ch = ch;
+    host.appendChild(s);
   });
   return [...host.querySelectorAll(".L")];
 }
