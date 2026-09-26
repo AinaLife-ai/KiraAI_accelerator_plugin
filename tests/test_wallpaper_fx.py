@@ -114,6 +114,59 @@ check("★ z-index 设在 **stage** 上（不是 .wp-img）",
 check("★ 收尾还原 stage 层级", 'stFrom.style.zIndex = ""' in _b)
 check("★ 收尾显式隐藏纸（不只靠动画 fill）", 'from.style.opacity = "0"' in _b)
 
+
+
+print()
+print("═══ ★★★ 特效函数不得引用未定义的自由变量（本轮真 bug）═══")
+# 现场：fxBurn 里用了 `fromId`/`id`（是 _wpTransition 的局部变量）却不在参数里
+# ⇒ 运行时 ReferenceError ⇒ 特效完全没效果 + 硬切。
+# 这里用**静态近似**：把每个 fx* 的函数体拿出来，找出「既不是参数、
+# 也不是体内声明、也不是已知全局」的裸标识符。
+_KNOWN = {
+    "window","document","Math","Array","Object","Number","String","JSON","Boolean",
+    "setTimeout","clearTimeout","setInterval","clearInterval","console","Promise",
+    "requestAnimationFrame","cancelAnimationFrame","encodeURIComponent","decodeURIComponent",
+    "wpLastDur","wpStage","wpImg","anim","sleep","rand","WP_DUR","WP_EFFECTS",
+    "innerWidth","innerHeight","getComputedStyle","performance","Element","undefined",
+    "null","true","false","this","isNaN","parseFloat","parseInt","Error","Date","CSS",
+    # 模块级 helper
+    "wpSettle","wpCleanup","wpCur","wpOther","wpLoad","wpNormalize","wpRimReset",
+    "wpBusy","wpActive","wpEffect","wpEnabled","_wpLastFx","wpPendingRestart",
+    "startWallpaperRotation","stopWallpaperRotation",
+}
+_DECL = r"(?:const|let|var|function|class)\s+"
+# 每个特效：断言它用到的、形如 id/fromId 这类**明显来自调用方**的名字都在参数里
+for _fx in ("fxFade","fxIris","fxWipe","fxStrips","fxZoom","fxInk","fxBurn"):
+    _i = HTML.find("function " + _fx)
+    if _i < 0:
+        continue
+    # 函数体：从签名到下一个顶层 function
+    _j = HTML.find("\nfunction ", _i + 10)
+    _body = HTML[_i:_j if _j > 0 else _i + 9000]
+    # 去掉注释，避免注释里的词造成误报
+    _body = re.sub(r"/\*[\s\S]*?\*/", "", _body)
+    _body = re.sub(r"//[^\n]*", "", _body)
+    _sig = re.search(r"function \w+\(([^)]*)\)", _body)
+    _params = {x.strip() for x in (_sig.group(1) if _sig else "").split(",") if x.strip()}
+    _local = set(re.findall(_DECL + r"([A-Za-z_$]\w*)", _body))
+    # ★ 只检查「调用方可能传入」的候选名（id/fromId/to/from/rim 家族），
+    #   不做全量分析（那会被字符串与属性名干扰）。
+    _suspect = []
+    for _name in ("fromId", "id"):
+        if re.search(r"(?<![\w.$])" + _name + r"(?![\w$])", _body) and _name not in _params:
+            _suspect.append(_name)
+    check(f"★★★ {_fx} 不引用未定义的 {_suspect or '调用方变量'}",
+          not _suspect,
+          f"缺失参数: {_suspect}" if _suspect else "参数齐全")
+
+print()
+print("═══ 特效失败必须被单独捕获（不得连累整条切换链）═══")
+_i = HTML.find('if (fx === "fade")')
+_blk = HTML[max(0, _i - 800):_i + 1200]
+check("★★ 调度处对特效调用有 try/catch", "catch (e)" in _blk and "fxFade" in _blk)
+check("★★ 失败时退化为淡入（最坏无特效，绝不硬切）",
+      "退化为普通淡入" in _blk or "兜底淡入" in _blk)
+
 print()
 if _fail:
     print(f"❌ {len(_fail)} 项未通过: {_fail[:6]}")

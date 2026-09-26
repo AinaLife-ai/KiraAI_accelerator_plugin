@@ -2636,7 +2636,14 @@ function fxIris(to, from, rim){
 
    性能：mask 用 GPU 合成，逐帧只重新拼一个 SVG 字符串（blob 数 3~6、每个
    48 个采样点）⇒ 30fps 下开销很低，比 per-frame 的 feTurbulence 滤镜轻得多。 */
-function fxBurn(to, from, rim){
+/* ★ 参数里的 id / fromId 是**必需的** —— 见下方层级处理。
+   踩过的 bug：最初写 fxBurn(to, from, rim) 却在函数体里直接用 `id`/`fromId`
+   （它们是 _wpTransition 的局部变量）⇒ **ReferenceError** ⇒ 函数第一行就抛错
+   ⇒ 连 `wpStage(id).classList.add("on")` 都执行不到 ⇒ 新图不可见
+   ⇒ 观感就是"燃纸完全没效果 / 硬切"。
+   ★★ 教训：函数体里出现的自由变量，必须确认它在**参数或闭包**里真实存在；
+      这类错误静态检查抓不到（JS 不报未定义变量在运行前），所以**必须实测**。 */
+function fxBurn(to, from, rim, id, fromId){
   const dur = WP_DUR * 1.25;
   const W = Math.max(window.innerWidth, 320);
   const H = Math.max(window.innerHeight, 320);
@@ -2691,6 +2698,13 @@ function fxBurn(to, from, rim){
     return d + "Z";
   }
 
+  /* ★ 参数自检：把"自由变量"这类错误**在入口处**变成明确的报错，
+     而不是运行到一半才炸（那样会连累调用方）。
+     注意：这是**防御性**的 —— 真正的修法是参数必须传全（见函数签名注释）。 */
+  if (typeof id === "undefined" || typeof fromId === "undefined"){
+    console.warn("[accel] fxBurn 缺少 id/fromId 参数 ⇒ 跳过层级处理（仍会正常燃烧）");
+  }
+
   /* ★★★ 层级：燃纸的语义是"**上面这张纸**被烧掉、露出下面的新图"。
      但 DOM 里 wp-b 在 wp-a 之后 ⇒ 新图默认在**上层**，而旧的"纸"在下层
      ⇒ 我挖的是**下层的 mask**，被新图整个盖住 ⇒ 观感是"燃完了前图还在"。
@@ -2698,7 +2712,8 @@ function fxBurn(to, from, rim){
         from 与 to 分属**两个不同的 `.wp-stage`**，跨 stage 的堆叠顺序由
         **stage 自己**决定，子元素的 z-index 管不到外面。
      ⇒ 必须把 z-index 设在 **stage** 上。 */
-  const stFrom = wpStage(fromId), stTo = wpStage(id);
+  const stFrom = (typeof fromId !== "undefined") ? wpStage(fromId) : null;
+  const stTo   = (typeof id     !== "undefined") ? wpStage(id)     : null;
   if (stFrom) stFrom.style.zIndex = "2";   // 纸在上
   if (stTo)   stTo.style.zIndex   = "1";   // 新图在下（被烧出来）
 
@@ -3031,14 +3046,29 @@ async function _wpTransition(url){
   _wpLastFx = fx;
 
   wpCleanup = null;
-  if (fx === "fade")         fxFade(to, from, rim);
-  else if (fx === "iris")    fxIris(to, from, rim);
-  else if (fx === "wipe")    fxWipe(to, from, rim);
-  else if (fx === "blinds")  wpCleanup = fxStrips(to, from, rim, false, false);
-  else if (fx === "shutter") wpCleanup = fxStrips(to, from, rim, true, true);
-  else if (fx === "zoom")    fxZoom(to, from);
-  else if (fx === "burn")    wpCleanup = fxBurn(to, from, rim);
-  else                       wpCleanup = fxInk(to, from, rim);
+  /* ★★★ 每个特效**单独 try**：一个特效抛错绝不能连累整条切换链。
+     踩过的坑：`fxBurn` 里误用自由变量（`fromId`/`id` 不在参数里）
+     ⇒ 抛 `ReferenceError` ⇒ 后面的 `wpStage(id).classList.add("on")`、
+     `await sleep(...)`、`wpSettle(...)` **全都不执行** ⇒ 落到外层 catch
+     ⇒ 用旧层收尾 ⇒ 新图从未显示 ⇒ 观感是"特效完全没效果 + 硬切"。
+     ⇒ 现在：特效失败只记一条警告，**照常 add("on") 并按标准时长收尾**
+       （退化成一次正常淡入，最坏也只是"没有特效"，绝不会硬切或黑屏）。 */
+  try {
+    if (fx === "fade")         fxFade(to, from, rim);
+    else if (fx === "iris")    fxIris(to, from, rim);
+    else if (fx === "wipe")    fxWipe(to, from, rim);
+    else if (fx === "blinds")  wpCleanup = fxStrips(to, from, rim, false, false);
+    else if (fx === "shutter") wpCleanup = fxStrips(to, from, rim, true, true);
+    else if (fx === "zoom")    fxZoom(to, from);
+    else if (fx === "burn")    wpCleanup = fxBurn(to, from, rim, id, fromId);
+    else                       wpCleanup = fxInk(to, from, rim);
+  } catch (e) {
+    console.error("[accel] 特效 " + fx + " 执行失败，退化为普通淡入（不影响切换）", e);
+    try {
+      // 兜底：至少做一次交叉淡入，绝不留硬切
+      fxFade(to, from, rim);
+    } catch (e2) { console.warn("[accel] 兜底淡入也失败（仍会正常收尾）", e2); }
+  }
 
   wpStage(id).classList.add("on");
   // ★ 等**这一套自己的**实际时长（含错峰延迟），再加一点余量
