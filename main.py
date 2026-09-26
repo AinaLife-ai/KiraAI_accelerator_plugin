@@ -167,8 +167,12 @@ class AcceleratorPlugin(BasePlugin):
         #   （响应标记丢失时的兜底；存原文而不是只存个数，
         #     这样兜底时也能按内容剥离，对文本被改写同样稳健）
         self._sent_ledger: dict[str, list] = {}
-        #: 本轮台账是否已被消费（用于区分"第一步"与"后续步"）
-        self._ledger_consumed: dict[str, bool] = {}
+        #: 台账被消费的**时间戳**（sid -> float）。
+        #: 用它区分"第一步"与"后续步"；带时间戳是为了**不依赖清理钩子**
+        #: （钩子可能被前面 stop() 的处理器跳过，纯布尔会永久卡在 True）。
+        self._ledger_consumed: dict[str, float] = {}
+        #: 台账最后一次活动时间（用于清理陈旧状态，双保险）
+        self._ledger_ts: dict[str, float] = {}
         self._proxy_cache: dict[tuple, LLMClientProxy] = {}
         self._stats = {
             "turns": 0, "steps": 0,
@@ -337,7 +341,7 @@ class AcceleratorPlugin(BasePlugin):
     # ══════════════════════════════════════════════════════════
     # L1 观测
     # ══════════════════════════════════════════════════════════
-    @on.step_result(priority=Priority.SYS_LOW)
+    @on.step_result(priority=Priority.LOW)
     async def observe_step(self, event: KiraMessageBatchEvent, step_result, *_):
         if not self.observe_enabled:
             return
@@ -368,7 +372,7 @@ class AcceleratorPlugin(BasePlugin):
         except Exception:  # noqa: BLE001
             logger.exception("[accel] 清理本轮发送状态失败（不影响发送）")
 
-    @on.final_result(priority=Priority.SYS_LOW)
+    @on.final_result(priority=Priority.LOW)
     async def observe_final(self, event: KiraMessageBatchEvent, final_result, *_):
         # ★ 无论观测是否开启，**都要**清理本轮发送状态（否则台账会残留到下一轮，
         #   下一轮若文本恰好相同就会被误剥离 = 丢内容）。
@@ -424,15 +428,51 @@ class AcceleratorPlugin(BasePlugin):
     # ══════════════════════════════════════════════════════════
     # L2 请求优化
     # ══════════════════════════════════════════════════════════
-    @on.llm_request(priority=Priority.SYS_LOW)
+    def _clear_stale_round_state(self):
+        """清掉**明显陈旧**的本轮状态（双保险，不依赖 final_result 一定执行）。
+
+        ★ 为什么需要：`_clear_round_state` 挂在 `@on.final_result` 上，而事件处理器
+          的循环是「按优先级从高到低、遇 `event.stop()` 就 break」
+          ⇒ **排在后面的处理器可能不执行**。
+          一旦没执行，台账与"已消费"标记就会**残留到下一轮**
+          ⇒ 下一轮要么不剥离（**重复**）、要么误剥离（**丢内容**）。
+        ⇒ 这里在**每轮请求前**兜一次底：凡是超过 10 分钟没动过的状态一律清掉。
+          正常一轮远短于 10 分钟，所以不会误清正在用的状态。
+        """
+        try:
+            now = time.time()
+            # ⚠️ 必须遍历**四个字典的键并集**，不能只看 _ledger_ts ——
+            #    否则某些键（比如只写过 `_ledger_consumed` 的）永远清不掉 ⇒
+            #    多群聊场景下这几个字典会**随会话数缓慢增长**（内存泄漏）。
+            keys = set()
+            for d in (self._ledger_ts, self._sent_ledger, self._ledger_consumed,
+                      self._resp_by_sid):
+                if isinstance(d, dict):
+                    keys |= set(d.keys())
+            for k in keys:
+                ts = float(self._ledger_ts.get(k, 0) or 0) if isinstance(self._ledger_ts, dict) else 0
+                # 没有时间戳的（陈旧遗留）按「更早」处理 ⇒ 一并清掉
+                if ts and (now - ts) <= 600:
+                    continue
+                self._ledger_ts.pop(k, None)
+                self._sent_ledger.pop(k, None)
+                self._ledger_consumed.pop(k, None)
+                self._resp_by_sid.pop(k, None)
+        except Exception:  # noqa: BLE001
+            logger.exception("[accel] 陈旧状态清理失败（不影响请求）")
+
+    @on.llm_request(priority=Priority.LOW)
     async def capture_and_optimize(self, event: KiraMessageBatchEvent, req: LLMRequest,
                                    tag_set=None, *_):
-        """排在 SYS_LOW（实测无任何插件占用）⇒ 保证在所有插件之后收口，顺序确定。
+        """排在 Priority.LOW ⇒ 在大多数插件之后收口，顺序确定。
 
         只做两件事（**刻意不做工具裁剪**，见 README「为什么不做工具裁剪」）：
           1. 记录本轮上下文（sid/event/tag_set），供抢先发送使用
           2. 自动思考判定（结果在 request 上打标记，由 _build_request_kwargs 注入）
         """
+        # ★ 双保险：先清掉**明显陈旧**的本轮状态（若 final_result 因 processor
+        #   被跳过而没执行，这里能兜住 ⇒ 不会残留到下一轮造成重复/误剥）。
+        self._clear_stale_round_state()
         sid_now = getattr(event, "sid", None)
         # 仅供面板展示"最近一次判定属于哪个会话"，功能路径一律用 req 上的 SendCtx
         self._current_sid = sid_now
@@ -457,7 +497,7 @@ class AcceleratorPlugin(BasePlugin):
             else:
                 self._stats["thinking_off"] += 1
 
-    @on.tool_result(priority=Priority.SYS_LOW)
+    @on.tool_result(priority=Priority.LOW)
     async def on_tool_result(self, event: KiraMessageBatchEvent, tool_result, *_):
         """**只读**：把"上轮工具失败"这个信号喂给自动思考判定。
 
@@ -830,6 +870,10 @@ class AcceleratorPlugin(BasePlugin):
         if delivered and ctx is not None and ctx.sid:
             try:
                 self._sent_ledger.setdefault(ctx.sid, []).append(seg)
+                # 记"最后一次活动时间"，供 `_clear_stale_round_state` 判断陈旧
+                if not isinstance(getattr(self, "_ledger_ts", None), dict):
+                    self._ledger_ts = {}
+                self._ledger_ts[ctx.sid] = time.time()
             except Exception:  # noqa: BLE001
                 pass
 
@@ -1228,7 +1272,19 @@ class AcceleratorPlugin(BasePlugin):
                 #   ⇒ 第一步之外的路径拿不到它。两者一起修才对：
                 #     · 台账活到轮结束（避免第二步 n=0 ⇒ 整批重复）
                 #     · 但只消费一次（避免第二步按序号误切 ⇒ 丢内容）
-                if sid_now and plugin._ledger_consumed.get(sid_now):
+                # ★★★ 消费标记带**时间戳**，而不是纯布尔。
+                #
+                #   为什么：这个标记的清除原来只挂在 `final_result` 上，
+                #   而事件处理器**可能不执行**（排在后面的处理器会被
+                #   前面调用 `event.stop()` 的处理器跳过）。
+                #   一旦没清掉，标记就**永久为真** ⇒ 之后每一轮都走
+                #   "已消费 ⇒ 不剥离" ⇒ **每轮都重复发送**（用户报"更明显了"）。
+                #   ⇒ 用时间戳做**自愈**：只在一轮可能的时间窗内认它，
+                #     超时自动失效，不依赖任何钩子一定被执行。
+                #      （正常一轮远短于 5 分钟；真的跑那么久，
+                #        宁可不剥离（最坏重复一次）也不能永久失效。）
+                _cons_ts = plugin._ledger_consumed.get(sid_now) if sid_now else None
+                if _cons_ts and (time.time() - _cons_ts) < 300:
                     ledger = []
                     segs = []
                     n = 0
@@ -1243,7 +1299,8 @@ class AcceleratorPlugin(BasePlugin):
                     n = len(ledger)
                     segs = list(ledger)
                     if sid_now:
-                        plugin._ledger_consumed[sid_now] = True   # ★ 只消费一次
+                        # 记**时间戳**（不是 True）——超时自动失效，见上
+                        plugin._ledger_consumed[sid_now] = time.time()
                 elif n > 0 and not segs:
                     # 台账没有、标记在但段原文不在（理论上不该发生）
                     # ⇒ 只能按序号剥离，留一条线索
