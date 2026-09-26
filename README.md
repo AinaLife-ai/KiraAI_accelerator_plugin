@@ -346,6 +346,44 @@ A：把你的图（webp/jpg/png）丢进 `wallpapers/` 目录，面板里就会�
 <details>
 <summary><b>📜 更新日志</b>（点击展开）</summary>
 
+### v1.0.8
+
+**★★★ 重复发送：多步 agent loop 下整批重复（用户截图：同一批消息出现两遍）**
+
+框架的循环形状（`message_manager.py:793`）：
+
+```python
+async for step in agent_executor.run(agent_ctx, max_steps=max_steps):
+    if not await send_llm_text(llm_resp):   # ← **每一步**都调 send_xml_messages
+        break
+```
+
+也就是说 `send_xml_messages` 在一轮里会被**调用多次**（每步一次）。而台账原来在它的
+`finally` 里就被 `pop` 掉 ⇒ **第二步时台账已空 ⇒ n=0 ⇒ 不剥离 ⇒ 该步文本整段重发**。
+
+修法是两个方向**同时**收住的（只做一边都会出问题）：
+
+| 做法 | 后果 |
+|---|---|
+| 只"消费完就清"（旧） | 多步第二次数不到 ⇒ **整批重复** |
+| 只"留到轮结束"（过头） | 第二步拿台账**按序号切** ⇒ **误切 = 丢内容** |
+| ✅ 留到轮结束 **+ 只消费一次** | 既不重复、也不丢内容 |
+
+所以台账现在：**活到轮结束**（由 `final_result` 统一清），但加一个
+`_ledger_consumed` 标记 —— **只有第一次调用会消费它**，后续步 `n=0` 原样交给框架
+（后续步的文本本来就该发，从没抢发过）。
+
+新增 `tests/test_dup_send_multistep.py` 专门盯这个场景。
+
+**★★ 与 xml_tag_fixer 的兼容性实测（拉取真插件跑）**
+
+`xml_tag_fixer` 在 `@on.llm_response(priority=HIGH)` **重写 `resp.text_response`**
+（补标签 / 拆消息块 / 实体转义 / 反斜杠还原），而我们的剥离是**按内容比对**的。
+
+实测结论：**兼容，四种改写后都能剥干净**。它只改 `text_response`，
+**不重建响应、不碰 `__dict__`**，所以我们的标记不会被它破坏。
+新增 `tests/test_compat_xmlfixer.py`（设 `XFIX=/path/to/main.py` 即跑）把这条锁住。
+
 ### v1.0.7
 
 **工具黑白名单改成「标签式输入」（回车一个就是一个）**
