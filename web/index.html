@@ -62,7 +62,14 @@ body{
      .wp-rim    = 3   揭示光晕，在最上面
    注意 fxBurn 会**临时**给两个 stage 写 inline z-index（纸=2 / 新图=1）
    来换上下层，那套靠 inline 覆盖 CSS，且它的清理函数会还原 —— 互不干扰。 */
-.wp-stage{position:absolute;inset:calc(-1 * max(72px, 6%));z-index:1;will-change:transform;backface-visibility:hidden}
+.wp-stage{position:absolute;inset:calc(-1 * max(72px, 6%));z-index:1}/* ★★★ 2026-09-27：**故意不写** will-change:transform / backface-visibility。
+   它们会让图层提升为独立合成层，而祖先 .wallpaper 正在跑 wpBreath
+   （scale 1.04 <-> 1.10，transform-origin 50% 45%）。
+   新图那一层**第一次被合成**时，WebView 会有帧拿不到祖先的 transform
+   ⇒ 新图瞬间显示在**未缩放**的位置 = 用户说的[重置位置]
+     （缩放中心 50%/45% ⇒ 位移随位置变、量级几个像素），随后才恢复
+   = [卡顿一下重置位置，再继续晃动]。
+   提升合成层的性能收益远不值这个代价。 */}
 .wp-img{position:absolute;inset:0;background-size:cover;background-position:center;
   opacity:0;will-change:transform,opacity,clip-path,filter}
 .wp-stage.on .wp-img{opacity:1}
