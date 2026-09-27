@@ -1542,6 +1542,14 @@ window.__accelSplashShownAt = (window.performance && performance.now())
            background-size / clip-path / 伪元素定位，在 flex 容器里太脆弱，
            而且缩放到很窄的标签里线会细到看不见（用户反馈"还是没有特效"）。
            画成元素之后：常驻淡轨迹 + 一段亮线扫过，**稳定且明显**。 -->
+/* ★★★ 2026-09-27：载层 SVG 必须显式写 preserveAspectRatio=none。
+     SVG 默认是 xMidYMid meet(=contain)，而真实图层 .wp-img 是 background-size:cover
+     ⇒ 载层渲染比真实图层小一圈（1080x2340 图 / 1224x2621 舞台：
+        cover 1224x2652 vs meet 1210x2621 ⇒ 相对失真 1.19%，
+        边缘位移约 15px/侧、中心为 0、方向随位置变）
+     ⇒ 交接瞬间画面被重新摆放 = 用户说的"卡顿一下 / 重置一次"。
+     设为 none 后：用户单位被拉伸填满 CSS 盒(= .wp-stage 的盒)，
+     内部 div 的 cover 与 .wp-img 同参 ⇒ 与真实图层逐像素等价，交接看不出变化。 */
       <svg class="ecg" viewBox="0 0 60 20" preserveAspectRatio="none" aria-hidden="true">
         <polyline class="ecg-track"
           points="0,10 9,10 12,10 14,7 16,13 18,10 26,10 29,10 31,4 33,16 35,10 44,10 47,10 49,7 51,13 53,10 60,10"/>
@@ -2790,7 +2798,11 @@ function fxBurn(to, from, rim, id, fromId){
        **不用"整体淡出"兜底** —— 那会让旧图与新图叠影，
        用户实测"切换完有一个淡入淡出、好像混入了别的"。 */
   const END = P.reduce(function(m, q){ return Math.max(m, q.t0 + q.rate); }, 1);
-  const SPAN = dur * 0.82;               // el 从 0 走到 END 用的真实时间（给收尾留余量）
+  /* ★★★ 2026-09-27：原来是 dur*0.82 ⇒ 而声明式动画（受热变亮到 offset .82、
+     旧层淡出到 1.0、新层推近到 1.0）实际跑到 dur ⇒ 兜底收尾正好落在
+     brightness(1.26) **最亮的那一瞬** = 用户看到的"旧图变亮 → 硬切"。
+     SPAN 必须等于时间轴真正的结束点。 */
+  const SPAN = dur;
 
   /* ② blob：极坐标 + 两层谐波 ⇒ 平滑但**不规则**的闭合曲线（不是圆） */
   function blob(cx, cy, r, lobes, amp, ph, wob){
@@ -2852,10 +2864,16 @@ function fxBurn(to, from, rim, id, fromId){
   /* 最后一道兜底：到点强制藏掉旧层（比 settle 早，保证"燃完一定是新图"）。 */
   const _burnHide = setTimeout(function(){
     if (stopped) return;                 // 帧循环已经正常收尾过了，什么都不做
+    /* ★★★ 2026-09-27：兜底必须先让画面**真的烧穿**，再收尾。
+       原来这里先 wpCancelAnimations(from) —— 那会把"受热变亮"滤镜一起取消，
+       纸瞬间跳回原样、又被硬藏 ⇒ 用户看到的"变亮 → 硬切"。
+       现在：先调一次帧循环、把火源半径推到盖满（此刻 stopped 仍是 false，会真的渲染），
+       旧层被自己的遮罩挖空 ⇒ 再藏它**没有任何可见变化**；
+       而且不再 cancel，避免滤镜回跳。 */
+    try { step((t0 === null ? performance.now() : t0) + Math.round(SPAN) + 1); } catch (e) { /* 无所谓 */ }
     stopped = true;
     try { if (rafId) cancelAnimationFrame(rafId); } catch (e) { /* 老 WebView */ }
-    try { wpCancelAnimations(from); } catch (e) { /* 老 WebView */ }
-    wpHideLayer(fromId);              // ★ 整层藏（连描边一起）
+    wpHideLayer(fromId);              // ★ 整层藏（此刻已被遮罩挖空，看不见）
     try { applyMask("none"); } catch (e) { /* 无所谓 */ }
   }, Math.max(60, Math.round(SPAN) + 60));
 
@@ -2889,7 +2907,7 @@ function fxBurn(to, from, rim, id, fromId){
 
   const svgURI = (paths, paint) =>
     "url(\"data:image/svg+xml;charset=utf-8," +
-    encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 '
+    encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none" viewBox="0 0 '
       + LW + " " + LH + '">' + paint(paths) + "</svg>") + "\")";
 
   /* ★ 用 **fill-rule="evenodd" 单路径**挖洞：
