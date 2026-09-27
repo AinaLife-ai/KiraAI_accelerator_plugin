@@ -584,19 +584,27 @@ print()
 print("═══ 19) ★★ 墨渗的 SVG 必须**全屏**（0×0 时 image 尺寸为 0 ⇒ 画不出来）")
 # ⚠️ 不能取"第一个 <svg>" —— ECG 的 data-URI 里也有 <svg>（会误伤）。
 #    要定位承载墨渗的那个：它带 id="wpInkImg"。
-_svg = re.search(r"<svg[^>]*>\s*(?:<!--[\s\S]*?-->\s*)*<mask id=\"wpInkMask\"", HTML)
-_svg = re.search(r"<svg[^>]*>(?=[\s\S]{0,2400}?id=\"wpInkMask\")", HTML)
-# ★ 尺寸必须有**确定的大小**：`width:100%` 在 .wallpaper 容器内实测解析为 0×0，
-#   而 <image width="100%"> 是相对该 SVG 解析的 ⇒ 什么都画不出。
-#   ★★★ 2026-09-27 起改为**与 .wp-stage 相同的 inset**：视口单位虽然也有大小，
-#   但与 .wp-stage 盒子不等价 ⇒ 收尾瞬间画面跳 ~16%（详见 ⑤ 的判据）。
-check("★ SVG 载体有确定大小（inset 撑开 或 视口单位，不能是 0×0）",
-      _svg is not None and ("inset:calc(" in _svg.group(0)
-                            or ("width:100vw" in _svg.group(0)
-                                and "height:100vh" in _svg.group(0))),
-      _svg.group(0)[:90] if _svg else "找不到")
-check("★ 且不接收指针事件（不挡操作）",
-      _svg is not None and "pointer-events:none" in _svg.group(0))
+# ⚠️ 必须**先去掉 HTML 注释**：注释里常出现 `<svg>` 这种字面写法，会被正则误匹配
+#    （本文件刚踩过）。另外不能取"第一个 <svg>"（ECG 的 data-URI 里也有）。
+_HTML_NC = re.sub(r"<!--[\s\S]*?-->", "", HTML)
+_svg = re.search(r"<svg[^>]*>(?=[\s\S]{0,2400}?id=\"wpInkMask\")", _HTML_NC)
+_tag = _svg.group(0) if _svg else ""
+# ★★★ 必须给出**显式的 width/height** —— `<svg>` 是**替换元素（replaced element）**：
+#   `left/top/right/bottom` 这类 inset **不能拉伸替换元素**；只给 inset 不给尺寸时，
+#   它会退回**固有尺寸 300×150** ⇒ 整张壁纸只在左上角那个小方块里显示
+#   （线上现象："只有左上角有个额外图片，整个切换效果都出错"）。
+# ★ 而且盒子要与 `.wp-stage`（`inset:calc(-1*max(72px,6%))` ⇒ 比视口大 2×72px）**一致**，
+#   否则 `<image>` 的 slice 与 `.wp-img` 的 cover 缩放不同 ⇒ 收尾画面跳 ~16%
+#   （1080×1920 图 / 412×915 视口：0.4766 vs 0.5516）。
+check("★★★ 墨染载体有**显式 width/height**（替换元素靠 inset 撑不开）",
+      "width:calc(" in _tag and "height:calc(" in _tag,
+      "只给 inset 会退回固有尺寸 300×150 ⇒ 只剩左上角一小块")
+check("★★★ 载体盒子 = 视口 + 2×max(72px,6%)，与 .wp-stage 同大",
+      re.search(r"width:calc\(100vw \+ 2 \* max\(72px, 6vw\)\)", _tag) is not None
+      and re.search(r"height:calc\(100vh \+ 2 \* max\(72px, 6vh\)\)", _tag) is not None
+      and re.search(r"\.wp-stage\{[^}]*?inset:calc\(-1 \* max\(72px, 6%\)\)", HTML) is not None,
+      _tag[:80] if _tag else "找不到")
+check("★ 且不接收指针事件（不挡操作）", "pointer-events:none" in _tag)
 
 print()
 print("═══ 20) ★★ 箴言不再自带淡出（停留必须是真停留）")
@@ -1111,9 +1119,8 @@ check("★★ 墨渗的 SVG 载体在 .wp-scrim **之前**（= 之下，受同�
 #    ★★★ 不过"有大小"还不够：2026-09-27 起它必须**与 .wp-stage 同盒**，
 #    否则收尾跳 ~16% —— 那条由下面的 ⑤ 单独把关，这里只要求"不是 0×0"。
 _svgtag = HTML[_svg:HTML.index('>', _svg) + 1]
-check("★ SVG 载体有确定大小（inset 撑开 或 视口单位）",
-      "inset:calc(" in _svgtag
-      or ("width:100vw" in _svgtag and "height:100vh" in _svgtag))
+check("★ SVG 载体有显式尺寸（<svg> 是替换元素，只给 inset 会退回 300×150）",
+      "width:calc(" in _svgtag and "height:calc(" in _svgtag)
 check("★ 且不接收指针事件", "pointer-events:none" in _svgtag)
 # ③ fxInk 必须**始终**保留淡入兜底（SVG 万一没渲染也不会硬切），
 #    ★★★ 但必须**推迟** —— 否则会把墨渗洗掉（这是 2026-09-27 修掉的第三个真 bug：
@@ -1172,15 +1179,14 @@ check("★★ fxInk 会清掉壁纸层上残留的 inline z-index（防 burn 的
 #      ⇒ 1080×1920 图 / 412×915 视口：缩放 0.4766 vs 0.5516 ⇒ **差 15.7%**
 #      ⇒ 收尾瞬间画面突然放大并偏移 = 用户说的"抖动/好像重新定位了"。
 #    ⇒ 载体必须用**和 .wp-stage 完全相同的 inset 表达式**。
-_st_inset = re.search(r"\.wp-stage\{[^}]*?inset:([^;]+);", HTML)
-_svg_inset = re.search(r'<svg style="[^"]*?inset:([^;"]+)', HTML)
-check("★★★ 墨染载体盒子必须与 .wp-stage 一致（否则收尾画面跳 ~16%）",
-      _st_inset is not None and _svg_inset is not None
-      and _st_inset.group(1).strip() == _svg_inset.group(1).strip(),
-      f"stage=[{_st_inset.group(1).strip() if _st_inset else '?'}] "
-      f"svg=[{_svg_inset.group(1).strip() if _svg_inset else '?'}]")
-check("★★ 墨染载体不能再用视口尺寸（100vw/100vh 与 .wp-stage 不等价）",
-      "width:100vw;height:100vh" not in HTML)
+# 载体与 .wp-stage 必须用**同一套余量规则**（72px 与 6% 取大）。
+#   `.wp-stage` 的 `6%` 水平＝6vw、垂直＝6vh（包含块就是视口大小的 .wallpaper）。
+check("★★★ 载体与 .wp-stage 用同一个 72px/6% 余量规则（否则收尾跳 ~16%）",
+      re.search(r"\.wp-stage\{[^}]*?inset:calc\(-1 \* max\(72px, 6%\)\)", HTML) is not None
+      and re.search(r"left:calc\(-1 \* max\(72px, 6vw\)\)", HTML) is not None
+      and re.search(r"top:calc\(-1 \* max\(72px, 6vh\)\)", HTML) is not None)
+check("★★ 载体不能只写视口尺寸而不加余量（那与 .wp-stage 不等价）",
+      re.search(r"width:calc\(100vw \+ 2 \* max\(72px, 6vw\)\)", HTML) is not None)
 
 # ⑥ ★★★ 燃纸：用动画「保持旧图不透明」之后，**必须 cancel 才能隐藏它**。
 #    `anim(from,[{opacity:1},{opacity:1}],{fill:forwards})` 的优先级**高于行内样式**
@@ -1194,6 +1200,36 @@ check("★★★ cancel 必须出现在写 inline opacity **之前**（顺序反
       _burn.find("wpCancelAnimations(from)") >= 0
       and _burn.find("wpCancelAnimations(from)") < _burn.find('from.style.opacity = "0"'),
       "先写 opacity 再 cancel ⇒ 中间那段时间旧图会整张露出")
+
+# ⑦ ★★★ 燃纸"硬切"的**真根因**：火源没烧完就被截断。
+#    火源速率是 0.88~1.14（刻意错开，让边界"此消彼长"），
+#    但动画原来在 `el >= 1` **无条件收尾** ⇒ 速率 >1 的火源那一刻
+#    k = (1-t0)/rate < 1、半径只到 far*k² ⇒ **纸还剩一大块没烧到就被切掉**。
+#    ⇒ 必须等**所有**火源都烧完（END = max(t0+rate)）才收尾，
+#      并在最后一段把纸**整体淡出**（残余纸 → 平滑交叉过渡，而不是"啪"一下）。
+check("★★★ fxBurn 必须等**所有**火源烧完（END = max(t0+rate)）才收尾",
+      re.search(r"const END = P\.reduce\(", _burn) is not None
+      and re.search(r"if \(el < END\)", _burn) is not None,
+      "写死 `el < 1` 会截断 rate>1 的火源 ⇒ 剩纸硬切")
+check("★★★ 收尾必须把纸**淡出**（不能直接切成 0，否则残余纸=硬切）",
+      re.search(r"anim\(from, \[\{opacity:1\},\{opacity:0\}\]", _burn) is not None)
+check("★★ 淡出前要先 cancel 那条『保持不透明』的动画（fill:forwards 会压过它）",
+      re.search(r"!fading && el >= END - TAIL[\s\S]{0,260}?wpCancelAnimations\(from\)",
+                _burn) is not None)
+
+# ⑧ ★★★ 燃纸的遮罩/描边必须画在**图层盒**坐标系里。
+#    遮罩是画在 `from`（`.wp-img`）上的，而它的盒子是 `.wp-stage`
+#    （`inset:calc(-1*max(72px,6%))` ⇒ 比视口大）⇒ `maskSize:100% 100%` 会把
+#    SVG 拉伸到该盒子。若 viewBox 还用**视口**尺寸，就会被拉伸成
+#    x≈1.35× / y≈1.16× ⇒ 越靠边的火源偏得越多（可偏出 ~58px），洞还变椭圆。
+#    （这与墨染"载体盒 ≠ 图层盒"是同一类 bug。）
+check("★★★ fxBurn 的遮罩 viewBox 用图层盒（W+2MX × H+2MY），不是视口",
+      re.search(r"LW = W \+ 2 \* MX", _burn) is not None
+      and re.search(r"LH = H \+ 2 \* MY", _burn) is not None
+      and re.search(r"\+ LW \+ \" \" \+ LH", _burn) is not None)
+check("★★ 火源坐标平移到图层坐标系（blob(q.x+MX, q.y+MY, ...)）",
+      _burn.count("q.x + MX") >= 4 and _burn.count("q.y + MY") >= 4,
+      f"q.x+MX 出现 {_burn.count('q.x + MX')} 次")
 
 print()
 print("═══ 39) ★★★ 点标题不退出欣赏模式 + 心电图用真实 SVG")
