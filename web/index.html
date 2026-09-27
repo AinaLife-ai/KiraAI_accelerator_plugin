@@ -3146,6 +3146,19 @@ function fxInk(to, from, rim){
      而如果某个环境墨渗渲染失败，它仍然后半段平滑淡入 —— **绝不硬切**。 */
   anim(to, [{opacity:0, offset:0},{opacity:0, offset:.70},{opacity:1, offset:1}],
        {duration: dur, easing:"linear"});
+
+  /* ★★★★ 2026-09-27（最后一次收尾打磨）：让**旧层在最后 15% 平滑淡出**。
+     为什么必须（用户："切到新图后新图还有一个停顿、而不是直接新图的那种晃动"）：
+       墨渗遮罩在 `p = 1` 时**接近但未必正好铺满 100%** —— 屏幕边缘/凹处
+       可能残留极薄一条"没渗到"，而那里露出来的是**旧图**
+       （旧层在 DOM 上常常正压在新层之上）。
+       偏偏墨渗图是在 `p >= 1` 那一刻被 `display:none` 撤掉的
+       ⇒ 那条残留会**瞬间**消失 ⇒ 观感就是"新图停顿一下、再晃一下"。
+     ⇒ 让旧层在最后 15% 里淡出：残留区从旧图**平滑**过渡到下面就是新图；
+       而主区域被墨渗图盖着，这段淡出**根本看不见**（不引入任何混色/叠影）。
+     注意 offset:.85 ⇒ 前 85% 旧层仍是完全不透明的，墨染原本的观感一点没变。 */
+  anim(from, [{opacity:1, offset:0},{opacity:1, offset:.85},{opacity:0, offset:1}],
+       {duration: dur, easing:"linear"});
   const url = (to.style.backgroundImage.match(/url\("?([^")]+)"?\)/) || [])[1] || "";
   if (url){
     img.setAttribute("href", url);

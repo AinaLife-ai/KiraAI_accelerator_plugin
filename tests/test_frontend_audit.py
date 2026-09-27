@@ -325,16 +325,13 @@ _ink = _fx_body("fxInk")
 #    （那才叫"淡出"）。另：`to.style.opacity = "0"` 是**新层本体隐藏**
 #    （显示交给 SVG <image>），与旧图无关，不能误伤。
 _from_block = re.search(r"anim\(from,\s*\[([\s\S]*?)\]", _ink)
-check("★ 墨渗不淡出旧图（旧图动画里没有 opacity:0）",
-      "eatAway(" not in _ink
-      and (_from_block is None or "opacity:0" not in _from_block.group(1)))
-print(f"     走 eatAway 的: {eat_ok}  |  墨渗: 旧图不淡出（被墨覆盖）")
-
-print()
-print()
-print("═══ 8) ★★ 特效必须播放完（本轮修的三处真 bug）")
-# ① 条带特效不能被自己的"整张淡入"盖住 —— 那会让条带看起来没播放
-_strips = _fx_body("fxStrips")
+# ★★★ 2026-09-27 契约更新：旧层**现在需要**在**最后一段**淡出。
+#   原因：墨渗遮罩在 p=1 时接近但未必正好 100%，边缘/凹处残留的极薄一条
+#   露出的是旧图；墨渗图一撤那条残留会突然消失 ⇒ "停顿 + 晃动"。
+#   让旧层在最后 15% 淡出，残留区就平滑过渡到新图（主区域被墨盖着，看不见）。
+check("★★★ 墨渗的旧层只在**最后一段**淡出（前 85% 保持完全不透明，观感不变）",
+      re.search(r"anim\(from, \[\{opacity:1, offset:0\},\{opacity:1, offset:\.85\},\{opacity:0, offset:1\}\]",
+                _ink) is not None)
 check("★ fxStrips 不对主层做整张淡入（否则盖住条带 ⇒ 等于没播放）",
       "revealIn(" not in _strips)
 check("★ fxStrips 自己把主层设为隐藏（to.style.opacity = \"0\"）",
@@ -1251,6 +1248,15 @@ check("★★ 藏旧层要 opacity:0 + visibility:hidden 双保险（防动画�
 check("★★★ 墨染收尾：先藏旧层、再撤墨渗图（顺序反了就会闪旧图）",
       re.search(r'from\.style\.opacity = "0"[\s\S]{0,80}?img\.style\.display = "none"',
                 _ink) is not None)
+# ★★★ 旧层必须在**最后一段**平滑淡出，不能在 p=1 那一刻被"瞬间"藏掉。
+#   墨渗遮罩在 p=1 时接近但未必正好 100% ⇒ 边缘/凹处可能残留极薄一条没渗到，
+#   那里露出的是旧图（旧层在 DOM 上常压在新层之上）；墨渗图一撤，
+#   这条残留会**突然**消失 ⇒ "新图停顿一下、再晃一下"。
+#   ⇒ 让旧层在最后 15% 淡出：残留区平滑过渡到新图，主区域被墨盖着看不见。
+check("★★★ 墨染必须让旧层在**最后一段平滑淡出**（否则残留边会突然消失 = 停顿+晃动）",
+      re.search(r"anim\(from, \[\{opacity:1, offset:0\},\{opacity:1, offset:\.85\},\{opacity:0, offset:1\}\]",
+                _ink) is not None,
+      "需要 offset:.85 的保持段 —— 前 85% 旧层仍完全不透明，墨染观感不变")
 check("★★ 燃纸收尾：撤遮罩前旧图必须已不可见（opacity + visibility）",
       re.search(r'from\.style\.opacity = "0"[\s\S]{0,160}?visibility = "hidden"[\s\S]{0,80}?applyMask\("none"\)',
                 _burn) is not None)
