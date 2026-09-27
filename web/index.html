@@ -2777,10 +2777,10 @@ function fxBurn(to, from, rim, id, fromId){
      半径只到 far*k² ⇒ **纸还剩一大块没烧到就被硬切掉**
      ⇒ 这才是"旧图帧闪现 / 硬切"的真根因（与透明度那条是两回事，两条都得修）。
      ⇒ 改为等**所有**火源都烧完（END = max(t0+rate)）才收尾，
-       并在最后 TAIL 段把纸**整体淡出**：万一还有角落没烧到，
-       那是一次平滑的交叉过渡，而不是"啪"地切掉。 */
+       收尾前再把半径平滑推到"必定盖满"（见 step 里的 closeT）。
+       **不用"整体淡出"兜底** —— 那会让旧图与新图叠影，
+       用户实测"切换完有一个淡入淡出、好像混入了别的"。 */
   const END = P.reduce(function(m, q){ return Math.max(m, q.t0 + q.rate); }, 1);
-  const TAIL = 0.12;                     // 收尾淡出时长（el 单位）
   const SPAN = dur * 0.82;               // el 从 0 走到 END 用的真实时间（给收尾留余量）
 
   /* ② blob：极坐标 + 两层谐波 ⇒ 平滑但**不规则**的闭合曲线（不是圆） */
@@ -2876,23 +2876,24 @@ function fxBurn(to, from, rim, id, fromId){
     from.style.webkitMaskSize = "100% 100%"; from.style.maskSize = "100% 100%";
   };
 
-  let t0 = null, rafId = 0, stopped = false, fading = false;
+  let t0 = null, rafId = 0, stopped = false;
   const step = (now) => {
     if (stopped) return;
     if (t0 === null) t0 = now;
     const el = (now - t0) / Math.max(SPAN / END, 1);       // 0..END
 
-    /* ★ 进入最后 TAIL 段：把纸**整体淡出**。
-       必须先 cancel 那条"保持不透明"的动画 —— 它带 fill:"forwards"，
-       而 Web Animations 的优先级**高于**后来的动画与行内样式，
-       不先取消的话这段淡出根本不会生效（就是之前"旧图重现"的同一个坑）。 */
-    if (!fading && el >= END - TAIL){
-      fading = true;
-      try { wpCancelAnimations(from); } catch (e) { /* 老 WebView */ }
-      from.style.opacity = "";                             // base = `.on` 给的 1
-      anim(from, [{opacity:1},{opacity:0}],
-           {duration: Math.max(1, SPAN * TAIL / END), easing:"linear"});
-    }
+    /* ★★★ 收尾：把火源半径**平滑**推到"必定盖满整屏"（不是靠淡出兜底）。
+       为什么不能用"整体淡出"（上一版就是这么干的，用户实测
+       "切换完有一个淡入淡出、好像混入了别的"）：
+         整体淡出 = 旧图与新图**同时可见**地叠在一起 ⇒ 必然"混入别的"。
+       为什么需要推半径：火线轮廓是**不规则**的，blob 的半径是
+         r·(1 + amp·sin(…) + 0.32·amp·sin(…)) ⇒ 最小可到 r·(1 − 1.32·amp)；
+         amp 最大 0.38 ⇒ 最小只有 **0.5·r** ⇒ 即使 k=1（r = far）某些凹处
+         仍留在视口内 ⇒ 那时藏掉旧图就会"啪"一下。
+       ⇒ 让 r 平滑升到 far/(1−1.32·amp)（最坏约 2·far）⇒ 连凹处也越过视口
+         ⇒ 整屏 100% 烧穿 ⇒ 此时藏掉旧图**没有任何可见变化**，不需要淡出。
+       多出来的余量全在**视口之外**，而且是在最后 10% 里连续变化的，看不出跳。 */
+    const closeT = Math.max(0, Math.min(1, (el - (END - 0.10)) / 0.10));
 
     /* 每个火源按自己的速率扩张；速率与起燃时刻不同 ⇒ 火线此消彼长 */
     const holes = [], lines = [], cores = [], chars = [];
@@ -2901,7 +2902,11 @@ function fxBurn(to, from, rim, id, fromId){
       if (k <= 0) continue;
       /* ★ 半径**线性**增长 = 火线匀速推进（这是"烧"区别于"淡出"的关键节奏）。
          起步给一个小底径，否则最初几帧是看不见的点。 */
-      const r = 6 + q.far * k * k;            // k² ⇒ 起燃由小渐大，更像"点燃"
+      let r = 6 + q.far * k * k;              // k² ⇒ 起燃由小渐大，更像"点燃"
+      if (closeT > 0){
+        const need = q.far / Math.max(0.35, 1 - 1.32 * q.amp) + 160;
+        r = r + (Math.max(r, need) - r) * closeT;      // 平滑推到"必定盖满"
+      }
       const wob = el * 0.9;                                // 让轮廓缓慢蠕动（火在爬）
       /* ★ 坐标要平移到**图层盒**坐标系（+MX/+MY）—— 与上面的 viewBox=LW×LH 配套，
          否则火源会被拉伸错位（这正是"载体盒 ≠ 图层盒"那一类 bug）。 */
@@ -3195,6 +3200,32 @@ function fxInk(to, from, rim){
 let wpCleanup = null;
 let wpPendingRestart = false;   // 切换进行中被要求重排时，先记下来
 
+/* ★★★ 预加载 + 解码新壁纸，**等它就绪再开始动画**。
+   为什么必须（用户："默认还是会切换后存在旧图闪现，和新图会卡顿一下位置变"）：
+     原来只是把 `backgroundImage` 设到隐藏层上就立刻开动画，而浏览器是
+     **边下边解**（大图甚至渐进式渲染）⇒ 新图在动画**中途**才真正显示出来/
+     从糊变清 ⇒ 观感正是"新图卡顿一下、位置/清晰度变了"，
+     而在它到位之前透过新层看到的是旧图或底色 ⇒ "旧图闪现"。
+   ⇒ 先在离屏 `Image` 里加载并 `decode()`，就绪后再切。
+   ⚠️ 最多等 1.2s：超时/失败都**照常切换** —— 宁可切得不完美，
+      也绝不能因为一张图没加载完就把轮换卡死。 */
+function wpPreloadWallpaper(url){
+  return new Promise(function(resolve){
+    if (!url) { resolve(); return; }
+    let done = false;
+    const fin = function(){ if (!done){ done = true; resolve(); } };
+    try {
+      const im = new Image();
+      im.onload = function(){
+        if (im.decode) { im.decode().then(fin, fin); } else { fin(); }
+      };
+      im.onerror = fin;
+      im.src = url;
+      setTimeout(fin, 1200);
+    } catch (e) { fin(); }
+  });
+}
+
 /* 切换入口（带锁 + 异常兜底）
    ★★ 必须包 try/catch：异常会让 wpBusy 永久停在 true ⇒ 之后每次切换都在
      第一行 return ⇒ **轮换静默死掉**（无报错，只是图永远不换）。 */
@@ -3209,6 +3240,7 @@ function wpTransition(url){
 }
 
 async function _wpTransition(url){
+  await wpPreloadWallpaper(url);            // ★ 等新图可解码再开始（见上面的说明）
   const id = wpOther(), fromId = wpCur;
   const to = wpLoad(id, url), from = wpImg(fromId);
   const rim = wpRimReset();
@@ -3281,6 +3313,13 @@ function wpSettle(id, fromId){
        ⇒ 在"清空"到"摘 .on"之间，CSS `.wp-stage.on .wp-img{opacity:1}` 仍然生效
        ⇒ **旧图重新变可见**（一帧闪现），然后才被摘掉。观感就是"燃完闪一下旧图"。
      ⇒ 正确顺序：**先摘 .on**（旧层立即不可见），**再归一化**（清残留不会让它复现）。 */
+  /* ★★★ 收尾第一件事：**直接把旧层设为不可见**（inline 最确定），
+     然后再做清理与切换。这样无论后面哪一步抛异常、或动画的 fill 状态有什么意外，
+     旧图都不可能再出现在画面上（用户："切换后还是会存在旧图闪现"）。
+     只对**旧层**写 opacity:0 是安全的：
+       紧接着 `wpNormalize(fromId)` 会清掉这行 inline，
+       而那时 `.on` 已摘掉 ⇒ CSS 本来就是 opacity:0 ⇒ 不会像"写成 1"那样永久可见。 */
+  try { const _imFrom = wpImg(fromId); if (_imFrom) _imFrom.style.opacity = "0"; } catch (e) {}
   wpStage(fromId).classList.remove("on");
   try { wpNormalize(fromId); } catch (e) { console.warn("[accel] 归一化旧层失败", e); }
   /* ★ 新层同理：**先加 .on** 再归一化，避免"清掉 opacity 但 .on 还没加"
