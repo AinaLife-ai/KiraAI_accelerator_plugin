@@ -2985,7 +2985,14 @@ function fxBurn(to, from, rim, id, fromId){
          起步给一个小底径，否则最初几帧是看不见的点。 */
       let r = 6 + q.far * k * k;              // k² ⇒ 起燃由小渐大，更像"点燃"
       if (closeT > 0){
-        const need = q.far / Math.max(0.35, 1 - 1.32 * q.amp) + 160;
+        /* ★★★ 2026-09-28（移植 main 的改进，别再退回去）：
+           推到 `q.far * 2.2 + 320` —— 这是**保证烧穿**的公式：
+           blob 半径是 r·(1 + amp·sin + 0.32·amp·sin)，最小可到 r·(1 − 1.32·amp)，
+           amp 最大 0.38 ⇒ 只剩 0.5·r ⇒ 即使 r = far，某些凹处仍留在视口内
+           ⇒ 那时藏旧图就会"啪"一下（= 用户报的"硬切"）。
+           推到 2.2·far + 320 后，连最小凹处也越过视口（余量 ≈400px）。
+           多出来的余量全在**屏幕之外**，且只在最后 10% 里连续变化 ⇒ 看不出跳。 */
+        const need = q.far * 2.2 + 320;
         r = r + (Math.max(r, need) - r) * closeT;      // 平滑推到"必定盖满"
       }
       const wob = el * 0.9;                                // 让轮廓缓慢蠕动（火在爬）
@@ -3481,6 +3488,18 @@ function wpTransition(url){
 }
 
 async function _wpTransition(url){
+  /* ★ main 的修复（移植回来）：每次转场开头先清一遍两个图层的 inline 隐藏。
+     某层若残留了 !important 的隐藏（opacity/visibility/display），复用时就是**空背景**。
+     这里主动清一遍等于给"空背景"装了自愈（removeProperty 连 !important 一起去掉）。 */
+  try {
+    ["wp-a", "wp-b"].forEach(function (_id) {
+      const _st = document.getElementById(_id); if (!_st) return;
+      _st.style.removeProperty("opacity"); _st.style.removeProperty("visibility");
+      const _im = _st.querySelector(".wp-img");
+      if (_im) { _im.style.removeProperty("opacity"); _im.style.removeProperty("visibility");
+        _im.style.removeProperty("display"); }
+    });
+  } catch (e) { /* 无所谓 */ }
   await wpPreloadWallpaper(url);            // ★ 等新图可解码再开始（见上面的说明）
   const id = wpOther(), fromId = wpCur;
   const to = wpLoad(id, url), from = wpImg(fromId);
@@ -3568,9 +3587,15 @@ function wpSettle(id, fromId){
      （Web Animations 的优先级高于行内样式）；两者都会被 wpNormalize 清掉，无副作用。 */
   try {
     const _st0 = wpStage(fromId), _im0 = wpImg(fromId);
+    /* ★★★ 2026-09-28（main 的修复，移植回来）：**摘 .on 必须是第一步**。
+       用户："火线明明播到最后一下，却像把旧图带出来了一样；有时对有时错"。
+       收尾这几步存在**先后竞态**：旧层的"不可见"若只靠 inline，后面任何一步都可能
+       把它抹掉（wpNormalize 清 style / wpCleanup 撤载体 / 中途抛异常）——只要发生在
+       "摘 .on"之前，旧图就会**重新整屏可见**，再被下一步切掉。
+       ⇒ 先摘 .on：从这一瞬起 **CSS 就保证旧层不可见**。 */
+    if (_st0){ _st0.classList.remove("on"); }
     wpHideLayer(fromId);                       // ★ 整层藏（含 stage 上的描边）
     if (_im0){ _im0.style.opacity = "0"; _im0.style.visibility = "hidden"; }
-    if (_st0){ _st0.classList.remove("on"); }
   } catch (e) { /* 无所谓 */ }
   try {
     if (wpCleanup){ wpCleanup(); }
@@ -3593,7 +3618,15 @@ function wpSettle(id, fromId){
        紧接着 `wpNormalize(fromId)` 会清掉这行 inline，
        而那时 `.on` 已摘掉 ⇒ CSS 本来就是 opacity:0 ⇒ 不会像"写成 1"那样永久可见。 */
   wpStage(fromId).classList.remove("on");
-  try { wpNormalize(fromId); } catch (e) { console.warn("[accel] 归一化旧层失败", e); }
+  try { wpNormalize(fromId);
+  /* ★★★ 2026-09-28（main 的修复，移植回来）：**归一化之后必须再藏一次旧层**。
+     用户观察："即使正常出新图，也大概在 1~2 秒后旧图闪现一下" ——
+     1~2 秒正是收尾（wpLastDur + 260）发生的时刻。
+     原因：wpNormalize 会 im.style.cssText = "" ⇒ **把上面刚写的 inline 隐藏一起清掉**；
+     而此时旧层上可能还挂着动画（fill:forwards），动画一露头旧图就在收尾这一瞬重新可见。
+     ⇒ 归一化后再藏一次，并把旧层上所有动画取消，确保彻底退场。 */
+  try { wpCancelAnimations(fromId); } catch (e) { /* 无所谓 */ }
+  try { wpHideLayer(fromId); } catch (e) { /* 无所谓 */ } } catch (e) { console.warn("[accel] 归一化旧层失败", e); }
   /* ★ 新层同理：**先加 .on** 再归一化，避免"清掉 opacity 但 .on 还没加"
      的瞬间（那会让新图闪一下或在墨染这类"本体被隐藏、由 SVG 承载"的特效上
      表现为突然出现 = 硬切）。 */
@@ -3952,6 +3985,9 @@ function finishSplash(){
   clearTimeout(window.__accelSplashFailsafe);   // 主脚本接手，撤掉内联脚本的兜底
   const sp = document.getElementById("splash");
   if (!sp || sp.hidden) return;
+  /* 幂等闸门：hidden 要 1500ms 后才置位，这期间点击会再次触发收尾 ⇒ 动画重播 = 闪一下。 */
+  if (sp.__finishing) return;
+  sp.__finishing = true;
   /* ★★ 用**显式 Web Animation** 收尾，不再靠 CSS transition。
      为什么换：`.splash.out` 这种"同一帧加类"的写法，浏览器可能把
      "加类"和"初始样式"**合并成一次样式计算** ⇒ 看不到"从 A 到 B"的变化

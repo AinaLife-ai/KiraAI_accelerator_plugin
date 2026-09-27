@@ -1227,9 +1227,11 @@ check("★★★ fxBurn 必须等**所有**火源烧完（END = max(t0+rate)）�
 #   最小可到 r·(1 − 1.32·amp)（amp 最大 0.38 ⇒ 只剩 0.5·r）
 #   ⇒ 即使 k=1（r = far）某些凹处仍留在视口内 ⇒ 直接藏旧图会"啪"一下。
 #   ⇒ 正解是把半径平滑推到 far/(1−1.32·amp)（最坏约 2·far），让凹处也越过视口。
-check("★★★ 收尾必须**保证烧穿**（半径推到轮廓最小处也越过视口），不是靠淡出",
-      "closeT" in _burn and "1 - 1.32 * q.amp" in _burn,
-      "blob 最小半径 = r*(1-1.32*amp)")
+check("★★★ 收尾必须保证烧穿：推到轮廓最小处也越过视口（数值验证）",
+      (2.2 * 2577.0 + 320) * (1 - 1.32 * 0.38) >= 2577.0
+      # ★ 必须查**剥注释后的 js**：用 HTML 会把注释里引用的公式当成代码 ⇒ 假绿
+      #   （反向验证时"把公式改弱"竟不报红，就是这么来的）
+      and ("q.far * 2.2 + 320" in js))
 # ★★★ 反过来：**禁止**用"整体淡出旧图"来兜底 —— 那会让旧图与新图
 #   同时可见地叠在一起，用户实测"切换完有一个淡入淡出、好像混入了别的"。
 #   （1.0.15 就是这么写的，这里把它钉死，防止再犯。）
@@ -1328,6 +1330,15 @@ check("★★ 且仍保持正确顺序：先摘 .on 再归一化（否则又会�
 #   ⇒ 这正是"旧图残留 / 硬切"的一个来源。
 check("★★★ 切换失败兜底不得换层（否则藏掉当前层、亮出过期层）",
       "wpSettle(wpOther(), wpCur)" not in js)
+# ★★ 开屏收尾必须有幂等闸门：hidden 要 1500ms 后才置位，这期间点击会再次触发收尾
+#   ⇒ 动画重播 = 闪一下（main 上的真修复，回退时曾被一并丢掉）。
+check("★★ 开屏收尾必须有幂等闸门（否则连点 ⇒ 动画重播 = 闪一下）",
+      re.search(r"if \(sp\.__finishing\) return;\s*\n\s*sp\.__finishing = true;", js) is not None)
+# ★★ 归一化之后必须**再藏一次**旧层并取消其动画（否则 wpNormalize 清掉 inline 隐藏后，
+#   旧层上残留的 fill:forwards 动画会让它在收尾那一瞬重新可见 = 用户报的"1~2 秒后闪现"）。
+check("★★ wpSettle 归一化之后必须再藏旧层并取消其动画",
+      re.search(r"wpNormalize\(fromId\);[\s\S]{0,700}?wpCancelAnimations\(fromId\)[\s\S]{0,200}?wpHideLayer\(fromId\)",
+                _settle) is not None)
 check("★★ 切换失败兜底必须钉住**当前可见层**",
       re.search(r"wpShowLayer\(wpCur\)", js) is not None)
 # ★★ wpShowLayer 必须与 wpHideEl **对称**（都清 stage 与 img）：
