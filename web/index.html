@@ -2458,15 +2458,6 @@ function applySway(){
     const _isv = _ii && _ii.closest ? _ii.closest("svg") : null;
     if (_isv) _isv.style.transform = v;
   } catch (e) { /* 无所谓 */ }
-
-  /* ★★★ 2026-09-28：**燃纸的载层也要走同一份位移**。用户观察："旧图被切换前出现墨染同款停顿、
-     影响晃动" —— 那正是载层与图层位移不同步（墨染载层当初的原因）。燃纸载层同为图层的兄弟节点，
-     拿不到 applySway 的位移 ⇒ 交接瞬间错开几像素。这里一并带上，交接前后完全一致。 */
-  try {
-    const _bi = document.getElementById("wpBurnImg");
-    const _bsv = _bi && _bi.closest ? _bi.closest("svg") : null;
-    if (_bsv) _bsv.style.transform = v;
-  } catch (e) { /* 无所谓 */ }
 }
 
 let wpT0 = performance.now();
@@ -2757,38 +2748,6 @@ function fxIris(to, from, rim){
    ⇒ 观感就是"燃纸完全没效果 / 硬切"。
    ★★ 教训：函数体里出现的自由变量，必须确认它在**参数或闭包**里真实存在；
       这类错误静态检查抓不到（JS 不报未定义变量在运行前），所以**必须实测**。 */
-let _wpBurnSvg = null, _wpBurnImgSrc = "";
-function _wpBurnCarrier(show, LW, LH) {
-  try {
-    if (!_wpBurnSvg) {
-      const NS = "http://www.w3.org/2000/svg";
-      const sv = document.createElementNS(NS, "svg");
-      sv.setAttribute("preserveAspectRatio", "none");
-      sv.setAttribute("viewBox", "0 0 " + LW + " " + LH);
-      sv.style.cssText = "position:absolute;left:0;top:0;z-index:2;pointer-events:none;display:none";
-      const df = document.createElementNS(NS, "defs");
-      const mk = document.createElementNS(NS, "mask");
-      mk.setAttribute("id", "wpBurnMask"); mk.setAttribute("maskUnits", "userSpaceOnUse");
-      mk.setAttribute("x", "0"); mk.setAttribute("y", "0");
-      mk.setAttribute("width", LW); mk.setAttribute("height", LH);
-      const pa = document.createElementNS(NS, "path");
-      pa.setAttribute("id", "wpBurnMaskPath");
-      pa.setAttribute("fill", "#fff"); pa.setAttribute("fill-rule", "evenodd");
-      mk.appendChild(pa); df.appendChild(mk); sv.appendChild(df);
-      const im = document.createElementNS(NS, "image");
-      im.setAttribute("id", "wpBurnImg");
-      im.setAttribute("x", "0"); im.setAttribute("y", "0");
-      im.setAttribute("width", "100%"); im.setAttribute("height", "100%");
-      im.setAttribute("preserveAspectRatio", "xMidYMid slice");
-      im.setAttribute("mask", "url(#wpBurnMask)");
-      sv.appendChild(im);
-      (document.querySelector(".wallpaper") || document.body).appendChild(sv);
-      _wpBurnSvg = sv;
-    }
-    _wpBurnSvg.style.display = (show === false) ? "none" : "";
-    return _wpBurnSvg;
-  } catch (e) { return null; }
-}
 function fxBurn(to, from, rim, id, fromId){
   const dur = WP_DUR * 1.25;
   const W = Math.max(window.innerWidth, 320);
@@ -2881,14 +2840,15 @@ function fxBurn(to, from, rim, id, fromId){
      ⇒ 必须把 z-index 设在 **stage** 上。 */
   const stFrom = (typeof fromId !== "undefined") ? wpStage(fromId) : null;
   const stTo   = (typeof id     !== "undefined") ? wpStage(id)     : null;
-  if (stFrom) stFrom.style.zIndex = "1";   // 纸在上
-  if (stTo)   stTo.style.zIndex   = "2";   // 新图在下（被烧出来）
+  if (stFrom) stFrom.style.zIndex = "2";   // 纸在上
+  if (stTo)   stTo.style.zIndex   = "1";   // 新图在下（被烧出来）
 
-  /* ③ 两层可见性**显式用动画写**（wpLoad 已 remove("on")，不写就会烧在透明层上） */
-  /* ★★★ 2026-09-28：**删掉这条"保持不透明"动画**。
-     它带 fill:forwards，而 Web Animations 的优先级高于行内样式 ⇒ 把旧层按在不透明上，
-     **压过了下面那条"旧图 45%→72% 淡出"** ⇒ 旧图从头到尾不淡、收尾才被 cancel = 硬切。
-     旧层的可见性从此只由下面那条淡出负责（声明式 opacity，真机验证可用）。 */
+  /* ③ 两层可见性**显式用动画写**（wpLoad 已 remove("on")，不写就会烧在透明层上）。
+     ★★ 2026-09-28：删掉原来那条 `anim(from, [{opacity:1},{opacity:1}], dur*0.9)` 的
+     "保持不透明"动画 —— 它与下面那条带 .88 平台的淡出动画**同属性、都 fill:forwards**，
+     谁生效取决于**创建顺序**（后者赢），是"声明顺序轮盘赌"。
+     旧层的不透明由淡出动画的**首关键帧 opacity:1** 统一负责（同样能顶住 CSS 的
+     opacity:0），整个燃烧期只有**一条** opacity 动画 ⇒ 行为可预测。 */
   anim(to,   [{opacity:0},{opacity:1}], {duration: Math.round(dur * 0.5),
                                          easing:"cubic-bezier(.3,0,.5,1)"});
 
@@ -2899,39 +2859,17 @@ function fxBurn(to, from, rim, id, fromId){
      （掉帧、长任务、WebView 卡顿…），旧层就一直留着（还越来越亮）
      ⇒ 最后只能由 settle 直接把它藏掉 = **硬切**。
      ⇒ 再加一条**声明式**的淡出（Web Animations 跑在文档时间轴上，**不依赖帧循环**）：
-       前 88% 保持完全不透明（此时纸已被遮罩挖空，看不见），最后 12% 平滑淡出。
-       ⇒ 无论帧循环是否跑完，`dur` 到点旧层一定已经不可见 ⇒ **燃完一定是新图**，
-         绝不会再出现"停在变亮的旧图再硬切"。 */
-  anim(from, [{opacity:1, offset:0},{opacity:1, offset:.86},{opacity:0, offset:.98}],
+       平台**对齐烧穿时刻**（SPAN = dur*0.82，即帧循环的 el = END），随后平滑淡出。
+       ⇒ 无论帧循环是否跑完，旧层都在"纸被挖空"的同一时刻开始退场
+         ⇒ **燃完一定是新图**，绝不会再出现"停在变亮的旧图再硬切"。
+       ★★ 2026-09-28：平台从 .88 **前移到 .82** 并在 .98 归零 ——
+         这不是外观改动：原来 .88 平台意味着"遮罩已基本烧穿、纸就该没了"之后，
+         旧层还带着**受热变亮滤镜**继续可见约 0.16*dur（≈600ms）。
+         火线轮廓的凹处（半径最小可到 0.5r）在 closeT 推满之前可能仍留在视口内，
+         那段窗口就是用户看到的"**旧图亮起残留 → settle 硬切**"。
+         平台对齐后，"烧穿"与"退场"是**同一时刻**，残留在时间轴上不再存在。 */
+  anim(from, [{opacity:1, offset:0},{opacity:1, offset:.82},{opacity:0, offset:.98}],
        {duration: dur, easing:"linear"});
-
-  /* ★★★ 2026-09-28：**新图必须先隐形、再与旧图对称地淡入**。
-     用户反馈："特效还没开始播，新图就完全淡入进来了" ——
-     因为新图现在在【上层】且一开始就全不透明 ⇒ 它把整个燃烧盖住了。
-     这里让它从 0 开始，并与旧图的淡出（.45→.72）**完全对称** ⇒
-     前 45% 画面还是旧图（火焰在它上面烧），之后交叉过渡，72% 处完成。 */
-  try { to.style.opacity = "0"; } catch (e) { /* 无所谓 */ }
-  anim(to, [{opacity:0, offset:0},{opacity:0, offset:.84},{opacity:1, offset:.98}],
-       {duration: dur, easing:"linear", fill:"forwards"});
-
-  /* ★★★ 2026-09-28（按"最坏情况"设计）：**定时器 + !important 硬压**。
-     上面那条淡出是"声明式动画"，但收尾路径里有 wpCancelAnimations(from)
-     ⇒ 动画被取消后元素会回到 CSS 状态（.on 还在 ⇒ opacity:1）⇒ 旧图又出现 ⇒ 被硬切。
-     是否看得见取决于那一刻动画有没有跑完 ⇒ **这就是残留的概率性来源**。
-     ⇒ 在 dur 的 75% 处，用 setTimeout 直接写 **inline !important**：
-       CSS 层叠里 `!important` 的优先级**高于动画** ⇒ 之后任何动画都无法再把旧层弄可见。
-     转场开头清场会清掉这两个属性 ⇒ 不影响图层复用。 */
-  setTimeout(function () {
-    try {
-      from.style.setProperty("opacity", "0", "important");
-      from.style.setProperty("visibility", "hidden", "important");
-    } catch (e) { /* 无所谓 */ }
-  }, Math.round(dur * 0.995));
-
-  /* 照抄墨染：真身新层【先隐形】、到末尾【声明式淡入】。
-     这样到收尾那一刻，新层已自己就位、旧层已自己淡走 ⇒ 撤载层时看不出任何变化。
-     （旧层淡出、新层淡入都是"必然发生"的声明式动画，不依赖遮罩是否渲染。） */
-  
   /* 最后一道兜底：到点强制藏掉旧层（比 settle 早，保证"燃完一定是新图"）。 */
   const _burnHide = setTimeout(function(){
     if (stopped) return;
@@ -2943,26 +2881,20 @@ function fxBurn(to, from, rim, id, fromId){
     if (stopped) return;
     stopped = true;
     try { if (rafId) cancelAnimationFrame(rafId); } catch (e) { /* 老 WebView */ }
-    /* 兜底也绝不能"硬切"：万一阵循环曾抛异常（例如某个值变成 NaN 让遮罩失效），
-       遮罩会停在原地、旧图保持完整。此时直接藏层就是用户说的"旧图存在 -> 新图硬切"。
-       所以先把整层快速淡出（150ms）—— 火光/炭化线挂在 stage 上，会随整层一起淡掉 ——
-       淡完再藏、再摘遮罩，观感与"烧尽"一致。 */
-    var _fs = null;
-    try { _fs = (typeof wpStage === "function") ? wpStage(fromId) : document.getElementById(fromId); } catch (e) { /* 无所谓 */ }
-    if (_fs) {
-      try { anim(_fs, [{opacity:1},{opacity:0}], {duration:150, easing:"linear"}); } catch (e) { /* 无所谓 */ }
-      setTimeout(function () {
-        try { _wpBurnCarrier(false); } catch (e) { /* 无所谓 */ }
-        try { from.style.display = "none"; } catch (e) { /* 无所谓 */ }   /* ★ display:none 无法被动画/样式优先级推翻 ⇒ 旧图绝不可能再被显示 */
-    wpHideLayer(fromId);
-        try { applyMask("none"); } catch (e) { /* 无所谓 */ }
-    try { _wpBurnCarrier(false); } catch (e) { /* 无所谓 */ }
-      }, 170);
-    } else {
-      try { from.style.display = "none"; } catch (e) { /* 无所谓 */ }   /* ★ display:none 无法被动画/样式优先级推翻 ⇒ 旧图绝不可能再被显示 */
-    wpHideLayer(fromId);
-      try { applyMask("none"); } catch (e) { /* 无所谓 */ }
-    }
+    /* ★★★ 2026-09-28（兜底只服务一件事：新图必须在最终画面上）：
+       正常路径（帧循环走到 el >= END）已经把一切都收好了：
+         · 旧层：声明式淡出（.88 平台 → 淡出）走完 + wpHideLayer 整层藏 + display:none
+         · 新层：.on 已挂、opacity 淡入动画已走完、scale 已归位
+       ⇒ 兜底此刻唯一可能还欠的，就是"极端掉帧下动画没跑完"的那一点。
+       所以**绝不再碰旧层**（任何"再藏一次/再取消动画/再补一条 opacity 动画"
+       都可能把已经隐藏的旧层顶回来一瞬 —— 用户看到的"旧图亮起残留→硬切"正属此类），
+       只做两件事：确认帧循环收尾真的执行过（否则补一帧让它收尾），
+       然后把新层钉死在可见状态。 */
+    /* （上面那一帧若已把帧循环收尾，stopped 已被置位 ⇒ 这里直接返回） */
+    /* 钉死新层：mask 洞里透出来的就是它，settle 前它是画面的全部。
+       wpLoad 只加了 .on（CSS opacity:1），这里再加一条 fill:forwards 的
+       显式动画，双保险 ⇒ "画面上没有新图"在结构上不可能发生。 */
+    try { anim(to, [{opacity:1},{opacity:1}], {duration: 220, easing:"linear"}); } catch (e) { /* 无所谓 */ }
 }, Math.max(60, Math.round(SPAN) + 60));
 
   anim(to,   [{transform:"scale(1.05)"},{transform:"scale(1)"}],
@@ -3053,6 +2985,13 @@ function fxBurn(to, from, rim, id, fromId){
          起步给一个小底径，否则最初几帧是看不见的点。 */
       let r = 6 + q.far * k * k;              // k² ⇒ 起燃由小渐大，更像"点燃"
       if (closeT > 0){
+        /* ★★★ 2026-09-28（移植 main 的改进，别再退回去）：
+           推到 `q.far * 2.2 + 320` —— 这是**保证烧穿**的公式：
+           blob 半径是 r·(1 + amp·sin + 0.32·amp·sin)，最小可到 r·(1 − 1.32·amp)，
+           amp 最大 0.38 ⇒ 只剩 0.5·r ⇒ 即使 r = far，某些凹处仍留在视口内
+           ⇒ 那时藏旧图就会"啪"一下（= 用户报的"硬切"）。
+           推到 2.2·far + 320 后，连最小凹处也越过视口（余量 ≈400px）。
+           多出来的余量全在**屏幕之外**，且只在最后 10% 里连续变化 ⇒ 看不出跳。 */
         const need = q.far * 2.2 + 320;
         r = r + (Math.max(r, need) - r) * closeT;      // 平滑推到"必定盖满"
       }
@@ -3065,14 +3004,16 @@ function fxBurn(to, from, rim, id, fromId){
       chars.push(blob(q.x + MX, q.y + MY, r * 0.985, q.lobes, q.amp, q.ph, wob));  // 炭化：略小
     }
     if (holes.length){
-      applyMask(svgURI(holes, maskPaint));
-
-    /* 用 SVG 载层来吃旧图（与墨染载层同一套机制、真机验证可用；遮罩是 DOM 里的 <mask>，
-       不是 data-URI）⇒ 载层就绪后真身 from 藏起来，屏幕上看到的"旧图"由载层承担。 */
-    /* ★★★ 2026-09-28：**删除 SVG 载层**。它显示的是"旧图"，
-       而且是兄弟节点 —— 针对 from 的所有修复都管不到它 ⇒ 它就是"旧图残留"的最后一个来源。
-       现在"新图在上层 + 交叉淡变"已足够，不需要它。 */
-;
+      (function(_paths, _paint){
+        /* ★ 一串 NaN/Infinity 会让整张 data-URI 失效，而浏览器对无效的 mask-image
+           是**直接忽略**（相当于 none）=> 旧图层会**整屏**露出来（只受热变亮），
+           最后被收尾切掉 —— 正是"旧图亮起 -> 新图硬切"。这里先自检：
+           非法就跳过本帧，保留上一帧有效的遮罩，绝不让它退回"全屏可见"。 */
+        var _u = null;
+        try { _u = svgURI(_paths, _paint); } catch (e) { return; }
+        if (!_u || /NaN|Infinity|undefined/.test(_u)) return;
+        try { applyMask(_u); } catch (e) { /* 无所谓 */ }
+      })(holes, maskPaint);
       glow.style.backgroundImage = svgURI(lines, strokePaint("rgba(255,140,40,.85)", 9));
       core.style.backgroundImage = svgURI(cores, strokePaint("rgba(255,242,190,.98)", 2.4));
       char.style.backgroundImage = svgURI(chars, strokePaint("rgba(58,30,16,.8)", 2));
@@ -3115,9 +3056,14 @@ function fxBurn(to, from, rim, id, fromId){
          `dur*0.18 = 720ms` 慢慢淡出 ⇒ **那 720ms 的亮光就是"旧图变亮停留近1秒"** ✓
          （980ms 那笔账：SPAN→settle 是 980ms，而描边淡出正好 720ms，两者都在"近1秒"量级。）
          ⇒ 与保险路径统一：**整层藏**（stage + img）⇒ 描边随 stage 一起消失，
-           燃完的那一刻画面就是干净的新图，不再有那一段亮光。 */
-      try { from.style.display = "none"; } catch (e) { /* 无所谓 */ }   /* ★ display:none 无法被动画/样式优先级推翻 ⇒ 旧图绝不可能再被显示 */
-    wpHideLayer(fromId);
+           燃完的那一刻画面就是干净的新图，不再有那一段亮光。
+       ★★ 2026-09-28：必须**先置位 stopped 再收尾**。
+         原来 `stopped` 只在 return 闭包与兜底里置位，帧循环正常收尾时**从不动它**
+         ⇒ SPAN+60 的兜底**必然**也会触发（`if (stopped) return` 形同虚设），
+         对已经收好的局面重复收尾 —— 每一次多余的接触都是"残留/闪现"的机会窗口。
+         现在第一行就置位 ⇒ 兜底看到 stopped 直接返回，正常路径下它零动作。 */
+      stopped = true;
+      wpHideLayer(fromId);
       applyMask("none");
       anim(from, [{opacity:0},{opacity:0}], {duration: dur * 0.18, easing:"linear"});
       glow.style.opacity = "0";
@@ -3510,7 +3456,15 @@ function wpShowLayer(id){
   try {
     const st = wpStage(id), im = wpImg(id);
     if (st){ st.style.opacity = ""; st.style.visibility = ""; }
-    if (im){ im.style.visibility = ""; }
+    /* ★★ 2026-09-28：必须与 wpHideEl 对称 —— 它同时写 stage 与 img 两层，
+       这里原来只清 stage、不清 img 的 inline opacity/visibility ⇒
+       一旦某次转场异常中止（收尾没跑到 wpNormalize），这一层就带着
+       inline 隐形被复用 ⇒ 该它上场时画面整个空掉（"空背景/露底"）。
+       removeProperty 连 !important 一起去掉。 */
+    if (im){
+      im.style.removeProperty("opacity");
+      im.style.removeProperty("visibility");
+    }
   } catch (e) { /* 无所谓 */ }
 }
 
@@ -3519,19 +3473,24 @@ function wpTransition(url){
   wpBusy = true;
   _wpTransition(url).catch(e => {
     console.error("[accel] 壁纸切换失败，已释放锁", e);
-    try { wpSettle(wpOther(), wpCur); } catch (_) {}
+    /* ★★ 2026-09-28：兜底收尾绝不能用 wpSettle(wpOther(), wpCur)。
+       到这里时 fx 已挑好、但换层可能还没发生 ⇒ wpCur 仍是旧层、wpOther() 是
+       正在装新图的目标层。wpSettle(目标层, wpCur) 会：
+         ① 藏掉 wpCur —— 也就是**当前屏幕上唯一可见的那层**
+         ② 把只装了一半的新层加上 .on
+         ③ 然后 wpCur 永远停在旧层 ⇒ 下一轮 wpOther() 拿到**上上张旧图**
+       ⇒ "旧图亮起残留 → 硬切"正是它能造成的效果之一。
+       正确兜底：把**当前可见层**（wpCur）钉死在可见状态，锁释放，
+       层指针不推进 —— 下一轮轮换从当前层正常继续。 */
+    try { wpShowLayer(wpCur); wpStage(wpCur).classList.add("on"); } catch (_) {}
     wpBusy = false;
   });
 }
 
 async function _wpTransition(url){
-  /* ★★★ 2026-09-28：**每次转场开头先清场**（针对用户报的两个问题）：
-     · 燃纸的 SVG 载层若因某条收尾路径没走到而留在屏幕上，它会显示**旧图** ⇒
-       用户看到"燃完旧图还在、然后新图硬切"。转场开头先把它撤掉，任何残留都活不过一次转场。
-     · 某个图层若残留了 !important 的隐藏（opacity/visibility），复用时就是**空背景**。
-       这里主动清一遍两个图层及其 <img>，等于给"空背景"装了自愈。
-     （removeProperty 能连 !important 一起去掉） */
-  try { _wpBurnCarrier(false); } catch (e) { /* 无所谓 */ }
+  /* ★ main 的修复（移植回来）：每次转场开头先清一遍两个图层的 inline 隐藏。
+     某层若残留了 !important 的隐藏（opacity/visibility/display），复用时就是**空背景**。
+     这里主动清一遍等于给"空背景"装了自愈（removeProperty 连 !important 一起去掉）。 */
   try {
     ["wp-a", "wp-b"].forEach(function (_id) {
       const _st = document.getElementById(_id); if (!_st) return;
@@ -3577,7 +3536,21 @@ async function _wpTransition(url){
     else if (fx === "blinds")  wpCleanup = fxStrips(to, from, rim, false, false);
     else if (fx === "shutter") wpCleanup = fxStrips(to, from, rim, true, true);
     else if (fx === "zoom")    fxZoom(to, from);
-    else if (fx === "burn")    wpCleanup = fxBurn(to, from, rim, id, fromId);
+    else if (fx === "burn"){
+      /* ★★ 2026-09-28：fxBurn 若**中途**抛错（已经写完 stage 的 inline z-index、
+         已经建好 glow/core/char 描边层），此时 `wpCleanup` 还没赋值 ⇒
+         这些副作用没有任何人会回收：
+           · z-index 永久留在两个 stage 上 ⇒ 之后**每一次**切换的层级都被污染
+           · 描边层挂在旧 stage 上 ⇒ 画面留下灼热光斑
+         ⇒ 在这里就地回收，再 re-throw 让外层 catch 走兜底淡入。 */
+      try { wpCleanup = fxBurn(to, from, rim, id, fromId); }
+      catch (e) {
+        try { wpStage(id).style.zIndex = ""; } catch (e2) { /* 无所谓 */ }
+        try { wpStage(fromId).style.zIndex = ""; } catch (e2) { /* 无所谓 */ }
+        try { wpStage(fromId).querySelectorAll(".s-strip").forEach(n => n.remove()); } catch (e2) { /* 无所谓 */ }
+        throw e;
+      }
+    }
     else                       wpCleanup = fxInk(to, from, rim);
   } catch (e) {
     console.error("[accel] 特效 " + fx + " 执行失败，退化为普通淡入（不影响切换）", e);
@@ -3614,14 +3587,12 @@ function wpSettle(id, fromId){
      （Web Animations 的优先级高于行内样式）；两者都会被 wpNormalize 清掉，无副作用。 */
   try {
     const _st0 = wpStage(fromId), _im0 = wpImg(fromId);
-    /* ★★★ 2026-09-28：**摘 .on 必须是第一步**。
+    /* ★★★ 2026-09-28（main 的修复，移植回来）：**摘 .on 必须是第一步**。
        用户："火线明明播到最后一下，却像把旧图带出来了一样；有时对有时错"。
-       根因是收尾这几步的**先后竞态**：旧层的"不可见"还依赖一行 inline 隐藏，
-       而后面任何一步都可能把它抹掉（wpNormalize 清 style / 清遮罩后旧层恢复不透明 /
-       wpCleanup 撤载体 / 中途抛异常）——只要发生在"摘 .on"之前，
-       旧图就会**重新整屏可见**，再被下一步切掉。
-       ⇒ 先摘 .on：从这一瞬起 **CSS 就保证旧层不可见**，后面无论哪一步做什么、
-         甚至抛异常，都带不回旧图。 */
+       收尾这几步存在**先后竞态**：旧层的"不可见"若只靠 inline，后面任何一步都可能
+       把它抹掉（wpNormalize 清 style / wpCleanup 撤载体 / 中途抛异常）——只要发生在
+       "摘 .on"之前，旧图就会**重新整屏可见**，再被下一步切掉。
+       ⇒ 先摘 .on：从这一瞬起 **CSS 就保证旧层不可见**。 */
     if (_st0){ _st0.classList.remove("on"); }
     wpHideLayer(fromId);                       // ★ 整层藏（含 stage 上的描边）
     if (_im0){ _im0.style.opacity = "0"; _im0.style.visibility = "hidden"; }
@@ -3648,12 +3619,11 @@ function wpSettle(id, fromId){
        而那时 `.on` 已摘掉 ⇒ CSS 本来就是 opacity:0 ⇒ 不会像"写成 1"那样永久可见。 */
   wpStage(fromId).classList.remove("on");
   try { wpNormalize(fromId);
-  /* ★★★ 2026-09-28：**归一化之后必须再藏一次旧层**。
+  /* ★★★ 2026-09-28（main 的修复，移植回来）：**归一化之后必须再藏一次旧层**。
      用户观察："即使正常出新图，也大概在 1~2 秒后旧图闪现一下" ——
      1~2 秒正是收尾（wpLastDur + 260）发生的时刻。
      原因：wpNormalize 会 im.style.cssText = "" ⇒ **把上面刚写的 inline 隐藏一起清掉**；
-     而此时旧层上可能还挂着动画（你代码里那套"保持不透明"的 fill:forwards），
-     动画一露头，旧图就在收尾这一瞬重新可见 ⇒ 闪现 / 或被下一步切掉。
+     而此时旧层上可能还挂着动画（fill:forwards），动画一露头旧图就在收尾这一瞬重新可见。
      ⇒ 归一化后再藏一次，并把旧层上所有动画取消，确保彻底退场。 */
   try { wpCancelAnimations(fromId); } catch (e) { /* 无所谓 */ }
   try { wpHideLayer(fromId); } catch (e) { /* 无所谓 */ } } catch (e) { console.warn("[accel] 归一化旧层失败", e); }

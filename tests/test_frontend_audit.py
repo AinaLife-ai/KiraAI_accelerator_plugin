@@ -1228,7 +1228,10 @@ check("★★★ fxBurn 必须等**所有**火源烧完（END = max(t0+rate)）�
 #   ⇒ 即使 k=1（r = far）某些凹处仍留在视口内 ⇒ 直接藏旧图会"啪"一下。
 #   ⇒ 正解是把半径平滑推到 far/(1−1.32·amp)（最坏约 2·far），让凹处也越过视口。
 check("★★★ 收尾必须保证烧穿：推到轮廓最小处也越过视口（数值验证）",
-      (2.2 * 2577.0 + 320) * (1 - 1.32 * 0.38) >= 2577.0 and ("q.far * 2.2 + 320" in HTML))
+      (2.2 * 2577.0 + 320) * (1 - 1.32 * 0.38) >= 2577.0
+      # ★ 必须查**剥注释后的 js**：用 HTML 会把注释里引用的公式当成代码 ⇒ 假绿
+      #   （反向验证时"把公式改弱"竟不报红，就是这么来的）
+      and ("q.far * 2.2 + 320" in js))
 # ★★★ 反过来：**禁止**用"整体淡出旧图"来兜底 —— 那会让旧图与新图
 #   同时可见地叠在一起，用户实测"切换完有一个淡入淡出、好像混入了别的"。
 #   （1.0.15 就是这么写的，这里把它钉死，防止再犯。）
@@ -1276,13 +1279,34 @@ check("★★ 燃纸收尾：撤遮罩前必须已**整层藏**旧层（含 stag
 #   整套燃纸靠 requestAnimationFrame 推进；rAF 被暂停/严重掉帧时循环走不到
 #   `el >= END` ⇒ 遮罩停在"没烧穿"⇒ 纸还是旧图 ⇒ settle 只好直接藏掉 = 硬切，
 #   而且只在那种情况出现 = 用户说的"偶尔"。定时器保险到点强制摘遮罩 + 藏旧层。
-# ★★★★ 保险必须是**完整且正确**的收尾：停循环 + 藏旧层 + 摘遮罩。
-#   曾经有过一道错的保险（SPAN+150 触发，只 cancel + 摘遮罩），
-#   它会把声明式淡出一起取消、让纸重新变回不透明（还亮着）
-#   ⇒ 而且与"帧循环正常收尾"竞速 ⇒ 约 50% 概率出现"旧图变亮再硬切"。
-check("★★★ 燃纸收尾保险必须「整层藏旧层 + 摘遮罩」两步（缺一就露旧图/描边）",
-      re.search(r"_burnHide = setTimeout[\s\S]{0,900}?wpHideLayer\(fromId\)[\s\S]{0,300}?applyMask\(\"none\"\)",
-                MAIN) is not None)
+# ★★★★ 保险必须是**完整且正确**的收尾。
+#   ★★★ 2026-09-28（用户："火线里是黑的在那晃 / 空底闪现更明显 / 旧图残留变亮"）：
+#   保险**不再自己收尾**，而是"替帧循环把最后一帧画完"（step 推到 END），
+#   让**唯一那条**收尾路径（整层藏 + 摘遮罩）执行。
+#   历史（必须记住，别再犯）：
+#     · 早先的保险在 SPAN+150 自己 `cancel + 摘遮罩` ⇒ 把声明式淡出一起取消
+#       ⇒ 纸重新变不透明（还亮着），且与帧循环正常收尾**竞速**
+#     · 根因是 `stopped` 只在保险与 return 闭包里置位、**正常收尾从不动它**
+#       ⇒ 保险必然重复收尾 ⇒ 约 50% 概率"旧图变亮再硬切"
+#   现在：正常收尾**第一行就置位 stopped** ⇒ 保险看到后零动作；掉帧时保险补帧，
+#   收尾仍然只发生一次、且只走同一条路径 ⇒ 竞速与重复收尾在结构上不可能。
+check("★★★ 燃纸收尾保险必须驱动同一条收尾路径（推帧到 END），不得自己摘遮罩",
+      re.search(r"_burnHide = setTimeout[\s\S]{0,900}?step\(\(t0 === null", MAIN) is not None
+      and re.search(r"_burnHide = setTimeout[\s\S]{0,900}?applyMask\(\"none\"\)", MAIN) is None)
+check("★★★ 帧循环正常收尾必须置位 stopped（否则保险必然重复收尾 ⇒ 竞速）",
+      re.search(r"stopped = true;\s*\n\s*wpHideLayer\(fromId\);", _burn) is not None)
+# ★★★ 旧层的不透明度**只能由一条动画驱动**：两条同属性 fill:forwards 动画谁生效
+#   取决于创建顺序（"声明顺序轮盘赌"）⇒ 行为不可预测。
+#   禁止的是"保持**不透明**"那条（`[{opacity:1},{opacity:1}]`）——它与淡出竞争；
+#   收尾里那条"从 0 保持 0"是必要的（防 fill 回弹），不冲突、允许存在。
+check("★★★ 禁止「保持不透明」的竞争动画（与淡出同属性、谁生效看声明顺序）",
+      re.search(r"anim\(from,\s*\[\{opacity:1\},\{opacity:1\}\]", _burn) is None)
+# ★★★ 淡出平台必须**对齐烧穿时刻**（SPAN = dur*0.82）：原来平台在 .88，
+#   意味着"遮罩已烧穿、纸就该没了"之后旧层还带着**受热变亮滤镜**继续可见
+#   ~0.16*dur（≈600ms）—— 那段窗口就是"旧图亮起残留 → 硬切"。
+check("★★★ 旧层淡出平台必须对齐烧穿时刻（offset:.82 且 .98 归零）",
+      re.search(r"anim\(from, \[\{opacity:1, offset:0\},\{opacity:1, offset:\.82\},\{opacity:0, offset:\.98\}\]",
+                _burn) is not None)
 check("★★★ 不许再有「只 cancel + 摘遮罩」的早触发保险（会让纸重新变不透明）",
       "_burnSafety = setTimeout" not in re.sub(r"#[^\n]*", "", _burn))
 # ★★★★ 保险必须落在**视觉烧穿的那一刻**（SPAN），不能拖到 dur+80 ——
@@ -1299,6 +1323,35 @@ check("★★ 保险要有 stopped 守卫（正常收尾时什么都不做）",
 check("★★ 且仍保持正确顺序：先摘 .on 再归一化（否则又会旧图闪现）",
       _settle.find('classList.remove("on")') >= 0
       and _settle.find("wpNormalize(") > _settle.find('classList.remove("on")'))
+# ★★★ 切换失败的兜底**绝不能换层**（历史写法 `wpSettle(wpOther(), wpCur)`）：
+#   走到那里时 fx 已挑好、但换层可能还没发生 ⇒ wpCur 仍是**当前唯一可见**的旧层，
+#   wpOther() 是只装了一半的目标层。wpSettle(目标层, wpCur) 会藏掉当前可见层、
+#   把半成品加 .on，且 wpCur 永远停在旧层 ⇒ 下一轮 wpOther() 拿到"上上张旧图"
+#   ⇒ 这正是"旧图残留 / 硬切"的一个来源。
+check("★★★ 切换失败兜底不得换层（否则藏掉当前层、亮出过期层）",
+      "wpSettle(wpOther(), wpCur)" not in js)
+# ★★ 开屏收尾必须有幂等闸门：hidden 要 1500ms 后才置位，这期间点击会再次触发收尾
+#   ⇒ 动画重播 = 闪一下（main 上的真修复，回退时曾被一并丢掉）。
+check("★★ 开屏收尾必须有幂等闸门（否则连点 ⇒ 动画重播 = 闪一下）",
+      re.search(r"if \(sp\.__finishing\) return;\s*\n\s*sp\.__finishing = true;", js) is not None)
+# ★★ 归一化之后必须**再藏一次**旧层并取消其动画（否则 wpNormalize 清掉 inline 隐藏后，
+#   旧层上残留的 fill:forwards 动画会让它在收尾那一瞬重新可见 = 用户报的"1~2 秒后闪现"）。
+check("★★ wpSettle 归一化之后必须再藏旧层并取消其动画",
+      re.search(r"wpNormalize\(fromId\);[\s\S]{0,700}?wpCancelAnimations\(fromId\)[\s\S]{0,200}?wpHideLayer\(fromId\)",
+                _settle) is not None)
+check("★★ 切换失败兜底必须钉住**当前可见层**",
+      re.search(r"wpShowLayer\(wpCur\)", js) is not None)
+# ★★ wpShowLayer 必须与 wpHideEl **对称**（都清 stage 与 img）：
+#   wpHideEl 给 stage 与 img 都写 opacity/visibility；wpShowLayer 只清 stage 的话，
+#   一旦某次转场异常中止（收尾没跑到 wpNormalize），该层就带着 inline 隐形被复用
+#   ⇒ 轮到它上场时画面整个空掉（"空背景 / 露底"）。
+check("★★ wpShowLayer 必须同时清 stage 与 img 的 inline 可见性",
+      re.search(r"function wpShowLayer\(id\)\{[\s\S]{0,400}?im\.style\.removeProperty\(\"opacity\"\)",
+                js) is not None)
+# ★★ 特效**中途**抛错必须就地回收（fxBurn 会先写 stage 的 inline z-index、
+#   再建描边层；此时 wpCleanup 还没赋值 ⇒ 无人回收 ⇒ 层级被永久污染）。
+check("★★ 燃纸中途抛错必须回收 z-index 与描边层",
+      re.search(r"catch \(e\) \{\s*\n\s*try \{ wpStage\(id\)\.style\.zIndex", js) is not None)
 
 # ⑧ ★★★ 燃纸的遮罩/描边必须画在**图层盒**坐标系里。
 #    遮罩是画在 `from`（`.wp-img`）上的，而它的盒子是 `.wp-stage`
