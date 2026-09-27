@@ -2905,6 +2905,20 @@ function fxBurn(to, from, rim, id, fromId){
   anim(from, [{opacity:1, offset:0},{opacity:1, offset:.45},{opacity:0, offset:.72}],
        {duration: dur, easing:"linear"});
 
+  /* ★★★ 2026-09-28（按"最坏情况"设计）：**定时器 + !important 硬压**。
+     上面那条淡出是"声明式动画"，但收尾路径里有 wpCancelAnimations(from)
+     ⇒ 动画被取消后元素会回到 CSS 状态（.on 还在 ⇒ opacity:1）⇒ 旧图又出现 ⇒ 被硬切。
+     是否看得见取决于那一刻动画有没有跑完 ⇒ **这就是残留的概率性来源**。
+     ⇒ 在 dur 的 75% 处，用 setTimeout 直接写 **inline !important**：
+       CSS 层叠里 `!important` 的优先级**高于动画** ⇒ 之后任何动画都无法再把旧层弄可见。
+     转场开头清场会清掉这两个属性 ⇒ 不影响图层复用。 */
+  setTimeout(function () {
+    try {
+      from.style.setProperty("opacity", "0", "important");
+      from.style.setProperty("visibility", "hidden", "important");
+    } catch (e) { /* 无所谓 */ }
+  }, Math.round(dur * 0.75));
+
   /* 照抄墨染：真身新层【先隐形】、到末尾【声明式淡入】。
      这样到收尾那一刻，新层已自己就位、旧层已自己淡走 ⇒ 撤载层时看不出任何变化。
      （旧层淡出、新层淡入都是"必然发生"的声明式动画，不依赖遮罩是否渲染。） */
