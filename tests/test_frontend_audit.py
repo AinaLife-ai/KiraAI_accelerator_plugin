@@ -142,8 +142,9 @@ print("═══ 4) ★★ 墨渗：必须是「随机纹路」而不是圆，�
 # ★ 必须用**原生 SVG mask**（挂在 SVG 的 <image> 上），
 #   而不是 HTML 元素的 CSS `mask-image: url(#…)` ——
 #   Chromium 对后者支持不完整 ⇒ 遮罩不生效 ⇒ 新图**瞬间全亮**（用户实测过）。
-check("★ 墨渗用原生 SVG mask（<image mask=\"url(#wpInkMask)\">）",
-      re.search(r'<image[^>]*mask="url\(#wpInkMask\)"', HTML) is not None)
+check("★ 墨渗用原生 SVG mask（载体带 mask=url(#wpInkMask)）",
+      'mask="url(#wpInkMask)"' in HTML)
+
 check("★ 不再用不可靠的 HTML CSS mask-image 引 SVG mask",
       'maskImage = "url(#wpInkMask)"' not in js)
 # 旧的圆实现应已消失
@@ -1135,8 +1136,12 @@ _delay = re.search(r"anim\(to, \[([^\]]*)\],\s*\{duration: dur, easing:\"linear\
 check("★★★ 兜底淡入必须推迟到 >=60% 才开始（否则整屏提前变亮 ⇒ 墨路被冲淡）",
       _delay is not None and re.search(r"offset:\s*\.(6|7|8|9)", _delay.group(1)) is not None,
       "关键帧: " + (_delay.group(1).strip() if _delay else "未匹配"))
-check("★ fxInk 仍然把图交给 SVG <image>（墨渗本体）",
-      'img.setAttribute("href", url)' in _ink and 'mask="url(#wpInkMask)"' in HTML)
+check("★★★ 墨渗载体用 mask 引用它自己的滤镜（原生 SVG mask 仍在）",
+      'mask="url(#wpInkMask)"' in HTML)
+check("★★★ 墨渗载体必须用**与 .wp-img 相同的渲染机制**（background-size:cover），\n      not SVG <image> —— 两套渲染会在交回时位移",
+      'id="wpInkImg"' in HTML and "background-size:cover" in HTML
+      and "<image id=\"wpInkImg\"" not in HTML)
+
 check("★ 拿不到 SVG 元素时不会卡住（有早退）",
       "if (!cm || !img) return;" in _ink)
 
