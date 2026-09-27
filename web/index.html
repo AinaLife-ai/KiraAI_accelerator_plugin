@@ -62,7 +62,7 @@ body{
      .wp-rim    = 3   揭示光晕，在最上面
    注意 fxBurn 会**临时**给两个 stage 写 inline z-index（纸=2 / 新图=1）
    来换上下层，那套靠 inline 覆盖 CSS，且它的清理函数会还原 —— 互不干扰。 */
-.wp-stage{position:absolute;inset:calc(-1 * max(72px, 6%));z-index:1}/* ★★★ 2026-09-27：**故意不写** will-change:transform / backface-visibility。
+.wp-stage{position:absolute;inset:calc(-1 * max(72px, 6%));z-index:1;will-change:transform;backface-visibility:hidden}/* ★★★ 2026-09-27：**故意不写** will-change:transform / backface-visibility。
    它们会让图层提升为独立合成层，而祖先 .wallpaper 正在跑 wpBreath
    （scale 1.04 <-> 1.10，transform-origin 50% 45%）。
    新图那一层**第一次被合成**时，WebView 会有帧拿不到祖先的 transform
@@ -1219,7 +1219,7 @@ html.jsfx .sp-rim{animation:none!important}
    否则呼吸缩放的中心不同 ⇒ 交接瞬间画面位置跳变（"重置闪现"）。 */
 .sp-breathe{position:absolute;inset:0;transform-origin:50% 45%;
   animation:wpBreath 22s ease-in-out infinite}
-.sp-sway{position:absolute;inset:calc(-1 * max(72px, 6%))}/* ★★★ 2026-09-27：同样**故意不写** will-change:transform。
+.sp-sway{position:absolute;inset:calc(-1 * max(72px, 6%));will-change:transform}/* ★★★ 2026-09-27：同样**故意不写** will-change:transform。
    结构与壁纸层完全同构：.sp-sway 在 .sp-breathe 里面，而 .sp-breathe 正在跑
    wpBreath（scale 1.04<->1.10, origin 50% 45%）。强制提升成独立合成层后，
    子层第一次被合成时会有帧拿不到祖先的 transform ⇒ 开屏图会**突然放大/位移**
