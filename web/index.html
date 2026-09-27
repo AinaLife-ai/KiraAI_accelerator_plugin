@@ -62,7 +62,14 @@ body{
      .wp-rim    = 3   揭示光晕，在最上面
    注意 fxBurn 会**临时**给两个 stage 写 inline z-index（纸=2 / 新图=1）
    来换上下层，那套靠 inline 覆盖 CSS，且它的清理函数会还原 —— 互不干扰。 */
-.wp-stage{position:absolute;inset:calc(-1 * max(72px, 6%));z-index:1;will-change:transform;backface-visibility:hidden}
+.wp-stage{position:absolute;inset:calc(-1 * max(72px, 6%));z-index:1}/* ★★★ 2026-09-27：**故意不写** will-change:transform / backface-visibility。
+   它们会让图层提升为独立合成层，而祖先 .wallpaper 正在跑 wpBreath
+   （scale 1.04 <-> 1.10，transform-origin 50% 45%）。
+   新图那一层**第一次被合成**时，WebView 会有帧拿不到祖先的 transform
+   ⇒ 新图瞬间显示在**未缩放**的位置 = 用户说的[重置位置]
+     （缩放中心 50%/45% ⇒ 位移随位置变、量级几个像素），随后才恢复
+   = [卡顿一下重置位置，再继续晃动]。
+   提升合成层的性能收益远不值这个代价。 */}
 .wp-img{position:absolute;inset:0;background-size:cover;background-position:center;
   opacity:0;will-change:transform,opacity,clip-path,filter}
 .wp-stage.on .wp-img{opacity:1}
@@ -1212,7 +1219,11 @@ html.jsfx .sp-rim{animation:none!important}
    否则呼吸缩放的中心不同 ⇒ 交接瞬间画面位置跳变（"重置闪现"）。 */
 .sp-breathe{position:absolute;inset:0;transform-origin:50% 45%;
   animation:wpBreath 22s ease-in-out infinite}
-.sp-sway{position:absolute;inset:calc(-1 * max(72px, 6%));will-change:transform}
+.sp-sway{position:absolute;inset:calc(-1 * max(72px, 6%))}/* ★★★ 2026-09-27：同样**故意不写** will-change:transform。
+   结构与壁纸层完全同构：.sp-sway 在 .sp-breathe 里面，而 .sp-breathe 正在跑
+   wpBreath（scale 1.04<->1.10, origin 50% 45%）。强制提升成独立合成层后，
+   子层第一次被合成时会有帧拿不到祖先的 transform ⇒ 开屏图会**突然放大/位移**
+   （上面那段注释里用户报过的"撕裂闪一下"就是这一类）。 */}
 .sp-wp{position:absolute;inset:0;background-size:cover;background-position:center;
   background-image:
     radial-gradient(70% 55% at 32% 28%, rgba(255,111,174,.30), transparent 68%),
@@ -2790,7 +2801,12 @@ function fxBurn(to, from, rim, id, fromId){
        **不用"整体淡出"兜底** —— 那会让旧图与新图叠影，
        用户实测"切换完有一个淡入淡出、好像混入了别的"。 */
   const END = P.reduce(function(m, q){ return Math.max(m, q.t0 + q.rate); }, 1);
-  const SPAN = dur * 0.82;               // el 从 0 走到 END 用的真实时间（给收尾留余量）
+  /* [v1.0.23] 原来是 dur * 0.82 = 3280ms，但 fxBurn 里的声明式动画（旧层淡出 dur*0.88、
+     新层推近 dur、末段 dur*0.9）**真正跑到 dur = 4000ms** => SPAN 比真实结束点早了 22%，
+     帧循环与保险都在 82% 处把整层掐掉 => 用户看到[燃烧中旧图还亮着 -> 新图硬切]。
+     SPAN 必须是时间轴**真正的结束点**，不能是提前量。
+     帧循环的时钟 el = (now-t0)/max(SPAN/END,1) 也随之一并对齐（原来快 22%）。 */
+  const SPAN = dur;                      // = 声明式动画的真实结束点
 
   /* ② blob：极坐标 + 两层谐波 ⇒ 平滑但**不规则**的闭合曲线（不是圆） */
   function blob(cx, cy, r, lobes, amp, ph, wob){
