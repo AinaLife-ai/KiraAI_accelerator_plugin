@@ -3060,28 +3060,10 @@ function fxBurn(to, from, rim, id, fromId){
 
     /* 用 SVG 载层来吃旧图（与墨染载层同一套机制、真机验证可用；遮罩是 DOM 里的 <mask>，
        不是 data-URI）⇒ 载层就绪后真身 from 藏起来，屏幕上看到的"旧图"由载层承担。 */
-    try {
-      const _sv = _wpBurnCarrier(true, LW, LH);
-      if (_sv) {
-        const _st = from.parentElement;
-        if (_st) {
-          _sv.style.left = _st.offsetLeft + "px"; _sv.style.top = _st.offsetTop + "px";
-          _sv.style.width = _st.offsetWidth + "px"; _sv.style.height = _st.offsetHeight + "px";
-        }
-        const _pm = document.getElementById("wpBurnMaskPath");
-        if (_pm) _pm.setAttribute("d", "M0 0H" + LW + "V" + LH + "H0Z" + holes.join(""));
-        const _im = document.getElementById("wpBurnImg");
-        if (_im) {
-          const _bg = (from.style.backgroundImage || "").replace(/^url\(["']?/, "").replace(/["']?\)$/, "");
-          if (_bg && _bg !== _wpBurnImgSrc) {
-            _im.setAttribute("href", _bg);
-            try { _im.setAttributeNS("http://www.w3.org/1999/xlink", "xlink:href", _bg); } catch (e4) {}
-            _wpBurnImgSrc = _bg;
-          }
-          if (_wpBurnImgSrc) from.style.visibility = "hidden";
-        }
-      }
-    } catch (e) { /* 无所谓 */ };
+    /* ★★★ 2026-09-28：**删除 SVG 载层**。它显示的是"旧图"，
+       而且是兄弟节点 —— 针对 from 的所有修复都管不到它 ⇒ 它就是"旧图残留"的最后一个来源。
+       现在"新图在上层 + 交叉淡变"已足够，不需要它。 */
+;
       glow.style.backgroundImage = svgURI(lines, strokePaint("rgba(255,140,40,.85)", 9));
       core.style.backgroundImage = svgURI(cores, strokePaint("rgba(255,242,190,.98)", 2.4));
       char.style.backgroundImage = svgURI(chars, strokePaint("rgba(58,30,16,.8)", 2));
