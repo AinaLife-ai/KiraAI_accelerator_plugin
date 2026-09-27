@@ -1211,11 +1211,38 @@ check("★★★ fxBurn 必须等**所有**火源烧完（END = max(t0+rate)）�
       re.search(r"const END = P\.reduce\(", _burn) is not None
       and re.search(r"if \(el < END\)", _burn) is not None,
       "写死 `el < 1` 会截断 rate>1 的火源 ⇒ 剩纸硬切")
-check("★★★ 收尾必须把纸**淡出**（不能直接切成 0，否则残余纸=硬切）",
-      re.search(r"anim\(from, \[\{opacity:1\},\{opacity:0\}\]", _burn) is not None)
-check("★★ 淡出前要先 cancel 那条『保持不透明』的动画（fill:forwards 会压过它）",
-      re.search(r"!fading && el >= END - TAIL[\s\S]{0,260}?wpCancelAnimations\(from\)",
-                _burn) is not None)
+# ★★★ 收尾必须**保证烧穿**：blob 的半径是 r·(1 + amp·sin + 0.32·amp·sin)，
+#   最小可到 r·(1 − 1.32·amp)（amp 最大 0.38 ⇒ 只剩 0.5·r）
+#   ⇒ 即使 k=1（r = far）某些凹处仍留在视口内 ⇒ 直接藏旧图会"啪"一下。
+#   ⇒ 正解是把半径平滑推到 far/(1−1.32·amp)（最坏约 2·far），让凹处也越过视口。
+check("★★★ 收尾必须**保证烧穿**（半径推到轮廓最小处也越过视口），不是靠淡出",
+      "closeT" in _burn and "1 - 1.32 * q.amp" in _burn,
+      "blob 最小半径 = r*(1-1.32*amp)")
+# ★★★ 反过来：**禁止**用"整体淡出旧图"来兜底 —— 那会让旧图与新图
+#   同时可见地叠在一起，用户实测"切换完有一个淡入淡出、好像混入了别的"。
+#   （1.0.15 就是这么写的，这里把它钉死，防止再犯。）
+check("★★★ 不许用『整体淡出旧图』兜底（两图叠影 = 用户报的『混入了别的』）",
+      "anim(from, [{opacity:1},{opacity:0}]" not in _burn)
+
+# ⑨ ★★★ 切换前必须**预加载并解码**新图。
+#    原来只是把 backgroundImage 设到隐藏层上就开动画，而浏览器边下边解
+#    （大图还会渐进式渲染）⇒ 新图在动画**中途**才到位 ⇒
+#    观感就是"新图卡顿一下、位置/清晰度变了"，之前透过新层看到的还是旧图。
+check("★★★ 切换前预加载并解码新图（否则新图中途才到位 => 卡顿 / 旧图闪现）",
+      "wpPreloadWallpaper(url)" in js and "im.decode" in js)
+check("★★ 预加载必须有超时兜底（不能因为一张图没加载完就把轮换卡死）",
+      "setTimeout(fin, 1200)" in js)
+
+# ⑩ ★★★ 收尾第一步就**确定性隐藏旧层**（inline），不依赖后面的清理与 class 切换。
+#    用户："默认还是会切换后存在旧图闪现" ⇒ 把"旧图不可见"变成**第一动作**。
+# ⚠️ wpNormalize 在文件里**排在 wpSettle 之前**，不能拿它当右边界（会把切片取空 ⇒ 假绿）
+_wp_s = js.index("function wpSettle")
+_settle = js[_wp_s: _wp_s + 3000]
+check("★★★ 收尾第一步就确定性隐藏旧层（inline opacity:0）",
+      '_imFrom.style.opacity = "0"' in _settle)
+check("★★ 且仍保持正确顺序：先摘 .on 再归一化（否则又会旧图闪现）",
+      _settle.find('classList.remove("on")') >= 0
+      and _settle.find("wpNormalize(") > _settle.find('classList.remove("on")'))
 
 # ⑧ ★★★ 燃纸的遮罩/描边必须画在**图层盒**坐标系里。
 #    遮罩是画在 `from`（`.wp-img`）上的，而它的盒子是 `.wp-stage`
