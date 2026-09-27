@@ -2883,8 +2883,8 @@ function fxBurn(to, from, rim, id, fromId){
      ⇒ 必须把 z-index 设在 **stage** 上。 */
   const stFrom = (typeof fromId !== "undefined") ? wpStage(fromId) : null;
   const stTo   = (typeof id     !== "undefined") ? wpStage(id)     : null;
-  if (stFrom) stFrom.style.zIndex = "2";   // 纸在上
-  if (stTo)   stTo.style.zIndex   = "1";   // 新图在下（被烧出来）
+  if (stFrom) stFrom.style.zIndex = "1";   // 纸在上
+  if (stTo)   stTo.style.zIndex   = "2";   // 新图在下（被烧出来）
 
   /* ③ 两层可见性**显式用动画写**（wpLoad 已 remove("on")，不写就会烧在透明层上） */
   anim(from, [{opacity:1},{opacity:1}], {duration: dur * 0.9, easing:"linear"});
