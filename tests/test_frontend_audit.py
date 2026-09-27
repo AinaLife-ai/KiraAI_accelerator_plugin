@@ -332,6 +332,7 @@ _from_block = re.search(r"anim\(from,\s*\[([\s\S]*?)\]", _ink)
 check("★★★ 墨渗的旧层只在**最后一段**淡出（前 85% 保持完全不透明，观感不变）",
       re.search(r"anim\(from, \[\{opacity:1, offset:0\},\{opacity:1, offset:\.85\},\{opacity:0, offset:1\}\]",
                 _ink) is not None)
+_strips = js[js.index("function fxStrips"):js.index("\nfunction ", js.index("function fxStrips") + 12)]
 check("★ fxStrips 不对主层做整张淡入（否则盖住条带 ⇒ 等于没播放）",
       "revealIn(" not in _strips)
 check("★ fxStrips 自己把主层设为隐藏（to.style.opacity = \"0\"）",
@@ -1260,6 +1261,15 @@ check("★★★ 墨染必须让旧层在**最后一段平滑淡出**（否则�
 check("★★ 燃纸收尾：撤遮罩前旧图必须已不可见（opacity + visibility）",
       re.search(r'from\.style\.opacity = "0"[\s\S]{0,160}?visibility = "hidden"[\s\S]{0,80}?applyMask\("none"\)',
                 _burn) is not None)
+# ★★★★ 燃纸必须有**不依赖 rAF** 的收尾保险。
+#   整套燃纸靠 requestAnimationFrame 推进；rAF 被暂停/严重掉帧时循环走不到
+#   `el >= END` ⇒ 遮罩停在"没烧穿"⇒ 纸还是旧图 ⇒ settle 只好直接藏掉 = 硬切，
+#   而且只在那种情况出现 = 用户说的"偶尔"。定时器保险到点强制摘遮罩 + 藏旧层。
+check("★★★ 燃纸必须有定时器收尾保险（rAF 掉帧时不至于停在旧图再硬切）",
+      "setTimeout(function(){" in _burn and "_burnSafety" in _burn,
+      "需要 clearTimeout(_burnSafety) 一起，避免残留定时器")
+check("★★ 保险必须由 stopped 守卫（正常收尾时它什么都不做）",
+      "if (stopped) return;" in _burn)
 check("★★ 且仍保持正确顺序：先摘 .on 再归一化（否则又会旧图闪现）",
       _settle.find('classList.remove("on")') >= 0
       and _settle.find("wpNormalize(") > _settle.find('classList.remove("on")'))

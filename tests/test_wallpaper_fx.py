@@ -57,7 +57,9 @@ for fn, needs in FX.items():
     i = JS.find("function " + fn)
     # ⚠️ 窗口要够大：fxBurn 已长到 4500+ 字符，6000 会把尾部（含 wpLastDur）截掉
     #   ⇒ 判据假红。取 12000 留足余量。
-    seg = JS[i:i + 12000] if i > 0 else ""
+    # ★ 不要用固定窗口：函数里的注释一长就会把关键行挤出取样范围（已踩过）
+    j = JS.find("\nfunction ", i + 12)
+    seg = JS[i:(j if j > i else i + 40000)] if i > 0 else ""
     check(f"★ {fn} 存在", i > 0)
     for nd in needs:
         check(f"  {fn} 驱动 {nd}", nd in seg)
