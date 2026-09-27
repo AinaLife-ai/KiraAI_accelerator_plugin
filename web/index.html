@@ -2901,6 +2901,13 @@ function fxBurn(to, from, rim, id, fromId){
          绝不会再出现"停在变亮的旧图再硬切"。 */
   anim(from, [{opacity:1, offset:0},{opacity:1, offset:.88},{opacity:0, offset:1}],
        {duration: dur, easing:"linear"});
+
+  /* 照抄墨染：真身新层【先隐形】、到末尾【声明式淡入】。
+     这样到收尾那一刻，新层已自己就位、旧层已自己淡走 ⇒ 撤载层时看不出任何变化。
+     （旧层淡出、新层淡入都是"必然发生"的声明式动画，不依赖遮罩是否渲染。） */
+  try { to.style.opacity = "0"; } catch (e) { /* 无所谓 */ }
+  anim(to, [{opacity:0, offset:0},{opacity:0, offset:.70},{opacity:1, offset:1}],
+       {duration: dur, easing:"linear", fill:"forwards"});
   /* 最后一道兜底：到点强制藏掉旧层（比 settle 早，保证"燃完一定是新图"）。 */
   const _burnHide = setTimeout(function(){
     if (stopped) return;
@@ -3050,13 +3057,13 @@ function fxBurn(to, from, rim, id, fromId){
         if (_pm) _pm.setAttribute("d", "M0 0H" + LW + "V" + LH + "H0Z" + holes.join(""));
         const _im = document.getElementById("wpBurnImg");
         if (_im) {
-          const _bg = (from.style.backgroundImage || "").replace(/^url\(["']?/, "").replace(/["']?\)$/, "");
+          const _bg = (to.style.backgroundImage || "").replace(/^url\(["']?/, "").replace(/["']?\)$/, "");
           if (_bg && _bg !== _wpBurnImgSrc) {
             _im.setAttribute("href", _bg);
             try { _im.setAttributeNS("http://www.w3.org/1999/xlink", "xlink:href", _bg); } catch (e4) {}
             _wpBurnImgSrc = _bg;
           }
-          if (_wpBurnImgSrc) from.style.visibility = "hidden";
+          /* 不再藏旧层：旧层由末尾的声明式淡出自己走掉（照墨染） */
         }
       }
     } catch (e) { /* 无所谓 */ };
