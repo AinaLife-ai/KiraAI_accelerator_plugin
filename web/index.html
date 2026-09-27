@@ -2651,7 +2651,7 @@ let wpLastDur = WP_DUR;
 function revealIn(to, dur, scaleFrom){
   /* 不透明度**较快**到位（约一半时长）⇒ 新图很快成为一张"实"的覆盖层，
      之后只是继续轻微的推近。这样观感是"后图压上来"，而不是两图对淡。 */
-  anim(to, [{opacity:0, offset:0},{opacity:0, offset:.45},{opacity:1, offset:.72}],
+  anim(to, [{opacity:0},{opacity:1}],
        {duration:Math.round(dur * 0.5), easing:"cubic-bezier(.3,0,.5,1)"});
   anim(to, [{transform:"scale(" + (scaleFrom || 1.08) + ")"},{transform:"scale(1)"}],
        {duration:dur, easing:"cubic-bezier(.3,0,.5,1)"});
@@ -2706,7 +2706,7 @@ function fxFade(to, from, rim){
   anim(to, [{transform:"scale(1.03)"},{transform:"scale(1)"}],
        {duration:dur, easing:"cubic-bezier(.4,0,.5,1)"});
   // 旧图：保持不透明到新图基本到位（78%），然后才退尽 ⇒ 永远有东西托底
-  anim(from, [{opacity:1, offset:0},{opacity:1, offset:.45},{opacity:0, offset:.72}],
+  anim(from, [{opacity:1},{opacity:1, offset:.78},{opacity:0}],
        {duration:Math.round(dur * 1.0), easing:"linear"});
   wpLastDur = dur;
 }
@@ -2899,7 +2899,7 @@ function fxBurn(to, from, rim, id, fromId){
        前 88% 保持完全不透明（此时纸已被遮罩挖空，看不见），最后 12% 平滑淡出。
        ⇒ 无论帧循环是否跑完，`dur` 到点旧层一定已经不可见 ⇒ **燃完一定是新图**，
          绝不会再出现"停在变亮的旧图再硬切"。 */
-  anim(from, [{opacity:1, offset:0},{opacity:1, offset:.88},{opacity:0, offset:1}],
+  anim(from, [{opacity:1, offset:0},{opacity:1, offset:.45},{opacity:0, offset:.72}],
        {duration: dur, easing:"linear"});
 
   /* 照抄墨染：真身新层【先隐形】、到末尾【声明式淡入】。
