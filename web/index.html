@@ -2921,6 +2921,7 @@ function fxBurn(to, from, rim, id, fromId){
     if (_fs) {
       try { anim(_fs, [{opacity:1},{opacity:0}], {duration:150, easing:"linear"}); } catch (e) { /* 无所谓 */ }
       setTimeout(function () {
+        try { _wpBurnCarrier(false); } catch (e) { /* 无所谓 */ }
         wpHideLayer(fromId);
         try { applyMask("none"); } catch (e) { /* 无所谓 */ }
     try { _wpBurnCarrier(false); } catch (e) { /* 无所谓 */ }
@@ -3508,6 +3509,21 @@ function wpTransition(url){
 }
 
 async function _wpTransition(url){
+  /* ★★★ 2026-09-28：**每次转场开头先清场**（针对用户报的两个问题）：
+     · 燃纸的 SVG 载层若因某条收尾路径没走到而留在屏幕上，它会显示**旧图** ⇒
+       用户看到"燃完旧图还在、然后新图硬切"。转场开头先把它撤掉，任何残留都活不过一次转场。
+     · 某个图层若残留了 !important 的隐藏（opacity/visibility），复用时就是**空背景**。
+       这里主动清一遍两个图层及其 <img>，等于给"空背景"装了自愈。
+     （removeProperty 能连 !important 一起去掉） */
+  try { _wpBurnCarrier(false); } catch (e) { /* 无所谓 */ }
+  try {
+    ["wp-a", "wp-b"].forEach(function (_id) {
+      const _st = document.getElementById(_id); if (!_st) return;
+      _st.style.removeProperty("opacity"); _st.style.removeProperty("visibility");
+      const _im = _st.querySelector(".wp-img");
+      if (_im) { _im.style.removeProperty("opacity"); _im.style.removeProperty("visibility"); }
+    });
+  } catch (e) { /* 无所谓 */ }
   await wpPreloadWallpaper(url);            // ★ 等新图可解码再开始（见上面的说明）
   const id = wpOther(), fromId = wpCur;
   const to = wpLoad(id, url), from = wpImg(fromId);
