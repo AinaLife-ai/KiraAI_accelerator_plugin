@@ -2797,7 +2797,12 @@ function fxBurn(to, from, rim, id, fromId){
        **不用"整体淡出"兜底** —— 那会让旧图与新图叠影，
        用户实测"切换完有一个淡入淡出、好像混入了别的"。 */
   const END = P.reduce(function(m, q){ return Math.max(m, q.t0 + q.rate); }, 1);
-  const SPAN = dur * 0.82;               // el 从 0 走到 END 用的真实时间（给收尾留余量）
+  /* [v1.0.23] 原来是 dur * 0.82 = 3280ms，但 fxBurn 里的声明式动画（旧层淡出 dur*0.88、
+     新层推近 dur、末段 dur*0.9）**真正跑到 dur = 4000ms** => SPAN 比真实结束点早了 22%，
+     帧循环与保险都在 82% 处把整层掐掉 => 用户看到[燃烧中旧图还亮着 -> 新图硬切]。
+     SPAN 必须是时间轴**真正的结束点**，不能是提前量。
+     帧循环的时钟 el = (now-t0)/max(SPAN/END,1) 也随之一并对齐（原来快 22%）。 */
+  const SPAN = dur;                      // = 声明式动画的真实结束点
 
   /* ② blob：极坐标 + 两层谐波 ⇒ 平滑但**不规则**的闭合曲线（不是圆） */
   function blob(cx, cy, r, lobes, amp, ph, wob){
