@@ -2801,7 +2801,7 @@ function fxBurn(to, from, rim, id, fromId){
        **不用"整体淡出"兜底** —— 那会让旧图与新图叠影，
        用户实测"切换完有一个淡入淡出、好像混入了别的"。 */
   const END = P.reduce(function(m, q){ return Math.max(m, q.t0 + q.rate); }, 1);
-  const SPAN = dur * 0.72;               // el 从 0 走到 END 用的真实时间（给收尾留余量）
+  const SPAN = dur * 0.82;               // el 从 0 走到 END 用的真实时间（给收尾留余量）
 
   /* ② blob：极坐标 + 两层谐波 ⇒ 平滑但**不规则**的闭合曲线（不是圆） */
   function blob(cx, cy, r, lobes, amp, ph, wob){
@@ -2858,7 +2858,7 @@ function fxBurn(to, from, rim, id, fromId){
        前 88% 保持完全不透明（此时纸已被遮罩挖空，看不见），最后 12% 平滑淡出。
        ⇒ 无论帧循环是否跑完，`dur` 到点旧层一定已经不可见 ⇒ **燃完一定是新图**，
          绝不会再出现"停在变亮的旧图再硬切"。 */
-  anim(from, [{opacity:1, offset:0},{opacity:1, offset:.50},{opacity:0, offset:.72}],
+  anim(from, [{opacity:1, offset:0},{opacity:1, offset:.88},{opacity:0, offset:1}],
        {duration: dur, easing:"linear"});
   /* 最后一道兜底：到点强制藏掉旧层（比 settle 早，保证"燃完一定是新图"）。 */
   const _burnHide = setTimeout(function(){
@@ -2966,7 +2966,7 @@ function fxBurn(to, from, rim, id, fromId){
        ⇒ 让 r 平滑升到 far/(1−1.32·amp)（最坏约 2·far）⇒ 连凹处也越过视口
          ⇒ 整屏 100% 烧穿 ⇒ 此时藏掉旧图**没有任何可见变化**，不需要淡出。
        多出来的余量全在**视口之外**，而且是在最后 10% 里连续变化的，看不出跳。 */
-    const closeT = Math.max(0, Math.min(1, (el - END * 0.50) / (END * 0.20)));   /* 0.76->0.90 之间推到盖满 */
+    const closeT = Math.max(0, Math.min(1, (el - END * 0.72) / (END * 0.18)));   /* 0.76->0.90 之间推到盖满 */
 
     /* 每个火源按自己的速率扩张；速率与起燃时刻不同 ⇒ 火线此消彼长 */
     const holes = [], lines = [], cores = [], chars = [];
