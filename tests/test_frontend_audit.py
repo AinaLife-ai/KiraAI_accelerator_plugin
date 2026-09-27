@@ -1208,10 +1208,8 @@ check("★★ 载体不能只写视口尺寸而不加余量（那与 .wp-stage �
 _burn = js[js.index("function fxBurn"):js.index("\nfunction ", js.index("function fxBurn") + 12)]
 check("★★★ fxBurn 隐藏旧图前必须先 cancel 那条『保持不透明』的动画",
       "wpCancelAnimations(from)" in _burn)
-check("★★★ cancel 必须出现在写 inline opacity **之前**（顺序反了就没用）",
-      _burn.find("wpCancelAnimations(from)") >= 0
-      and _burn.find("wpCancelAnimations(from)") < _burn.find('from.style.opacity = "0"'),
-      "先写 opacity 再 cancel ⇒ 中间那段时间旧图会整张露出")
+check("★★★ 燃纸收尾必须**先取消动画、再整层藏**（顺序反了那段旧图会整张露出）",
+      re.search(r"wpCancelAnimations\(from\)[\s\S]{0,200}?wpHideLayer\(fromId\)", js) is not None)
 
 # ⑦ ★★★ 燃纸"硬切"的**真根因**：火源没烧完就被截断。
 #    火源速率是 0.88~1.14（刻意错开，让边界"此消彼长"），
@@ -1271,9 +1269,8 @@ check("★★★ 墨染必须让旧层在**最后一段平滑淡出**（否则�
       re.search(r"anim\(from, \[\{opacity:1, offset:0\},\{opacity:1, offset:\.85\},\{opacity:0, offset:1\}\]",
                 _ink) is not None,
       "需要 offset:.85 的保持段 —— 前 85% 旧层仍完全不透明，墨染观感不变")
-check("★★ 燃纸收尾：撤遮罩前旧图必须已不可见（opacity + visibility）",
-      re.search(r'from\.style\.opacity = "0"[\s\S]{0,160}?visibility = "hidden"[\s\S]{0,80}?applyMask\("none"\)',
-                _burn) is not None)
+check("★★ 燃纸收尾：撤遮罩前必须已**整层藏**旧层（含 stage 上的描边）",
+      re.search(r"wpHideLayer\(fromId\)[\s\S]{0,200}?applyMask\(\"none\"\)", js) is not None)
 # ★★★★ 燃纸必须有**不依赖 rAF** 的收尾保险。
 #   整套燃纸靠 requestAnimationFrame 推进；rAF 被暂停/严重掉帧时循环走不到
 #   `el >= END` ⇒ 遮罩停在"没烧穿"⇒ 纸还是旧图 ⇒ settle 只好直接藏掉 = 硬切，

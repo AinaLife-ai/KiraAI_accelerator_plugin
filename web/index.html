@@ -2979,10 +2979,14 @@ function fxBurn(to, from, rim, id, fromId){
            （`wpCancelAnimations(from)` 只作用于 from 自身和它的子树；
              glow/core/char 挂在 stage 上、是 from 的**兄弟节点**，不会受影响。） */
       try { wpCancelAnimations(from); } catch (e) { /* 老 WebView */ }
-      from.style.opacity = "0";
-      /* ★ visibility 是**保险**：万一某条 fill:forwards 的动画把 opacity 顶回去
-         （Web Animations 优先级高于行内样式），它仍能保证旧图不可见。 */
-      try { from.style.visibility = "hidden"; } catch (e) {}
+      /* ★★★★ 2026-09-27（用户："燃完或快燃完时旧图变亮，且持续近 1 秒"）：
+         这条是"帧循环正常收尾"的路径。原来这里**只藏了 `.wp-img`**，
+         而火光/炭化描边（glow/core/char）挂在 **stage** 上 ⇒ 它们仍要按
+         `dur*0.18 = 720ms` 慢慢淡出 ⇒ **那 720ms 的亮光就是"旧图变亮停留近1秒"** ✓
+         （980ms 那笔账：SPAN→settle 是 980ms，而描边淡出正好 720ms，两者都在"近1秒"量级。）
+         ⇒ 与保险路径统一：**整层藏**（stage + img）⇒ 描边随 stage 一起消失，
+           燃完的那一刻画面就是干净的新图，不再有那一段亮光。 */
+      wpHideLayer(fromId);
       applyMask("none");
       anim(from, [{opacity:0},{opacity:0}], {duration: dur * 0.18, easing:"linear"});
       anim(glow, [{opacity:.85},{opacity:0}], {duration: dur * 0.18, easing:"linear"});
@@ -3158,6 +3162,28 @@ function fxInk(to, from, rim){
      否则"拿不到 SVG 元素"时会带着**上一套特效的 wpLastDur** 去收尾
      ⇒ 提前掐掉或超时等待（虽然只是极端环境，但收尾时序必须确定）。 */
   wpLastDur = dur;
+
+  /* ★★★★ 2026-09-27（用户："新图位置会突然变一下" —— 一直没解决）：
+     载体的盒子一直是**靠 CSS 表达式推算**的（`calc(100% + 2*max(72px,6%))`），
+     而 `.wp-stage` 是 `inset:calc(-1*max(72px,6%))` —— 两者**只有在"包含块
+     恰好等于视口大小的 .wallpaper"时才相等**。任何偏差都会让载体的
+     `background-size:cover` 与 `.wp-img` 的缩放/对齐不一致
+     ⇒ 交接那一刻新图**位置/缩放突然变一下**。
+     ⇒ 不再推算：**运行时实测 `.wp-stage` 的布局盒**（offset* 是布局值，
+       不受 .wallpaper 那张呼吸动画的 transform 影响），把载体按 px 对齐。
+       ⇒ 载体盒 == 图层盒，**逐像素相同**，不依赖任何 CSS 解析假设。 */
+  try {
+    const _st = to.parentElement;
+    /* ⚠️ img 现在是 foreignObject 里的 <div>，`ownerSVGElement` 对 HTML 元素是 undefined
+       ⇒ 必须用 closest("svg") 才拿得到载体 SVG（这个坑差点让对齐静默失效）。 */
+    const _sv = img && (img.closest ? img.closest("svg") : null);
+    if (_st && _sv){
+      _sv.style.left = _st.offsetLeft + "px";
+      _sv.style.top = _st.offsetTop + "px";
+      _sv.style.width = _st.offsetWidth + "px";
+      _sv.style.height = _st.offsetHeight + "px";
+    }
+  } catch (e) { /* 老 WebView：退回 CSS 值，不影响功能 */ }
   if (!cm || !img) return;                 // 拿不到就退化为普通显示（不崩）
 
   /* ★ 清掉两个壁纸层上**可能残留**的 inline z-index。
