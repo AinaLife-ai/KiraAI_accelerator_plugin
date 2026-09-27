@@ -346,6 +346,42 @@ A：把你的图（webp/jpg/png）丢进 `wallpapers/` 目录，面板里就会�
 <details>
 <summary><b>📜 更新日志</b>（点击展开）</summary>
 
+### v1.0.29
+
+**修复：墨染交接时"卡顿一下 / 位置重置"（根因是我自己在 1.0.21 引入的）**
+
+载层原本是 **SVG 原生图片**：
+
+```html
+<image id="wpInkImg" x="0" y="0" width="100%" height="100%"
+       preserveAspectRatio="xMidYMid slice"     <!-- slice = cover，与 .wp-img 等价 -->
+       mask="url(#wpInkMask)" style="display:none"/>
+```
+
+`1.0.21`（提交 `edf56d3`）我把它换成了 `<foreignObject>` + 一个用
+`background-size:cover` 的 `<div>`，理由是"两套渲染机制不同"。**这个判断是错的**：
+
+* `<image preserveAspectRatio="slice">` 本来就是 `cover` 的**同义**写法；
+* 而换成的 `<div>` 因为载层 SVG 带 `viewBox`（= 图片自然像素）却**没写
+  `preserveAspectRatio`**，会按默认 `xMidYMid meet`（= contain）缩放
+  ⇒ 载层渲染比真实图层**小一圈**：
+
+```
+1080x2340 图 / 1224x2621 舞台
+  cover → 1.1333 → 1224x2652
+  meet  → 1.1201 → 1210x2621
+  ⇒ 相对失真 1.19%，内容盒居中偏移 7px，边缘最大差 ~15px/侧
+  ⇒ 中心几乎为 0、越靠边越大、方向随位置变
+```
+
+这正是"几个像素 + 方向会变"的来源，也解释了为什么后来所有"对齐盒子"的改动都无效：
+**盒子是对的，渲染方式不一样。**
+
+⇒ 本版把载层**改回 SVG 原生 `<image preserveAspectRatio="xMidYMid slice">`**，
+并给外层 SVG 加 `preserveAspectRatio="none"` 让用户单位与 CSS 盒 **1:1**
+⇒ 载层与 `.wp-img` 在**同一个盒、同一套 cover 参数**下渲染 ⇒ 交接处不可能出现位移。
+
+**没有写进 index.html 的任何注释**（上一版就是因为注释落到正文里被渲染出来）。
 ### v1.0.28
 
 **撤回 1.0.27 的全部改动（它引入了新问题），只保留"注释不再显示"**
