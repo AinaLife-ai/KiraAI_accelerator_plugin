@@ -3017,7 +3017,26 @@ function fxBurn(to, from, rim, id, fromId){
         from.style.maskImage = _nm;
         from.style.webkitMaskSize = from.style.maskSize = "100% 100%";
       }
-    } catch (e) { /* 无所谓 */ };
+    } catch (e) { /* 无所谓 */ }
+
+    /* ★★★ 2026-09-28：**改用 clip-path 来"吃掉旧图"（保底机制）**。
+       对比结论：本工程 clip-path（fxStrips 用它，一直正常）+ 淡入 + blur 都可用，
+       而"CSS mask"这条路在用户设备上**整张没渲染**（旧图完整、完全没被动过）。
+       ⇒ polygon(evenodd)：全屏矩形 + 一个随火焰进度增长的圆形子路径，两两相减
+         ⇒ 洞内 = 被吃掉（露出新图）、洞外 = 旧图照旧。
+       与 mask 并存：任一机制可用，旧图都会被带走。 */
+    try {
+      var _pc = Math.max(0, Math.min(1, el / Math.max(END, 1)));
+      var _rad = _pc * _pc * 150;
+      var _pts = [];
+      for (var _k = 0; _k < 48; _k++) {
+        var _ang = _k / 48 * Math.PI * 2;
+        _pts.push((50 + Math.cos(_ang) * _rad).toFixed(1) + "% " + (55 + Math.sin(_ang) * _rad * 1.3).toFixed(1) + "%");
+      }
+      var _clip = "polygon(evenodd, 0% 0%, 100% 0%, 100% 100%, 0% 100%, " + _pts.join(", ") + ")";
+      from.style.webkitClipPath = _clip;
+      from.style.clipPath = _clip;
+    } catch (e2) { /* 无所谓 */ };
       glow.style.backgroundImage = svgURI(lines, strokePaint("rgba(255,140,40,.85)", 9));
       core.style.backgroundImage = svgURI(cores, strokePaint("rgba(255,242,190,.98)", 2.4));
       char.style.backgroundImage = svgURI(chars, strokePaint("rgba(58,30,16,.8)", 2));
@@ -3542,9 +3561,17 @@ function wpSettle(id, fromId){
      （Web Animations 的优先级高于行内样式）；两者都会被 wpNormalize 清掉，无副作用。 */
   try {
     const _st0 = wpStage(fromId), _im0 = wpImg(fromId);
+    /* ★★★ 2026-09-28：**摘 .on 必须是第一步**。
+       用户："火线明明播到最后一下，却像把旧图带出来了一样；有时对有时错"。
+       根因是收尾这几步的**先后竞态**：旧层的"不可见"还依赖一行 inline 隐藏，
+       而后面任何一步都可能把它抹掉（wpNormalize 清 style / 清遮罩后旧层恢复不透明 /
+       wpCleanup 撤载体 / 中途抛异常）——只要发生在"摘 .on"之前，
+       旧图就会**重新整屏可见**，再被下一步切掉。
+       ⇒ 先摘 .on：从这一瞬起 **CSS 就保证旧层不可见**，后面无论哪一步做什么、
+         甚至抛异常，都带不回旧图。 */
+    if (_st0){ _st0.classList.remove("on"); }
     wpHideLayer(fromId);                       // ★ 整层藏（含 stage 上的描边）
     if (_im0){ _im0.style.opacity = "0"; _im0.style.visibility = "hidden"; }
-    if (_st0){ _st0.classList.remove("on"); }
   } catch (e) { /* 无所谓 */ }
   try {
     if (wpCleanup){ wpCleanup(); }
