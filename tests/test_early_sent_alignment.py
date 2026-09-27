@@ -113,14 +113,18 @@ async def main():
         pass
     resp = Resp()
     resp.__dict__["_accel_early_sent_count"] = 3
-    plugin._resp_by_sid["test:gm:1"] = resp
 
     class Ev:
         sid = "test:gm:1"          # 框架要求 <adapter>:<dm|gm>:<id>
         is_stopped = False
         event_id = "e1"
 
-    results = await MessageProcessor.send_xml_messages(mp, Ev(), full, None)
+    # ★ 按 (sid,轮次) 复合键灌入 —— 与 main.py 的查找键一致
+    #   （类必须先定义好，再取 Ev.event_id）
+    plugin._resp_by_sid[plugin._ckey("test:gm:1", Ev.event_id)] = resp
+
+    _ev = Ev()                     # 发送时用的**同一个** event（同 event_id）
+    results = await MessageProcessor.send_xml_messages(mp, _ev, full, None)
 
     print(f"     框架真正发出去的: {mp.sent}")
     check("★ 框架只发了剩余的 2 段（没有重发已抢发的）",

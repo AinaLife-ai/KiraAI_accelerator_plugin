@@ -41,19 +41,20 @@ _EJ = MAIN.find("def page(", _EI)
 _BODY = MAIN[_EI:_EJ] if _EJ > _EI else MAIN[_EI:]
 _fin = _BODY[_BODY.find("finally:"):] if "finally:" in _BODY else ""
 check("★★ 台账在该函数体内**按步消费**（finally 里清）",
-      re.search(r"_sent_ledger\.pop\(sid_now, None\)", _fin) is not None)
-check("★★ 轮次键也在同一处清掉（不再是 finally 之后的死代码）",
-      re.search(r'_sent_ledger\.pop\(sid_now \+ "\\x00ev", None\)', _fin) is not None)
+      re.search(r"_sent_ledger\.pop\(_k, None\)", _fin) is not None)
+_MC = re.sub(r"#[^\n]*", "", MAIN)      # ★ 去注释再查，避免注释里的旧标识符假红
+check("★★ 键是 (sid,轮次) 复合键（_ckey），不再有独立的轮次键",
+      "_ckey" in _MC and "x00ev" not in _MC)
 check("★★★ 不存在「已消费 ⇒ 跳过剥离」的判定（本次 bug 的根因）",
       re.search(r"_cons_ev\s*==\s*_ev", _BODY) is None)
-check("★★ 轮次 id 仅用于「台账是否属于本轮」",
-      "cur_ev" in _BODY and "_raw_ev" in _BODY)
+check("★★ 复合键 ⇒ 不再需要比较轮次键（_raw_ev 已移除）",
+      "_raw_ev" not in re.sub(r"#[^\n]*", "", _BODY))
 check("★ 轮结束仍统一清理（final_result 里调 _clear_round_state，作为兜底）",
       "_clear_round_state" in MAIN
       and re.search(r"async def observe_final[\s\S]{0,500}?_clear_round_state", MAIN) is not None)
-check("★ 轮结束清理仍覆盖台账与响应缓存",
-      all(k in MAIN[MAIN.find("def _clear_round_state"):MAIN.find("def _clear_round_state") + 900]
-          for k in ("_sent_ledger.pop", "_resp_by_sid.pop")))
+check("★ 轮结束清理仍覆盖台账与响应缓存（按前缀清该会话所有轮次）",
+      all(k in MAIN[MAIN.find("def _clear_round_state"):MAIN.find("def _clear_round_state") + 1200]
+          for k in ("_sent_ledger", "_resp_by_sid", "_pre = sid + ")))
 
 print()
 print("═══ 2) ★★★ 台账是权威来源（不是兜底），且拿不到标记时不该告警")

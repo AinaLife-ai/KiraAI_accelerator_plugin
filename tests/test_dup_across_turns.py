@@ -69,8 +69,10 @@ check("★★★ 不存在「已消费 ⇒ 跳过剥离」的判定（本次 bug
       "已删除" if re.search(r"_cons_ev\s*==\s*_ev", _BODY) is None else "仍存在")
 check("★★★ 不再有 _ledger_consumed 参与剥离决策",
       "_ledger_consumed" not in _BODY)
-check("★★ 轮次 id 仍在使用，但只用于「台账是否属于本轮」",
-      "cur_ev" in _BODY and "_raw_ev" in _BODY)
+check("★★★ 轮次 id 已并入**复合键**（_ckey），台账按 (sid,轮次) 隔离",
+      "_ckey" in _BODY)
+check("★★ 键里含轮次 ⇒ 旧的轮次键比较已移除（去注释后查）",
+      "_raw_ev" not in re.sub(r"#[^\n]*", "", _BODY))
 
 print()
 print("═══ 3) 轮开始时的兜底清理（双保险）═══")
@@ -118,13 +120,16 @@ print("═══ 5) ★★★ 跨轮次：轮次 id 只用来**丢弃上一轮�
 # 这里锁定**正确的用法**：轮次 id 用于"这份台账是不是本轮的"。
 check("★★★ 取轮次 id 用 event.event_id（框架注释：唯一标识一个事件）",
       "getattr(event, \"event_id\", None)" in MAIN or "getattr(event, 'event_id', None)" in MAIN)
-check("★★★ 轮次不一致时**丢弃**残留台账（否则会误剪 = 丢内容）",
-      re.search(r"_raw_ev[\s\S]{0,160}?ledger = \[\]", MAIN) is not None,
-      "见 elif _raw: 分支")
-check("★★ 台账带轮次键，轮次变了自动开新账（不依赖钩子清理）",
-      "cur_ev" in MAIN and MAIN.count("x00ev") >= 4)
-check("★★ 轮次键被所有清理点覆盖（否则字典会留垃圾）",
-      MAIN.count('+ "\\x00ev", None)') >= 4)
+# ★ 去掉注释再查（注释里出现旧标识符不该假红）
+_MAIN_CODE = re.sub(r"#[^\n]*", "", MAIN)
+check("★★★ 别的轮次的残留**根本不在本键下** ⇒ 不可能被误剪（复合键隔离）",
+      "_raw_ev" not in _MAIN_CODE and "x00ev" not in _MAIN_CODE)
+check("★★★ 台账键 = (sid,轮次) 复合键：重叠轮次天然隔离，不依赖任何清理钩子",
+      "_ckey" in _MAIN_CODE and "x00ev" not in _MAIN_CODE)
+check("★★★ _reset_turn_ledger 必须只清**本轮**（旧版清整个会话 ⇒ 清掉正在跑的另一轮）",
+      re.search(r"_reset_turn_ledger\(self, sid: str, event_id=None\)", _MAIN_CODE) is not None)
+check("★★ 清理按复合键（含前缀清理，兼容旧键）",
+      "_pre = sid + " in MAIN)
 check("★★ 不再有 _ledger_consumed 参与任何剥离决策",
       "_ledger_consumed.get(" not in MAIN and "self._ledger_consumed" not in MAIN)
 

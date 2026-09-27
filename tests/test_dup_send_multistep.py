@@ -82,10 +82,13 @@ check("★ 定位到了 send_xml_messages 的接管函数（不是别的 finally
 check("★★★ 不存在「已消费 ⇒ 跳过剥离」的判定（整批/逐步重复的根因）",
       re.search(r"_cons_ev\s*==\s*_ev", BODY) is None)
 check("★★ 台账在 finally 里按步消费",
-      re.search(r"finally:[\s\S]{0,2000}?_sent_ledger\.pop\(sid_now, None\)", BODY) is not None)
-check("★ 轮次键在同一处清掉（消除 finally 之后的死代码）",
-      re.search(r'_sent_ledger\.pop\(sid_now \+ "\\x00ev", None\)', BODY) is not None)
-check("★★ 轮次 id 仅用于「台账是否属于本轮」", "cur_ev" in BODY and "_raw_ev" in BODY)
+      re.search(r"finally:[\s\S]{0,2000}?_sent_ledger\.pop\(_k, None\)", BODY) is not None)
+# ★ 静态判据要去掉注释再查（注释里提到旧标识符不该假红；本项目踩过多次）
+_CODE = re.sub(r"#[^\n]*", "", BODY)
+check("★★★ 台账键是 (sid,轮次) 复合键（_ckey）；旧的独立轮次键已从代码移除",
+      "_ckey" in _CODE and "x00ev" not in _CODE)
+check("★★ 键里含轮次 ⇒ 不再需要比较轮次键（_raw_ev 已从代码移除）",
+      "_raw_ev" not in _CODE)
 check("★ 轮结束仍有兜底清理", "_clear_round_state" in MAIN)
 
 print()
