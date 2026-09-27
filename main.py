@@ -372,9 +372,13 @@ class AcceleratorPlugin(BasePlugin):
         """
         try:
             if sid:
-                self._sent_ledger.pop(sid, None)
-                self._sent_ledger.pop(sid + "\x00ev", None)
-                self._resp_by_sid.pop(sid, None)
+                # ★ 现在是复合键 (sid, 轮次) ⇒ 按**前缀**清掉该会话的所有轮次。
+                #   兼容旧的无复合键形式（`k == sid`）。
+                _pre = sid + "\x00"
+                for _d in (self._sent_ledger, self._resp_by_sid):
+                    for _x in [_y for _y in list(_d.keys())
+                               if _y == sid or _y.startswith(_pre)]:
+                        _d.pop(_x, None)
         except Exception:  # noqa: BLE001
             logger.exception("[accel] 清理本轮发送状态失败（不影响发送）")
 
@@ -455,22 +459,15 @@ class AcceleratorPlugin(BasePlugin):
                 if isinstance(d, dict):
                     keys |= set(d.keys())
             for k in keys:
-                # ★ 轮次键（`sid\x00ev`）**没有自己的时间戳** —— 它属于 sid。
-                #   旧写法直接 `_ledger_ts.get(k, 0)` ⇒ 轮次键永远取到 0
-                #   ⇒ 被当成"陈旧遗留"在**每次请求**都被清掉，
-                #   而同一个 sid 的 `_sent_ledger[sid]` 因为时间戳新鲜而保留
-                #   ⇒ 出现"台账在、轮次键没了"的**不对称**状态，
-                #     下一轮就可能拿上一轮的残留去剥离（配按序号回退 = 丢内容）。
-                #   所以轮次键一律**跟随所属 sid** 的时间戳。
-                _base = k[:-4] if k.endswith("\x00ev") else k
-                ts = float(self._ledger_ts.get(_base, 0) or 0) if isinstance(self._ledger_ts, dict) else 0
+                # ★ 现在是复合键 (sid\x00轮次)，**每个键都有自己的时间戳**
+                #   （`_emit_segment` 写的）⇒ 直接查即可，不再需要
+                #   "轮次键跟随所属 sid 时间戳"那套特例。
+                ts = float(self._ledger_ts.get(k, 0) or 0) if isinstance(self._ledger_ts, dict) else 0
                 # 没有时间戳的（陈旧遗留）按「更早」处理 ⇒ 一并清掉
                 if ts and (now - ts) <= 600:
                     continue
-                self._ledger_ts.pop(k, None)
-                self._sent_ledger.pop(k, None)
-                self._sent_ledger.pop(k + "\x00ev", None)
-                self._resp_by_sid.pop(k, None)
+                for _d in (self._ledger_ts, self._sent_ledger, self._resp_by_sid):
+                    _d.pop(k, None)
         except Exception:  # noqa: BLE001
             logger.exception("[accel] 陈旧状态清理失败（不影响请求）")
 
@@ -497,8 +494,9 @@ class AcceleratorPlugin(BasePlugin):
         #      会把别的插件注入的内容（如记忆·Z 的记忆）当成用户消息扫。
         #      实测：日志里 `[1021字]` 而用户只打了 50 字，就是这个原因。
         req.__dict__["_accel_event"] = event
-        # ★ 新一轮开始 ⇒ 清掉该会话的抢发台账（否则上一轮的残留会让本轮**多切**=丢内容）
-        self._reset_turn_ledger(sid_now)
+        # ★ 新一轮开始 ⇒ 只清**本轮**的抢发台账（按 (sid,轮次) 复合键；
+        #   绝不能清整个会话 —— 框架可能还在跑同一个会话的上一轮，见 _ckey 说明）
+        self._reset_turn_ledger(sid_now, getattr(event, "event_id", None))
 
         if self.thinking_enabled and sid_now:
             decision = self.thinking.decide(sid_now, req)
@@ -664,10 +662,13 @@ class AcceleratorPlugin(BasePlugin):
             # ★ 按 sid 分开存：并发会话下用一个实例变量会拿错响应
             #   ⇒ 要么重复发送、要么把内容丢掉。
             if ctx is not None and ctx.sid:
-                self._resp_by_sid[ctx.sid] = resp
+                # ★ 按 (sid, 轮次) 存：并发/重叠会话下按 sid 存会拿错响应
+                #   ⇒ 要么重复发送、要么把内容丢掉（见 _ckey 的说明）。
+                _k = self._ckey(ctx.sid, getattr(ctx.event, "event_id", None))
+                self._resp_by_sid[_k] = resp
                 if len(self._resp_by_sid) > 32:          # 防泄漏
                     self._resp_by_sid.clear()
-                    self._resp_by_sid[ctx.sid] = resp
+                    self._resp_by_sid[_k] = resp
             self._current_resp = resp                    # 仅供观测
 
         return StreamEngine(force_stream=self.force_stream, emit=emit, on_complete=_remember)
@@ -745,28 +746,42 @@ class AcceleratorPlugin(BasePlugin):
             logger.exception("[accel] 广播 AFTER_XML_PARSE 失败（按未改写的内容发送）")
         return actions
 
-    def _reset_turn_ledger(self, sid: str) -> None:
-        """**每轮开始时**清掉该会话的抢发台账。
+    @staticmethod
+    def _ckey(sid, event_id):
+        """(会话, 轮次) **复合键** —— 抢发台账 / 响应缓存 / 活动时间都用它。
 
-        ★ 为什么必须清（这是个真实隐患，不是洁癖）：
-          台账原来按 sid 累加且**从不清零**。如果某一轮"抢发了但没走到
-          send_xml_messages"（事件被 stop、或中途换轮），残留值就会让**下一轮
-          多切**若干段 ⇒ **丢内容**（比重复发送更糟）。
+        ★★★ 为什么必须带上轮次（2026-09-27，线上重复发送的**真根因**）：
+          框架会**重叠处理同一个会话**。用户日志实证：
+             15:35:33 [llm] Running agent using ...   ← 第 2 轮的 llm_request
+             15:35:37 [accel] 一轮结束 sid=... steps=1 ← 第 1 轮这时才结束
+          即第 1 轮"已经抢发、但还没走到 send_xml_messages"时，第 2 轮就开始了。
+          而原来这些状态**只按 sid 存** ⇒ 第 2 轮一开始就把第 1 轮的
+          台账 + 响应**一起清掉/覆盖** ⇒ 第 1 轮走到发送层时
+          n=0、也拿不到自己的响应 ⇒ **剥离失败** ⇒
+          框架把它**抢发过的内容再发一次** = 用户看到的"重复发送"。
+        ⇒ 带上轮次 id 后，两轮各用各的键，互不干扰；也不再需要
+          "轮次变了就重新开账"那套（键本身就是轮次）。
         """
-        if sid:
-            try:
-                self._sent_ledger.pop(sid, None)
-                self._sent_ledger.pop(sid + "\x00ev", None)
-                # ★★ 必须**一起清掉响应与结果**，否则会用到**上一轮的响应**：
-                #   `_resp_by_sid[sid]` 存的是上一轮的响应，若这一轮先走到发送层，
-                #   拿到的 n / segs 全是旧的 ⇒
-                #     · 按内容匹配必然失败（文本完全不同）⇒ 日志里那条告警
-                #     · n 与实际不符 ⇒ 可能**多切 = 丢内容**（比重复更糟）
-                #   （用户实测日志：`抢先发=46` 是累计值，而本轮 n=1 ⇒ 明显用了旧响应）
-                self._resp_by_sid.pop(sid, None)
-                self._early_results.pop(sid, None)
-            except Exception:  # noqa: BLE001
-                pass
+        return "%s\x00%s" % (sid, event_id if event_id else "-")
+
+    def _reset_turn_ledger(self, sid: str, event_id=None) -> None:
+        """清掉**这一轮**的抢发台账（**不是整个会话**！）。
+
+        ★★★ 2026-09-27 修正：原来这里是"每轮开始时清掉**该会话**的台账"，
+          但框架会重叠处理同一个会话（见 `_ckey` 的说明），
+          于是第 2 轮一开始就把**还在跑的第 1 轮**的台账清掉了
+          ⇒ 第 1 轮剥离失败 ⇒ 重复发送。
+        ⇒ 现在只清 (sid, 本轮轮次) 那一份；其他轮次的**绝不触碰**。
+        """
+        if not sid:
+            return
+        try:
+            k = self._ckey(sid, event_id)
+            self._sent_ledger.pop(k, None)
+            self._resp_by_sid.pop(k, None)
+            self._early_results.pop(k, None)
+        except Exception:  # noqa: BLE001
+            pass
 
     async def _emit_segment(self, seg: str, ctx: "SendCtx" = None) -> bool:
         """把一段已闭合的 <msg> 真正发出去，并补广播 ON_MESSAGE_SENT。
@@ -883,19 +898,14 @@ class AcceleratorPlugin(BasePlugin):
         #   ⇒ **整份回复被重新发一遍**（比漏切一段严重得多）。
         if delivered and ctx is not None and ctx.sid:
             try:
-                # ★★★ 台账**带轮次 id**：上一轮的残留绝不能参与本轮的剥离
-                #   （否则"本轮文本恰好与上一轮相同"时会被误剪 = 丢内容）。
-                #   轮次变了就**重新开账** —— 这也是**不依赖任何钩子执行**的清理方式，
-                #   比"等 final_result 来清"稳得多（那个钩子可能被跳过）。
-                cur_ev = getattr(getattr(ctx, "event", None), "event_id", None)
-                if self._sent_ledger.get(ctx.sid + "\x00ev") != cur_ev:
-                    self._sent_ledger[ctx.sid] = []
-                    self._sent_ledger[ctx.sid + "\x00ev"] = cur_ev
-                self._sent_ledger.setdefault(ctx.sid, []).append(seg)
+                # ★★★ 按 (sid, 轮次) **复合键**记账 —— 这是修掉"重叠轮次互相清账"
+                #   的关键：两轮各用各的键，谁也不会清掉谁（详见 `_ckey`）。
+                _k = self._ckey(ctx.sid, getattr(getattr(ctx, "event", None), "event_id", None))
+                self._sent_ledger.setdefault(_k, []).append(seg)
                 # 记"最后一次活动时间"，供 `_clear_stale_round_state` 判断陈旧
                 if not isinstance(getattr(self, "_ledger_ts", None), dict):
                     self._ledger_ts = {}
-                self._ledger_ts[ctx.sid] = time.time()
+                self._ledger_ts[_k] = time.time()
             except Exception:  # noqa: BLE001
                 pass
 
@@ -1262,7 +1272,11 @@ class AcceleratorPlugin(BasePlugin):
                 #   查不到就按"没抢发过"处理（n=0，全部交给框架发）——
                 #   最坏是重复一条，而不是丢内容。
                 sid_now = getattr(event, "sid", None)
-                resp = plugin._resp_by_sid.get(sid_now) if sid_now else None
+                # ★★★ 复合键 (sid, 轮次) —— 必须与 `_emit_segment` / `_remember`
+                #   用**同一个**键。这样"重叠的两轮"各拿各的台账与响应，
+                #   不会再互相清掉/覆盖（线上重复发送的真根因，详见 `_ckey`）。
+                _k = plugin._ckey(sid_now, getattr(event, "event_id", None)) if sid_now else None
+                resp = plugin._resp_by_sid.get(_k) if _k else None
                 n = early_sent_count(resp) if resp is not None else 0
 
                 # ★★★ 台账是**权威来源**，优先用它（不再叫"兜底"，也不再告警）。
@@ -1280,7 +1294,7 @@ class AcceleratorPlugin(BasePlugin):
                 #     被这条日志误导（以为有故障）。现在拿不到就**安静地用**。
                 from .early_sent import early_sent_segments, strip_early_sent_smart
                 segs = early_sent_segments(resp) if resp is not None else []
-                ledger = plugin._sent_ledger.get(sid_now, []) if sid_now else []
+                ledger = plugin._sent_ledger.get(_k, []) if _k else []
                 # ★★★ 【2026-09-27 第五次修复】按【步】消费台账 ——
                 #   彻底删掉"已消费 ⇒ 跳过剥离"这个判断（它才是重复的来源）。
                 #
@@ -1307,18 +1321,9 @@ class AcceleratorPlugin(BasePlugin):
                 #   `event_id` 依然有用，但用途**完全不同**：不是"跳过剥离"，
                 #   而是**判断台账是否属于本轮** —— 万一上一轮"抢发了但没走到发送"
                 #   （事件被 stop），残留台账若参与本轮剥离就会**误剪 = 丢内容**。
-                cur_ev = getattr(event, "event_id", None)
-                if sid_now:
-                    _raw = plugin._sent_ledger.get(sid_now, [])
-                    _raw_ev = plugin._sent_ledger.get(sid_now + "\x00ev")
-                    # 轮次键缺失（老数据 / 异常）时不丢，宁可信其为本轮
-                    if _raw and (cur_ev is None or _raw_ev is None or _raw_ev == cur_ev):
-                        ledger = list(_raw)
-                    elif _raw:
-                        ledger = []
-                        logger.info(
-                            "[accel] 丢弃上一轮的残留台账 %d 段（轮次已变，不参与剥离）",
-                            len(_raw))
+                # ★ 键里**已经带了轮次** ⇒ 不需要再比较"轮次键"：
+                #   别的轮次的台账根本不在这个键下面，不可能被误用（也就不会误剪丢内容）。
+                #   （原来那套 `sid\x00ev` 比较 + "丢弃残留台账" 已经多余，删掉。）
                 if ledger:
                     # 台账优先（更权威）
                     if n > 0 and n != len(ledger):
@@ -1398,8 +1403,8 @@ class AcceleratorPlugin(BasePlugin):
                     # ★ 只清"跟这一次调用绑定"的东西（响应标记 / 响应缓存）。
                     if resp is not None:
                         resp.__dict__.pop("_accel_early_sent_count", None)
-                    if sid_now:
-                        plugin._resp_by_sid.pop(sid_now, None)
+                    if _k:
+                        plugin._resp_by_sid.pop(_k, None)
                         # ★★★ 台账**按步消费后立即清**（连同轮次键）。
                         #
                         #   这不是"过早清理" —— 它正是正确语义：
@@ -1414,8 +1419,7 @@ class AcceleratorPlugin(BasePlugin):
                         #   但那个推断是错的 —— 第二步的台账是**第二步自己抢发时建的**
                         #   （见 `_emit_segment`），并不会因为这里清了就变空。
                         #   真正造成重复的是后来据此加上的"已消费 ⇒ 跳过剥离"，已删除。
-                        plugin._sent_ledger.pop(sid_now, None)
-                        plugin._sent_ledger.pop(sid_now + "\x00ev", None)
+                        plugin._sent_ledger.pop(_k, None)
             # ★★ 声明「有不可撤销的副作用」：这个函数的调用会**真的把消息发出去**。
             #   一旦它抛异常，`patches.guard` 默认会"回落原实现"——那等于**再发一遍**
             #   （用户线上看到的就是同一段回复重复出现）。

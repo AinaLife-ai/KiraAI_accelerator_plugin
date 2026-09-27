@@ -177,8 +177,9 @@ check("★ 引擎写入了已抢发段原文（按内容剥离要用）",
       '_accel_early_sent_segments' in _eng)
 check("★ 且是在 on_complete 之前写入（发送层读得到）",
       _eng.index('_accel_early_sent_count') < _eng.index("self.on_complete("))
-check("台账每轮开始会清空（否则上一轮残留会让本轮多切=丢内容）",
-      "_reset_turn_ledger" in _main and "self._reset_turn_ledger(sid_now)" in _main)
+check("★ 每轮开始清**本轮**的台账（按复合键；绝不能清整个会话）",
+      "_reset_turn_ledger" in _main
+      and "self._reset_turn_ledger(sid_now, getattr(event" in _main)
 
 print("═══ 5) ★ 墨渗的数值校验：极性必须对（开场是一粒墨，不是满屏）")
 # alpha = 0.55R + 0.35G + 0.10B + bias，噪声三通道均值≈0.5

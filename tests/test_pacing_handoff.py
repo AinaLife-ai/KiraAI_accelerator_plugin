@@ -126,7 +126,8 @@ async def main():
     class R:
         def __init__(self):
             self.__dict__["_accel_early_sent_count"] = 3
-    plugin._resp_by_sid["test:gm:1"] = R()
+    # ★ 按 (sid,轮次) 复合键灌入 —— 与 main.py 的查找键一致
+    plugin._resp_by_sid[plugin._ckey("test:gm:1", Ev.event_id)] = R()
 
     from core.message_manager import MessageProcessor
     FakeMP.__name__ = "MessageProcessorLike"

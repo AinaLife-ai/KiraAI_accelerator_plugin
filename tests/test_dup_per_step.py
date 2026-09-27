@@ -118,6 +118,25 @@ MessageProcessor.send_xml_messages = stub_send_xml_messages
 _LIVE: list = []
 
 
+def K(plugin, sid, ev_id):
+    """取状态键：新实现是 (sid,轮次) 复合键；旧实现只有 sid。
+
+    ★ 为什么要兼容：反向验证要把**同一份测试**拿去跑旧实现，
+      直接调 `plugin._ckey` 会 AttributeError 崩掉、跑不到第 6 幕
+      ⇒ 反向验证就没意义了。
+    """
+    ck = getattr(plugin, "_ckey", None)
+    return ck(sid, ev_id) if ck else sid
+
+
+def RESET(plugin, sid, ev_id):
+    """兼容两种签名：新实现 `_reset_turn_ledger(sid, 轮次)`；旧实现只有 `(sid)`。"""
+    try:
+        plugin._reset_turn_ledger(sid, ev_id)
+    except TypeError:
+        plugin._reset_turn_ledger(sid)
+
+
 def build_plugin(ev):
     # ★ 真实卸载上一个实例的补丁再装 —— `install()` 有 R1 幂等：
     #   目标已打过标记时**不会重复包装**，否则本次插件根本没装上，
@@ -189,14 +208,15 @@ plugin2, mp2 = build_plugin(ev2)
 ctx2 = main_mod.SendCtx("test:gm:1", ev2, object())
 asyncio.run(plugin2._emit_segment(A, ctx2))
 step_send(plugin2, ev2, A)
-ledger_after_step1 = list(plugin2._sent_ledger.get("test:gm:1", []))
+ledger_after_step1 = list(plugin2._sent_ledger.get(
+    K(plugin2, "test:gm:1", ev2.event_id), []))
 check("★ 一次发送之后台账被消费掉（按步清）",
       ledger_after_step1 == [], f"残留={ledger_after_step1}")
 
 asyncio.run(plugin2._emit_segment(C, ctx2))
-check("★ 第二步重新开账，账上只有本步的段",
-      plugin2._sent_ledger.get("test:gm:1") == [C],
-      f"台账={plugin2._sent_ledger.get('test:gm:1')}")
+check("★ 同轮各步共用同一个键，账上只有本步的段",
+      plugin2._sent_ledger.get(K(plugin2, "test:gm:1", ev2.event_id)) == [C],
+      f"台账={plugin2._sent_ledger.get(K(plugin2, 'test:gm:1', ev2.event_id))}")
 
 print()
 print("═══ 3) 第二步**没有抢发**时：它的内容必须原样交给框架（不能误切）")
@@ -216,9 +236,10 @@ print("═══ 4) 跨轮残留：轮次一变，旧台账不得参与本轮剥
 ev4 = Ev()
 plugin4, mp4 = build_plugin(ev4)
 ctx4 = main_mod.SendCtx("test:gm:1", ev4, object())
-# 模拟"上一轮抢发了但没走到发送"（事件被 stop）⇒ 台账残留、轮次键是旧轮
-plugin4._sent_ledger["test:gm:1"] = [A]
-plugin4._sent_ledger["test:gm:1\x00ev"] = "ev-turn-OLD"
+# 模拟"上一轮抢发了但没走到发送"（事件被 stop）⇒ 台账残留
+# ★ 新契约：台账按 (sid,轮次) 复合键存 ⇒ 上一轮的残留落在**旧键**上，
+#   本轮取自己的键，天然取不到 ⇒ 不可能误剪。
+plugin4._sent_ledger[K(plugin4, "test:gm:1", "ev-turn-OLD")] = [A]
 framework_saw.clear()
 step_send(plugin4, ev4, C)          # 本轮文本是 C，与残留的 A 无关
 check("★★ 旧轮残留不被拿去剥离（否则 C 会被误剪成空 = 丢内容）",
@@ -250,18 +271,59 @@ check("★★★ 不再有「按轮次 id 跳过剥离」的判定（本次 bug 
 check("★★★ 不再有 _ledger_consumed 参与剥离决策",
       "_ledger_consumed" not in BODY,
       "仍引用" if "_ledger_consumed" in BODY else "已移除")
-check("★★ 台账在 finally 里按步消费（每次调用后清）",
-      re.search(r"finally:[\s\S]{0,1500}?_sent_ledger\.pop\(sid_now, None\)", BODY) is not None)
-check("★ 轮次键也在同一处清掉（不再是 finally 之后的死代码）",
-      re.search(r"finally:[\s\S]{0,1500}?_sent_ledger\.pop\(sid_now \+ \"\\x00ev\", None\)",
-                BODY) is not None)
-check("★★ 轮次 id 仅用于「台账是否属于本轮」",
-      "cur_ev" in BODY and "_raw_ev" in BODY)
+check("★★ 台账在 finally 里按步消费（每次调用后清，按复合键）",
+      re.search(r"finally:[\s\S]{0,1500}?_sent_ledger\.pop\(_k, None\)", BODY) is not None)
+check("★★ 台账键是 (sid,轮次) 复合键（用 _ckey，不再有独立的轮次键）",
+      "_ckey" in BODY)
+check("★★★ 轮次已并入键 ⇒ 不再需要比较轮次键（旧实现已被替换）",
+      re.search(r"_raw_ev", BODY) is None
+      and re.search(r'sid \+ "\\\\x00ev"', BODY) is None)
 # 死代码检测：函数体的**最后一行**不该是裸的 pop（return 之后到不了）
 _tail = [l for l in BODY.rstrip().splitlines() if l.strip()]
 check("★ 函数体末尾没有 return 之后的不可达语句",
       "return mark_side_effects" in _tail[-1] or not _tail[-1].strip().startswith("plugin."),
       f"末行={_tail[-1].strip()[:60]!r}")
+
+print()
+print("═══ 6) ★★★ 重叠轮次 —— 线上「重复发送」的真根因")
+# 线上日志实证（用户 run7.bat）：
+#   15:35:33 [llm] Running agent using ...   ← 第 2 轮的 llm_request（触发 _reset_turn_ledger）
+#   15:35:37 [accel] 一轮结束 sid=... steps=1 ← 第 1 轮这时才结束
+# 即：第 1 轮"**已经抢发、但还没走到发送层**"时，第 2 轮就开始了。
+# 而旧实现把台账 / 响应**只按 sid 存**：
+#   · 第 2 轮开始时 `_reset_turn_ledger(sid)` 把第 1 轮的台账**清掉**
+#   · `_resp_by_sid[sid]` 又被第 2 轮的响应**覆盖**
+# ⇒ 第 1 轮走到发送层时 n=0、也拿不到自己的响应 ⇒ **剥离失败**
+# ⇒ 框架把第 1 轮抢发过的内容**再发一次** = 用户看到的重复。
+# 现在按 (sid, 轮次) 复合键 ⇒ 两轮各用各的键，互不干扰。
+class EvA:
+    sid = "test:gm:1"; is_stopped = False; event_id = "turn-A"
+class EvB:
+    sid = "test:gm:1"; is_stopped = False; event_id = "turn-B"
+evA, evB = EvA(), EvB()
+plugin6, mp6 = build_plugin(evA)
+ctxA = main_mod.SendCtx("test:gm:1", evA, object())
+ctxB = main_mod.SendCtx("test:gm:1", evB, object())
+
+asyncio.run(plugin6._emit_segment(A, ctxA))          # 第 1 轮抢发 A
+RESET(plugin6, "test:gm:1", evB.event_id)  # 第 2 轮开始（会做的那次清理）
+asyncio.run(plugin6._emit_segment(C, ctxB))          # 第 2 轮抢发 C
+
+framework_saw.clear()
+step_send(plugin6, evA, A)                           # 第 1 轮这时才发送
+check("★★★ 第 2 轮开始后，第 1 轮**仍然**能剥离（不被清账 ⇒ 不重复）",
+      bool(framework_saw) and all(x.strip() in ("", "<msg/>") for x in framework_saw),
+      f"框架收到={framework_saw}  ← 收到 A 就是重复发送")
+framework_saw.clear()
+step_send(plugin6, evB, C)                           # 第 2 轮自己发送
+check("★★★ 第 2 轮同样能剥离自己的内容",
+      bool(framework_saw) and all(x.strip() in ("", "<msg/>") for x in framework_saw),
+      f"框架收到={framework_saw}")
+# ★ 纯行为判据（不碰内部键名 ⇒ 换实现也不会假红/假绿）：
+#   两轮都发送完之后，不该再有**任何**没被消费的台账残留。
+check("★★ 两轮都发送完后没有未消费的台账残留",
+      all(len(v) == 0 for v in plugin6._sent_ledger.values()),
+      f"台账={plugin6._sent_ledger}")
 
 print()
 print("=" * 60)
