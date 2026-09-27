@@ -2862,8 +2862,22 @@ function fxBurn(to, from, rim, id, fromId){
     if (stopped) return;
     stopped = true;
     try { if (rafId) cancelAnimationFrame(rafId); } catch (e) { /* 老 WebView */ }
-    wpHideLayer(fromId);
-    try { applyMask("none"); } catch (e) { /* 无所谓 */ }
+    /* 兜底也绝不能"硬切"：万一阵循环曾抛异常（例如某个值变成 NaN 让遮罩失效），
+       遮罩会停在原地、旧图保持完整。此时直接藏层就是用户说的"旧图存在 -> 新图硬切"。
+       所以先把整层快速淡出（150ms）—— 火光/炭化线挂在 stage 上，会随整层一起淡掉 ——
+       淡完再藏、再摘遮罩，观感与"烧尽"一致。 */
+    var _fs = null;
+    try { _fs = (typeof wpStage === "function") ? wpStage(fromId) : document.getElementById(fromId); } catch (e) { /* 无所谓 */ }
+    if (_fs) {
+      try { anim(_fs, [{opacity:1},{opacity:0}], {duration:150, easing:"linear", fill:"forwards"}); } catch (e) { /* 无所谓 */ }
+      setTimeout(function () {
+        wpHideLayer(fromId);
+        try { applyMask("none"); } catch (e) { /* 无所谓 */ }
+      }, 170);
+    } else {
+      wpHideLayer(fromId);
+      try { applyMask("none"); } catch (e) { /* 无所谓 */ }
+    }
 }, Math.max(60, Math.round(SPAN) + 60));
 
   anim(to,   [{transform:"scale(1.05)"},{transform:"scale(1)"}],
