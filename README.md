@@ -346,6 +346,61 @@ A：把你的图（webp/jpg/png）丢进 `wallpapers/` 目录，面板里就会�
 <details>
 <summary><b>📜 更新日志</b>（点击展开）</summary>
 
+### v1.0.22
+
+**燃纸：火光/炭化描边在"燃完"后还要多亮约 720ms（用户体感"近 1 秒"）**
+
+两条收尾路径里**只有保险路径做了整层藏**；"帧循环正常收尾"那条只藏了 `.wp-img`，
+而描边 `glow`/`core`/`char` 挂在 **stage** 上（是 `.wp-img` 的兄弟）
+⇒ 它们仍按 `dur*0.18 = 720ms` 慢慢淡出。
+（账目对得上：视觉烧穿 `SPAN=3280ms`、settle `=4260ms`，差 **980ms**。）
+⇒ 两条路径统一用 `wpHideLayer(fromId)`，描边随 stage 在燃完那一刻一起消失。
+
+**墨染：新图位置会突然变 3-5px（方向随位置变）**
+
+"中心几乎为 0、越靠边越大、方向跟着位置走"是**缩放差**的特征（约 1~3%）。
+根因：载体盒一直靠两处 CSS 表达式**推算**（`calc(100% + 2*max(72px,6%))`
+对比 `.wp-stage` 的 `inset:calc(-1*max(72px,6%))`），
+两者只有在"包含块确实等于视口大小的 `.wallpaper`"时才相等。
+⇒ 改为**运行时实测**：载体取 `.wp-stage` 的 `offsetLeft/Top/Width/Height`
+（`offset*` 是布局值，不受呼吸动画 transform 影响）⇒ 逐像素相同、零假设。
+（`ownerSVGElement` 对载体里的 `<div>` 是 `undefined`，改用 `closest("svg")`。）
+
+### v1.0.21
+
+**墨染：动画循环从第一帧就是死的（`stopped` 从未声明）**
+
+`fxInk` 的循环第一句是 `if (stopped) return;`，但本函数里**从未声明 `stopped`**
+（只有赋值）⇒ 读取未声明变量抛 `ReferenceError` ⇒ **循环第一帧就抛异常**。
+后果：墨渗遮罩**从不推进**（永远停在"一粒墨"），画面上只剩兜底淡入
+⇒ 观感"新图停顿一下、像被重置"，且**无条件发生** ⇒ 100%。
+（燃纸无此问题，因为 `fxBurn` 里声明了 `stopped`。）
+
+**墨染载体：改用与 `.wp-img` 同一套渲染**
+
+`<image preserveAspectRatio="slice">` 与 `.wp-img` 的 `background-size:cover`
+是**同一张图的两种渲染器**，任何盒/取整差异都会在交回时表现为位移。
+⇒ 载体改为 `<foreignObject>` + 一个用 `background-size:cover;background-position:center`
+的普通 `<div>` ⇒ 渲染机制相同 ⇒ 不再有第二个渲染器"说不一样"。
+
+### v1.0.20
+
+#50 只合了前两个 commit，后两个在合并之后才推 ⇒ 1.0.19 上仍能看到问题。本次补齐：
+墨染去掉旧层的 3% 推近（新旧两层必须几何一致）；
+墨染载体改用与 `.wp-stage` 相同的百分比表达式；
+燃纸删掉那道会**撤销淡出**的旧保险（`SPAN+150` 触发、`cancelAnimation + applyMask("none")`
+⇒ 纸整张重新露出且还带着"受热变亮"）；
+剩下的保险提前到 `SPAN+60`（视觉烧穿那一刻），并给墨染补上收尾保险。
+
+### v1.0.19
+
+**收尾"闪旧图 / 停在旧图再硬切"：撤掉视觉载体时旧层还亮着**
+
+`wpSettle` 的第一件事是 `wpCleanup()`，而它会**撤掉视觉载体**
+（墨染的 SVG 图 / 燃纸的遮罩），此时旧层仍然可见 ⇒ 露出的正是**旧图**。
+⇒ 改为**先藏旧层、再撤载体**（三处统一），并用 `opacity:0 + visibility:hidden`
+双保险（防 `fill:forwards` 动画把 opacity 顶回去）。
+
 ### v1.0.18
 
 **★★★★ 收尾"闪旧图 / 停在旧图再硬切"：撤掉视觉载体时旧层还亮着**
