@@ -212,8 +212,13 @@ if _m:
 else:
     check("★★★ 能找到 BIAS0/BIAS1", False, "未匹配")
 
-check("★★ 墨染 SVG 用视口单位（100% 在容器内解析为 0×0）",
-      "width:100vw" in HTML and "height:100vh" in HTML)
+# ★★★ 载体必须有**确定大小**，而且（2026-09-27 起）**必须与 .wp-stage 同盒**：
+#   原来写视口单位（100vw×100vh）虽然也有大小，但与 `.wp-stage`（inset 负值 ⇒
+#   比视口大 144px）不等价 ⇒ cover 缩放差 ~16% ⇒ 收尾画面跳一下（用户实测）。
+check("★★ 墨染 SVG 载体有确定大小（inset 撑开，与 .wp-stage 同盒）",
+      re.search(r'<svg style="[^"]*inset:calc\(-1 \* max\(72px, 6%\)\)', HTML) is not None)
+check("★★★ 且与 .wp-stage 用**同一个** inset 表达式（否则收尾会跳）",
+      re.search(r"\.wp-stage\{[^}]*?inset:calc\(-1 \* max\(72px, 6%\)\)", HTML) is not None)
 check("★★ 墨染 maskUnits=userSpaceOnUse（与内部 100% 单位匹配）",
       'id="wpInkMask" maskUnits="userSpaceOnUse"' in HTML)
 

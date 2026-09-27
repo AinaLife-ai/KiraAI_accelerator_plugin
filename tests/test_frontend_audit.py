@@ -586,10 +586,14 @@ print("═══ 19) ★★ 墨渗的 SVG 必须**全屏**（0×0 时 image 尺�
 #    要定位承载墨渗的那个：它带 id="wpInkImg"。
 _svg = re.search(r"<svg[^>]*>\s*(?:<!--[\s\S]*?-->\s*)*<mask id=\"wpInkMask\"", HTML)
 _svg = re.search(r"<svg[^>]*>(?=[\s\S]{0,2400}?id=\"wpInkMask\")", HTML)
-# ★ 尺寸改用**视口单位**：`width:100%` 在 .wallpaper 容器内实测解析为 0×0，
+# ★ 尺寸必须有**确定的大小**：`width:100%` 在 .wallpaper 容器内实测解析为 0×0，
 #   而 <image width="100%"> 是相对该 SVG 解析的 ⇒ 什么都画不出。
-check("★ SVG 载体是全屏的（视口单位，不是 0×0）",
-      _svg is not None and "width:100vw" in _svg.group(0) and "height:100vh" in _svg.group(0),
+#   ★★★ 2026-09-27 起改为**与 .wp-stage 相同的 inset**：视口单位虽然也有大小，
+#   但与 .wp-stage 盒子不等价 ⇒ 收尾瞬间画面跳 ~16%（详见 ⑤ 的判据）。
+check("★ SVG 载体有确定大小（inset 撑开 或 视口单位，不能是 0×0）",
+      _svg is not None and ("inset:calc(" in _svg.group(0)
+                            or ("width:100vw" in _svg.group(0)
+                                and "height:100vh" in _svg.group(0))),
       _svg.group(0)[:90] if _svg else "找不到")
 check("★ 且不接收指针事件（不挡操作）",
       _svg is not None and "pointer-events:none" in _svg.group(0))
@@ -949,8 +953,9 @@ check("★ ring 改为字内环流（background-position，不出界）",
       "@keyframes neonRing" in HTML and "background-position:-180% 50%" in HTML)
 # 漂移余量必须按"最大位移"保底：水平需 30(漂移)+34(鼠标)=64px
 check("★ 漂移层余量按位移保底（max(72px, 6%)，不能只用百分比）",
-      HTML.count("inset:calc(-1 * max(72px, 6%))") == 2,
-      f"找到 {HTML.count('inset:calc(-1 * max(72px, 6%))')} 处（页面 + 开屏）")
+      HTML.count("inset:calc(-1 * max(72px, 6%))") >= 2,
+      f"找到 {HTML.count('inset:calc(-1 * max(72px, 6%))')} 处"
+      "（页面 + 开屏 + 墨染载体：载体必须与 .wp-stage 同盒，故会多一处）")
 check("★ 开屏与页面仍保持同构（同一个 inset 值）",
       ".wp-stage{position:absolute;inset:calc(-1 * max(72px, 6%))" in HTML
       and ".sp-sway{position:absolute;inset:calc(-1 * max(72px, 6%))" in HTML)
@@ -1102,10 +1107,13 @@ _scrim = HTML.index('<div class="wp-scrim"></div>', _wi)
 _svg = HTML.find('<svg style="position:fixed', _wi)
 check("★★ 墨渗的 SVG 载体在 .wp-scrim **之前**（= 之下，受同样压暗）",
       0 < _svg < _scrim, f"svg@{_svg} scrim@{_scrim}")
-# ② SVG 载体必须全屏（0×0 时 <image width=100%> 就是 0 ⇒ 什么都画不出）
+# ② SVG 载体必须有确定大小（0×0 时 <image width=100%> 就是 0 ⇒ 什么都画不出）。
+#    ★★★ 不过"有大小"还不够：2026-09-27 起它必须**与 .wp-stage 同盒**，
+#    否则收尾跳 ~16% —— 那条由下面的 ⑤ 单独把关，这里只要求"不是 0×0"。
 _svgtag = HTML[_svg:HTML.index('>', _svg) + 1]
-check("★ SVG 载体是全屏的（视口单位）",
-      "width:100vw" in _svgtag and "height:100vh" in _svgtag)
+check("★ SVG 载体有确定大小（inset 撑开 或 视口单位）",
+      "inset:calc(" in _svgtag
+      or ("width:100vw" in _svgtag and "height:100vh" in _svgtag))
 check("★ 且不接收指针事件", "pointer-events:none" in _svgtag)
 # ③ fxInk 必须**始终**保留淡入兜底（SVG 万一没渲染也不会硬切），
 #    ★★★ 但必须**推迟** —— 否则会把墨渗洗掉（这是 2026-09-27 修掉的第三个真 bug：
@@ -1156,6 +1164,36 @@ check("★★ 揭示光环在最上层（rim > 墨染载体）",
       f"rim={_rimz.group(1) if _rimz else '?'} 载体={_svgz.group(1) if _svgz else '?'}")
 check("★★ fxInk 会清掉壁纸层上残留的 inline z-index（防 burn 的层级把墨染压下去）",
       re.search(r"st\.style\.zIndex = \"\";", _ink) is not None)
+
+# ⑤ ★★★ 2026-09-27（第二轮）：收尾那一下的"抖动/重新定位"
+#    墨染把新图交给 SVG `<image>` 画，而收尾后由 `.wp-img`（`.wp-stage` 里）接管。
+#    两者若是**不同的盒子**，同一个 `<image>`/背景在 cover 下算出的缩放就不同：
+#      载体盒（原来的 100vw×100vh，即视口） vs .wp-img（inset 负值 ⇒ 比视口大 144px）
+#      ⇒ 1080×1920 图 / 412×915 视口：缩放 0.4766 vs 0.5516 ⇒ **差 15.7%**
+#      ⇒ 收尾瞬间画面突然放大并偏移 = 用户说的"抖动/好像重新定位了"。
+#    ⇒ 载体必须用**和 .wp-stage 完全相同的 inset 表达式**。
+_st_inset = re.search(r"\.wp-stage\{[^}]*?inset:([^;]+);", HTML)
+_svg_inset = re.search(r'<svg style="[^"]*?inset:([^;"]+)', HTML)
+check("★★★ 墨染载体盒子必须与 .wp-stage 一致（否则收尾画面跳 ~16%）",
+      _st_inset is not None and _svg_inset is not None
+      and _st_inset.group(1).strip() == _svg_inset.group(1).strip(),
+      f"stage=[{_st_inset.group(1).strip() if _st_inset else '?'}] "
+      f"svg=[{_svg_inset.group(1).strip() if _svg_inset else '?'}]")
+check("★★ 墨染载体不能再用视口尺寸（100vw/100vh 与 .wp-stage 不等价）",
+      "width:100vw;height:100vh" not in HTML)
+
+# ⑥ ★★★ 燃纸：用动画「保持旧图不透明」之后，**必须 cancel 才能隐藏它**。
+#    `anim(from,[{opacity:1},{opacity:1}],{fill:forwards})` 的优先级**高于行内样式**
+#    ⇒ 只写 `from.style.opacity="0"` 无效，而 `applyMask("none")` 有效
+#    ⇒ 旧图以"完全不透明+无遮罩"整张重现，直到 settle 才消失
+#    ⇒ 用户看到的"燃完了旧图还在"。
+_burn = js[js.index("function fxBurn"):js.index("\nfunction ", js.index("function fxBurn") + 12)]
+check("★★★ fxBurn 隐藏旧图前必须先 cancel 那条『保持不透明』的动画",
+      "wpCancelAnimations(from)" in _burn)
+check("★★★ cancel 必须出现在写 inline opacity **之前**（顺序反了就没用）",
+      _burn.find("wpCancelAnimations(from)") >= 0
+      and _burn.find("wpCancelAnimations(from)") < _burn.find('from.style.opacity = "0"'),
+      "先写 opacity 再 cancel ⇒ 中间那段时间旧图会整张露出")
 
 print()
 print("═══ 39) ★★★ 点标题不退出欣赏模式 + 心电图用真实 SVG")
