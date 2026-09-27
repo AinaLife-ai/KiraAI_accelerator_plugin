@@ -215,10 +215,15 @@ else:
 # ★★★ 载体必须有**确定大小**，而且（2026-09-27 起）**必须与 .wp-stage 同盒**：
 #   原来写视口单位（100vw×100vh）虽然也有大小，但与 `.wp-stage`（inset 负值 ⇒
 #   比视口大 144px）不等价 ⇒ cover 缩放差 ~16% ⇒ 收尾画面跳一下（用户实测）。
-check("★★ 墨染 SVG 载体有确定大小（inset 撑开，与 .wp-stage 同盒）",
-      re.search(r'<svg style="[^"]*inset:calc\(-1 \* max\(72px, 6%\)\)', HTML) is not None)
-check("★★★ 且与 .wp-stage 用**同一个** inset 表达式（否则收尾会跳）",
-      re.search(r"\.wp-stage\{[^}]*?inset:calc\(-1 \* max\(72px, 6%\)\)", HTML) is not None)
+# ★★★ 必须**显式**给 width/height：`<svg>` 是替换元素，inset 撑不开它
+#   （只给 inset ⇒ 退回固有尺寸 300×150 ⇒ 只剩左上角一小块）。
+check("★★ 墨染 SVG 载体有显式尺寸（替换元素靠 inset 撑不开）",
+      re.search(r'<svg style="[^"]*width:calc\(', HTML) is not None
+      and re.search(r'<svg style="[^"]*height:calc\(', HTML) is not None)
+# ★★★ 而且盒子要与 .wp-stage 同大，否则收尾画面跳 ~16%。
+check("★★★ 载体盒子 = 视口 + 2×max(72px,6%)，与 .wp-stage 同大",
+      re.search(r"width:calc\(100vw \+ 2 \* max\(72px, 6vw\)\)", HTML) is not None
+      and re.search(r"\.wp-stage\{[^}]*?inset:calc\(-1 \* max\(72px, 6%\)\)", HTML) is not None)
 check("★★ 墨染 maskUnits=userSpaceOnUse（与内部 100% 单位匹配）",
       'id="wpInkMask" maskUnits="userSpaceOnUse"' in HTML)
 

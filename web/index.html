@@ -1342,10 +1342,19 @@ html.jsfx .sp-rim{animation:none!important}
            .wp-img（556×1059） ⇒ cover 缩放 0.5516，可见源宽 747 px
 
      ⇒ 收尾那一刻画面**突然放大约 16%**（还带偏移）—— 就是那个"抖动 / 重新定位"。
-     ⇒ 必须用**和 `.wp-stage` 一模一样的 inset 表达式**：盒一样，
+     ⇒ 必须用**和 `.wp-stage` 一模一样的盒子**：盒一样，
        `slice` 与 `cover` 的结果就逐像素一致 ⇒ 收尾无缝。
-       （用 inset 定位而不是 width/height，也不会再出现 0×0 的问题。） -->
-<svg style="position:fixed;inset:calc(-1 * max(72px, 6%));z-index:2;pointer-events:none"
+
+     ⚠️⚠️ 但 `<svg>` 是**替换元素（replaced element）**：`left/top/right/bottom`
+        **不能拉伸替换元素**！只写 `inset`、不写 width/height 时，
+        它会退回**固有尺寸 300×150** ⇒ 变成一个贴在左上角的小方块，
+        整张壁纸只在那个小框里显示（这就是"只有左上角有个额外图片"的原因）。
+     ⇒ 所以必须**同时**给出：负的 left/top（对齐到盒子左上）
+        + 显式的 width/height（把盒子撑到和 `.wp-stage` 一样大）。
+        这里用 vw/vh 写，和 `.wp-stage` 的 `max(72px, 6%)` 数值等价
+        （6% 水平＝6vw、垂直＝6vh，因为包含块就是视口大小的 `.wallpaper`），
+        而且不像 `width:100%` 那样依赖包含块解析（历史上有过 100% → 0×0 的坑）。 -->
+<svg style="position:fixed;left:calc(-1 * max(72px, 6vw));top:calc(-1 * max(72px, 6vh));width:calc(100vw + 2 * max(72px, 6vw));height:calc(100vh + 2 * max(72px, 6vh));z-index:2;pointer-events:none"
      aria-hidden="true">
   <!-- maskUnits must be userSpaceOnUse: the inner <rect width="100%"> is in
        userSpaceOnUse units, but the mask declared objectBoundingBox (where it
@@ -2725,6 +2734,16 @@ function fxBurn(to, from, rim, id, fromId){
   const H = Math.max(window.innerHeight, 320);
   const DIAG = Math.hypot(W, H);
 
+  /* ★★★ 图层盒：`.wp-stage` 是 `inset: calc(-1 * max(72px, 6%))` ⇒ **比视口大**，
+     而 `from`（`.wp-img`）就长在这个盒子里。遮罩与描边都画在**这个盒子**上
+     （`maskSize:100% 100%`），所以 SVG 的 `viewBox` 必须用**图层盒**尺寸，
+     火源坐标也要平移到图层坐标系 —— 否则拿"视口尺寸"当 viewBox 会被拉伸
+     （x 约 1.35× / y 约 1.16×）⇒ 越靠边的火源偏得越多（实测可偏出 ~58px），
+     而且洞会变成椭圆。这正是墨染那个"载体盒 ≠ 图层盒"bug 的**同一类问题**。 */
+  const VW = Math.max(window.innerWidth, 1), VH = Math.max(window.innerHeight, 1);
+  const MX = Math.max(72, VW * 0.06), MY = Math.max(72, VH * 0.06);
+  const LW = W + 2 * MX, LH = H + 2 * MY;   // 图层盒（= .wp-stage = .wp-img）
+
   /* ① 多个火源（3~6 处），随机位置且互相拉开 —— 否则挤成一团又像单点扩散 */
   const P = [];
   const want = 3 + Math.floor(Math.random() * 4);
@@ -2752,6 +2771,17 @@ function fxBurn(to, from, rim, id, fromId){
     }
   }
   if (!P.length) P.push({ x: W/2, y: H/2, far: DIAG * 0.62, rate: 1, t0: 0, lobes: 4, amp: .25, ph: 0 });
+
+  /* ★★★ 火源速率是 0.88~1.14（为了让边界"此消彼长"），所以它们**不是同时烧完的**。
+     原来在 `el >= 1` 就无条件收尾 ⇒ 速率 >1 的火源那一刻 k = (1-t0)/rate < 1，
+     半径只到 far*k² ⇒ **纸还剩一大块没烧到就被硬切掉**
+     ⇒ 这才是"旧图帧闪现 / 硬切"的真根因（与透明度那条是两回事，两条都得修）。
+     ⇒ 改为等**所有**火源都烧完（END = max(t0+rate)）才收尾，
+       并在最后 TAIL 段把纸**整体淡出**：万一还有角落没烧到，
+       那是一次平滑的交叉过渡，而不是"啪"地切掉。 */
+  const END = P.reduce(function(m, q){ return Math.max(m, q.t0 + q.rate); }, 1);
+  const TAIL = 0.12;                     // 收尾淡出时长（el 单位）
+  const SPAN = dur * 0.82;               // el 从 0 走到 END 用的真实时间（给收尾留余量）
 
   /* ② blob：极坐标 + 两层谐波 ⇒ 平滑但**不规则**的闭合曲线（不是圆） */
   function blob(cx, cy, r, lobes, amp, ph, wob){
@@ -2828,14 +2858,14 @@ function fxBurn(to, from, rim, id, fromId){
   const svgURI = (paths, paint) =>
     "url(\"data:image/svg+xml;charset=utf-8," +
     encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 '
-      + W + " " + H + '">' + paint(paths) + "</svg>") + "\")";
+      + LW + " " + LH + '">' + paint(paths) + "</svg>") + "\")";
 
   /* ★ 用 **fill-rule="evenodd" 单路径**挖洞：
      外框矩形 + 各个 blob 子路径 ⇒ blob 内部变成洞（透明）。
      上一版用嵌套 `<defs><mask>` + `mask="url(#m)"` 的写法**实测没生效**
      （截图里整屏都是纸、完全没挖开），换成 evenodd 更简单也更可靠。 */
   const maskPaint = (paths) =>
-    '<path fill="#fff" fill-rule="evenodd" d="M0 0H' + W + "V" + H + "H0Z"
+    '<path fill="#fff" fill-rule="evenodd" d="M0 0H' + LW + "V" + LH + "H0Z"
     + paths.join("") + '"/>';
   const strokePaint = (color, w) => (paths) =>
     '<g fill="none" stroke="' + color + '" stroke-width="' + w + '" '
@@ -2846,11 +2876,23 @@ function fxBurn(to, from, rim, id, fromId){
     from.style.webkitMaskSize = "100% 100%"; from.style.maskSize = "100% 100%";
   };
 
-  let t0 = null, rafId = 0, stopped = false;
+  let t0 = null, rafId = 0, stopped = false, fading = false;
   const step = (now) => {
     if (stopped) return;
     if (t0 === null) t0 = now;
-    const el = (now - t0) / Math.max(dur * 0.86, 1);       // 0..1
+    const el = (now - t0) / Math.max(SPAN / END, 1);       // 0..END
+
+    /* ★ 进入最后 TAIL 段：把纸**整体淡出**。
+       必须先 cancel 那条"保持不透明"的动画 —— 它带 fill:"forwards"，
+       而 Web Animations 的优先级**高于**后来的动画与行内样式，
+       不先取消的话这段淡出根本不会生效（就是之前"旧图重现"的同一个坑）。 */
+    if (!fading && el >= END - TAIL){
+      fading = true;
+      try { wpCancelAnimations(from); } catch (e) { /* 老 WebView */ }
+      from.style.opacity = "";                             // base = `.on` 给的 1
+      anim(from, [{opacity:1},{opacity:0}],
+           {duration: Math.max(1, SPAN * TAIL / END), easing:"linear"});
+    }
 
     /* 每个火源按自己的速率扩张；速率与起燃时刻不同 ⇒ 火线此消彼长 */
     const holes = [], lines = [], cores = [], chars = [];
@@ -2861,10 +2903,12 @@ function fxBurn(to, from, rim, id, fromId){
          起步给一个小底径，否则最初几帧是看不见的点。 */
       const r = 6 + q.far * k * k;            // k² ⇒ 起燃由小渐大，更像"点燃"
       const wob = el * 0.9;                                // 让轮廓缓慢蠕动（火在爬）
-      holes.push(blob(q.x, q.y, r, q.lobes, q.amp, q.ph, wob));
-      lines.push(blob(q.x, q.y, r * 1.05, q.lobes, q.amp, q.ph, wob));   // 光晕：最外
-      cores.push(blob(q.x, q.y, r * 1.018, q.lobes, q.amp, q.ph, wob));  // 火芯：贴着洞
-      chars.push(blob(q.x, q.y, r * 0.985, q.lobes, q.amp, q.ph, wob));  // 炭化：略小
+      /* ★ 坐标要平移到**图层盒**坐标系（+MX/+MY）—— 与上面的 viewBox=LW×LH 配套，
+         否则火源会被拉伸错位（这正是"载体盒 ≠ 图层盒"那一类 bug）。 */
+      holes.push(blob(q.x + MX, q.y + MY, r, q.lobes, q.amp, q.ph, wob));
+      lines.push(blob(q.x + MX, q.y + MY, r * 1.05, q.lobes, q.amp, q.ph, wob));   // 光晕：最外
+      cores.push(blob(q.x + MX, q.y + MY, r * 1.018, q.lobes, q.amp, q.ph, wob));  // 火芯：贴着洞
+      chars.push(blob(q.x + MX, q.y + MY, r * 0.985, q.lobes, q.amp, q.ph, wob));  // 炭化：略小
     }
     if (holes.length){
       applyMask(svgURI(holes, maskPaint));
@@ -2872,7 +2916,7 @@ function fxBurn(to, from, rim, id, fromId){
       core.style.backgroundImage = svgURI(cores, strokePaint("rgba(255,242,190,.98)", 2.4));
       char.style.backgroundImage = svgURI(chars, strokePaint("rgba(58,30,16,.8)", 2));
     }
-    if (el < 1){ rafId = requestAnimationFrame(step); }
+    if (el < END){ rafId = requestAnimationFrame(step); }
     else {
       /* 收尾：整张纸烧尽。
          ★★★ 这里踩过一个真 bug（用户："燃纸燃完会出现旧图帧"）：
