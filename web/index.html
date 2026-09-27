@@ -2922,12 +2922,14 @@ function fxBurn(to, from, rim, id, fromId){
       try { anim(_fs, [{opacity:1},{opacity:0}], {duration:150, easing:"linear"}); } catch (e) { /* 无所谓 */ }
       setTimeout(function () {
         try { _wpBurnCarrier(false); } catch (e) { /* 无所谓 */ }
-        wpHideLayer(fromId);
+        try { from.style.display = "none"; } catch (e) { /* 无所谓 */ }   /* ★ display:none 无法被动画/样式优先级推翻 ⇒ 旧图绝不可能再被显示 */
+    wpHideLayer(fromId);
         try { applyMask("none"); } catch (e) { /* 无所谓 */ }
     try { _wpBurnCarrier(false); } catch (e) { /* 无所谓 */ }
       }, 170);
     } else {
-      wpHideLayer(fromId);
+      try { from.style.display = "none"; } catch (e) { /* 无所谓 */ }   /* ★ display:none 无法被动画/样式优先级推翻 ⇒ 旧图绝不可能再被显示 */
+    wpHideLayer(fromId);
       try { applyMask("none"); } catch (e) { /* 无所谓 */ }
     }
 }, Math.max(60, Math.round(SPAN) + 60));
@@ -3101,7 +3103,8 @@ function fxBurn(to, from, rim, id, fromId){
          （980ms 那笔账：SPAN→settle 是 980ms，而描边淡出正好 720ms，两者都在"近1秒"量级。）
          ⇒ 与保险路径统一：**整层藏**（stage + img）⇒ 描边随 stage 一起消失，
            燃完的那一刻画面就是干净的新图，不再有那一段亮光。 */
-      wpHideLayer(fromId);
+      try { from.style.display = "none"; } catch (e) { /* 无所谓 */ }   /* ★ display:none 无法被动画/样式优先级推翻 ⇒ 旧图绝不可能再被显示 */
+    wpHideLayer(fromId);
       applyMask("none");
       anim(from, [{opacity:0},{opacity:0}], {duration: dur * 0.18, easing:"linear"});
       glow.style.opacity = "0";
@@ -3521,7 +3524,8 @@ async function _wpTransition(url){
       const _st = document.getElementById(_id); if (!_st) return;
       _st.style.removeProperty("opacity"); _st.style.removeProperty("visibility");
       const _im = _st.querySelector(".wp-img");
-      if (_im) { _im.style.removeProperty("opacity"); _im.style.removeProperty("visibility"); }
+      if (_im) { _im.style.removeProperty("opacity"); _im.style.removeProperty("visibility");
+        _im.style.removeProperty("display"); }
     });
   } catch (e) { /* 无所谓 */ }
   await wpPreloadWallpaper(url);            // ★ 等新图可解码再开始（见上面的说明）
