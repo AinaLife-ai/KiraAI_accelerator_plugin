@@ -2790,6 +2790,8 @@ function _wpBurnCarrier(show, LW, LH) {
   } catch (e) { return null; }
 }
 function fxBurn(to, from, rim, id, fromId){
+  /* ★ 强制旧层在最上（消除"旧层在上/在下"带来的二元差异） */
+  try { const _f = from.parentElement, _t2 = to.parentElement; if (_f && _t2) { _f.style.zIndex = "3"; _t2.style.zIndex = "2"; } } catch (e) {}
   const dur = WP_DUR * 1.25;
   const W = Math.max(window.innerWidth, 320);
   const H = Math.max(window.innerHeight, 320);
@@ -2905,9 +2907,7 @@ function fxBurn(to, from, rim, id, fromId){
   /* 照抄墨染：真身新层【先隐形】、到末尾【声明式淡入】。
      这样到收尾那一刻，新层已自己就位、旧层已自己淡走 ⇒ 撤载层时看不出任何变化。
      （旧层淡出、新层淡入都是"必然发生"的声明式动画，不依赖遮罩是否渲染。） */
-  try { to.style.opacity = "0"; } catch (e) { /* 无所谓 */ }
-  anim(to, [{opacity:0, offset:0},{opacity:0, offset:.70},{opacity:1, offset:1}],
-       {duration: dur, easing:"linear", fill:"forwards"});
+  
   /* 最后一道兜底：到点强制藏掉旧层（比 settle 早，保证"燃完一定是新图"）。 */
   const _burnHide = setTimeout(function(){
     if (stopped) return;
@@ -3029,7 +3029,7 @@ function fxBurn(to, from, rim, id, fromId){
          起步给一个小底径，否则最初几帧是看不见的点。 */
       let r = 6 + q.far * k * k;              // k² ⇒ 起燃由小渐大，更像"点燃"
       if (closeT > 0){
-        const need = q.far / Math.max(0.35, 1 - 1.32 * q.amp) + 160;
+        const need = q.far * 2.2 + 320;
         r = r + (Math.max(r, need) - r) * closeT;      // 平滑推到"必定盖满"
       }
       const wob = el * 0.9;                                // 让轮廓缓慢蠕动（火在爬）
@@ -3057,13 +3057,13 @@ function fxBurn(to, from, rim, id, fromId){
         if (_pm) _pm.setAttribute("d", "M0 0H" + LW + "V" + LH + "H0Z" + holes.join(""));
         const _im = document.getElementById("wpBurnImg");
         if (_im) {
-          const _bg = (to.style.backgroundImage || "").replace(/^url\(["']?/, "").replace(/["']?\)$/, "");
+          const _bg = (from.style.backgroundImage || "").replace(/^url\(["']?/, "").replace(/["']?\)$/, "");
           if (_bg && _bg !== _wpBurnImgSrc) {
             _im.setAttribute("href", _bg);
             try { _im.setAttributeNS("http://www.w3.org/1999/xlink", "xlink:href", _bg); } catch (e4) {}
             _wpBurnImgSrc = _bg;
           }
-          /* 不再藏旧层：旧层由末尾的声明式淡出自己走掉（照墨染） */
+          if (_wpBurnImgSrc) from.style.visibility = "hidden";
         }
       }
     } catch (e) { /* 无所谓 */ };
