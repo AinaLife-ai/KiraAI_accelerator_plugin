@@ -2930,10 +2930,21 @@ function fxBurn(to, from, rim, id, fromId){
   };
 
   let t0 = null, rafId = 0, stopped = false;
+  let _burnErr = 0;
+  const _safeStep = (now) => {
+    try { step(now); _burnErr = 0; }
+    catch (err) {
+      /* 单帧异常不能让整条动画停摆（一个 NaN 就可能让遮罩串变垃圾 => 旧图保持完整）。
+         继续排下一帧；连续异常超过 8 次就放弃重排，交给 SPAN+60 的兜底优雅淡出收尾。 */
+      _burnErr++;
+      if (_burnErr <= 8 && !stopped) { try { rafId = requestAnimationFrame(_safeStep); } catch (e) { /* 无所谓 */ } }
+    }
+  };
   const step = (now) => {
     if (stopped) return;
     if (t0 === null) t0 = now;
-    const el = (now - t0) / Math.max(SPAN / END, 1);       // 0..END
+    let el = (now - t0) / Math.max(SPAN / END, 1);
+    if (!isFinite(el)) el = END;   /* NaN/Infinity 会让遮罩串变垃圾 => 旧图整张露出 */       // 0..END
 
     /* ★★★ 收尾：把火源半径**平滑**推到"必定盖满整屏"（不是靠淡出兜底）。
        为什么不能用"整体淡出"（上一版就是这么干的，用户实测
@@ -2980,7 +2991,7 @@ function fxBurn(to, from, rim, id, fromId){
       core.style.opacity = (0.95 * _fd).toFixed(3);
       char.style.opacity = (0.85 * _fd).toFixed(3);
     }
-    if (el < END){ rafId = requestAnimationFrame(step); }
+    if (el < END){ rafId = requestAnimationFrame(_safeStep); }
     else {
       /* 收尾：整张纸烧尽。
          ★★★ 这里踩过一个真 bug（用户："燃纸燃完会出现旧图帧"）：
@@ -3021,7 +3032,7 @@ function fxBurn(to, from, rim, id, fromId){
       char.style.opacity = "0";
     }
   };
-  rafId = requestAnimationFrame(step);
+  rafId = requestAnimationFrame(_safeStep);
 
   /* ★★★★ 2026-09-27（用户："燃纸偶尔还会燃到最后还是旧图，而不是直接是新图 ⇒ 硬切"）：
      整套燃纸是靠 `requestAnimationFrame` 推进的。rAF 一旦被暂停或严重掉帧
