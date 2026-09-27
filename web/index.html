@@ -2605,6 +2605,15 @@ function wpLoad(id, url){
   /* ★★★ 必须回收上一次 `wpHideLayer()` 留下的整层隐藏，
      否则这一层轮到上场时会是**不可见**的（那会让画面整个空掉）。 */
   try { st.style.opacity = ""; st.style.visibility = ""; } catch (e) { /* 无所谓 */ }
+  /* ★★★ 同一件事必须对**里面的 <img>** 也做：
+     wpHideEl() 的 opacity/visibility 是带 !important 写在 img 上的，
+     只清 stage 清不掉它。一旦某次转场异常中止（收尾没跑到 wpNormalize），
+     这一层就会带着 !important 隐形被复用 => 画面整个空掉（"空背景"）。
+     removeProperty 能连 !important 一起去掉，回收时清一遍即可自愈。 */
+  try {
+    const _im0 = st.querySelector(".wp-img");
+    if (_im0) { _im0.style.removeProperty("opacity"); _im0.style.removeProperty("visibility"); }
+  } catch (e) { /* 无所谓 */ }
   st.querySelectorAll(".s-strip").forEach(s => s.remove());
   st.classList.remove("on");
   const im = wpImg(id);
