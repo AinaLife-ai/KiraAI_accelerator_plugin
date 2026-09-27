@@ -2999,6 +2999,25 @@ function fxBurn(to, from, rim, id, fromId){
         if (!_u || /NaN|Infinity|undefined/.test(_u)) return;
         try { applyMask(_u); } catch (e) { /* 无所谓 */ }
       })(holes, maskPaint);
+
+    /* ★★★ 2026-09-28：遮罩"设完自检 + 失败即接管"。
+       用户确认：失败时旧图是**完整、完全没被动过**的 ⇒ 那张 data-URI 遮罩被浏览器
+       **整张丢弃**（无效的 mask-image 等价于 none）。而火线是独立画的描边、照样在动
+       ⇒ 观感就是"火线走完、旧图整屏亮着、最后硬切"。
+       这里每帧设完遮罩后自检：没被接受就换成 **CSS 渐变遮罩**（不走 data-URI，
+       不存在被丢弃的问题），形状简化但**同样能把旧图挖掉** ⇒ 不再出现整屏旧图。 */
+    try {
+      var _cs = getComputedStyle(from);
+      var _mv = _cs.maskImage || _cs.webkitMaskImage || "";
+      if (_mv.indexOf("data:") < 0) {
+        var _pr = Math.max(0, Math.min(1, el / Math.max(END, 1)));
+        var _rr = (_pr * _pr * 135).toFixed(1);
+        var _nm = "radial-gradient(circle at 50% 55%, transparent 0%, transparent " + _rr + "%, #000 " + (parseFloat(_rr) + 14).toFixed(1) + "%, #000 100%)";
+        from.style.webkitMaskImage = _nm;
+        from.style.maskImage = _nm;
+        from.style.webkitMaskSize = from.style.maskSize = "100% 100%";
+      }
+    } catch (e) { /* 无所谓 */ };
       glow.style.backgroundImage = svgURI(lines, strokePaint("rgba(255,140,40,.85)", 9));
       core.style.backgroundImage = svgURI(cores, strokePaint("rgba(255,242,190,.98)", 2.4));
       char.style.backgroundImage = svgURI(chars, strokePaint("rgba(58,30,16,.8)", 2));
