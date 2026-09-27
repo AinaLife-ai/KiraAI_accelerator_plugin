@@ -2827,6 +2827,25 @@ function fxBurn(to, from, rim, id, fromId){
   anim(from, [{opacity:1},{opacity:1}], {duration: dur * 0.9, easing:"linear"});
   anim(to,   [{opacity:0},{opacity:1}], {duration: Math.round(dur * 0.5),
                                          easing:"cubic-bezier(.3,0,.5,1)"});
+
+  /* ★★★★ 2026-09-27（用户："很多次都是燃完还是旧图、而且旧图会变亮，然后硬切到新图"）：
+     "旧图变亮"正是关键线索 —— 燃纸给旧层加了 `brightness(1.10) saturate(1.45)` 的
+     滤镜动画，旧层**可见**才会看到"变亮"。也就是说**收尾那一步没生效**：
+     整套燃纸靠 `requestAnimationFrame` 推进，一旦帧循环没能跑到 `el >= END`
+     （掉帧、长任务、WebView 卡顿…），旧层就一直留着（还越来越亮）
+     ⇒ 最后只能由 settle 直接把它藏掉 = **硬切**。
+     ⇒ 再加一条**声明式**的淡出（Web Animations 跑在文档时间轴上，**不依赖帧循环**）：
+       前 88% 保持完全不透明（此时纸已被遮罩挖空，看不见），最后 12% 平滑淡出。
+       ⇒ 无论帧循环是否跑完，`dur` 到点旧层一定已经不可见 ⇒ **燃完一定是新图**，
+         绝不会再出现"停在变亮的旧图再硬切"。 */
+  anim(from, [{opacity:1, offset:0},{opacity:1, offset:.88},{opacity:0, offset:1}],
+       {duration: dur, easing:"linear"});
+  /* 最后一道兜底：到点强制藏掉旧层（比 settle 早，保证"燃完一定是新图"）。 */
+  const _burnHide = setTimeout(function(){
+    try { wpCancelAnimations(from); } catch (e) {}
+    try { from.style.opacity = "0"; from.style.visibility = "hidden"; } catch (e) {}
+  }, Math.round(dur) + 80);
+
   anim(to,   [{transform:"scale(1.05)"},{transform:"scale(1)"}],
        {duration: dur, easing:"cubic-bezier(.33,0,.55,1)"});
   /* ④ 火线前方受热：整张纸泛暖变亮（不是变黑） */
@@ -2960,9 +2979,30 @@ function fxBurn(to, from, rim, id, fromId){
   };
   rafId = requestAnimationFrame(step);
 
+  /* ★★★★ 2026-09-27（用户："燃纸偶尔还会燃到最后还是旧图，而不是直接是新图 ⇒ 硬切"）：
+     整套燃纸是靠 `requestAnimationFrame` 推进的。rAF 一旦被暂停或严重掉帧
+     （WebView 卡一下、长任务阻塞、页面被切走一瞬…），循环就走不到 `el >= END`
+     ⇒ 遮罩停在"还没烧穿"的状态 ⇒ 纸仍然是**旧图**，
+     最后只能由 settle 把纸直接藏掉 = **硬切**；而且只在那种情况下出现 = "偶尔"。
+     ⇒ 这里再加一道 `setTimeout` 保险：到点**强制**摘遮罩 + 藏掉旧层。
+       它不依赖 rAF，所以即使帧循环掉链子，露出来的也一定是**新图**。
+       时刻取 SPAN（理论上烧穿的时刻）+ 少量余量，所以正常情况下由帧循环先收尾、
+       这里什么都不做（`stopped` 已被置位）。 */
+  const _burnSafety = setTimeout(function(){
+    if (stopped) return;
+    stopped = true;
+    try { if (rafId) cancelAnimationFrame(rafId); } catch (e) { /* 老 WebView */ }
+    try { wpCancelAnimations(from); } catch (e) { /* 老 WebView */ }
+    try { from.style.visibility = "hidden"; } catch (e) { /* 无所谓 */ }
+    try { from.style.opacity = "0"; } catch (e) { /* 无所谓 */ }
+    try { applyMask("none"); } catch (e) { /* 无所谓 */ }
+  }, Math.max(60, Math.round(SPAN) + 150));
+
   wpLastDur = dur;
   return () => {
     stopped = true;
+    try { clearTimeout(_burnSafety); } catch (e) { /* 无所谓 */ }
+    try { clearTimeout(_burnHide); } catch (e) { /* 无所谓 */ }
     try { cancelAnimationFrame(rafId); } catch (e) { /* 老 WebView */ }
     [glow, core, char].forEach(n => { try { n.remove(); } catch (e) { /* 已走 */ } });
     try {
@@ -3145,6 +3185,19 @@ function fxInk(to, from, rim){
      ⇒ 淡入几乎完全被墨盖住（墨渗正常时等于没发生）；
      而如果某个环境墨渗渲染失败，它仍然后半段平滑淡入 —— **绝不硬切**。 */
   anim(to, [{opacity:0, offset:0},{opacity:0, offset:.70},{opacity:1, offset:1}],
+       {duration: dur, easing:"linear"});
+
+  /* ★★★★ 2026-09-27（最后一次收尾打磨）：让**旧层在最后 15% 平滑淡出**。
+     为什么必须（用户："切到新图后新图还有一个停顿、而不是直接新图的那种晃动"）：
+       墨渗遮罩在 `p = 1` 时**接近但未必正好铺满 100%** —— 屏幕边缘/凹处
+       可能残留极薄一条"没渗到"，而那里露出来的是**旧图**
+       （旧层在 DOM 上常常正压在新层之上）。
+       偏偏墨渗图是在 `p >= 1` 那一刻被 `display:none` 撤掉的
+       ⇒ 那条残留会**瞬间**消失 ⇒ 观感就是"新图停顿一下、再晃一下"。
+     ⇒ 让旧层在最后 15% 里淡出：残留区从旧图**平滑**过渡到下面就是新图；
+       而主区域被墨渗图盖着，这段淡出**根本看不见**（不引入任何混色/叠影）。
+     注意 offset:.85 ⇒ 前 85% 旧层仍是完全不透明的，墨染原本的观感一点没变。 */
+  anim(from, [{opacity:1, offset:0},{opacity:1, offset:.85},{opacity:0, offset:1}],
        {duration: dur, easing:"linear"});
   const url = (to.style.backgroundImage.match(/url\("?([^")]+)"?\)/) || [])[1] || "";
   if (url){

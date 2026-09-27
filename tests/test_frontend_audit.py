@@ -325,16 +325,14 @@ _ink = _fx_body("fxInk")
 #    （那才叫"淡出"）。另：`to.style.opacity = "0"` 是**新层本体隐藏**
 #    （显示交给 SVG <image>），与旧图无关，不能误伤。
 _from_block = re.search(r"anim\(from,\s*\[([\s\S]*?)\]", _ink)
-check("★ 墨渗不淡出旧图（旧图动画里没有 opacity:0）",
-      "eatAway(" not in _ink
-      and (_from_block is None or "opacity:0" not in _from_block.group(1)))
-print(f"     走 eatAway 的: {eat_ok}  |  墨渗: 旧图不淡出（被墨覆盖）")
-
-print()
-print()
-print("═══ 8) ★★ 特效必须播放完（本轮修的三处真 bug）")
-# ① 条带特效不能被自己的"整张淡入"盖住 —— 那会让条带看起来没播放
-_strips = _fx_body("fxStrips")
+# ★★★ 2026-09-27 契约更新：旧层**现在需要**在**最后一段**淡出。
+#   原因：墨渗遮罩在 p=1 时接近但未必正好 100%，边缘/凹处残留的极薄一条
+#   露出的是旧图；墨渗图一撤那条残留会突然消失 ⇒ "停顿 + 晃动"。
+#   让旧层在最后 15% 淡出，残留区就平滑过渡到新图（主区域被墨盖着，看不见）。
+check("★★★ 墨渗的旧层只在**最后一段**淡出（前 85% 保持完全不透明，观感不变）",
+      re.search(r"anim\(from, \[\{opacity:1, offset:0\},\{opacity:1, offset:\.85\},\{opacity:0, offset:1\}\]",
+                _ink) is not None)
+_strips = js[js.index("function fxStrips"):js.index("\nfunction ", js.index("function fxStrips") + 12)]
 check("★ fxStrips 不对主层做整张淡入（否则盖住条带 ⇒ 等于没播放）",
       "revealIn(" not in _strips)
 check("★ fxStrips 自己把主层设为隐藏（to.style.opacity = \"0\"）",
@@ -1251,9 +1249,27 @@ check("★★ 藏旧层要 opacity:0 + visibility:hidden 双保险（防动画�
 check("★★★ 墨染收尾：先藏旧层、再撤墨渗图（顺序反了就会闪旧图）",
       re.search(r'from\.style\.opacity = "0"[\s\S]{0,80}?img\.style\.display = "none"',
                 _ink) is not None)
+# ★★★ 旧层必须在**最后一段**平滑淡出，不能在 p=1 那一刻被"瞬间"藏掉。
+#   墨渗遮罩在 p=1 时接近但未必正好 100% ⇒ 边缘/凹处可能残留极薄一条没渗到，
+#   那里露出的是旧图（旧层在 DOM 上常压在新层之上）；墨渗图一撤，
+#   这条残留会**突然**消失 ⇒ "新图停顿一下、再晃一下"。
+#   ⇒ 让旧层在最后 15% 淡出：残留区平滑过渡到新图，主区域被墨盖着看不见。
+check("★★★ 墨染必须让旧层在**最后一段平滑淡出**（否则残留边会突然消失 = 停顿+晃动）",
+      re.search(r"anim\(from, \[\{opacity:1, offset:0\},\{opacity:1, offset:\.85\},\{opacity:0, offset:1\}\]",
+                _ink) is not None,
+      "需要 offset:.85 的保持段 —— 前 85% 旧层仍完全不透明，墨染观感不变")
 check("★★ 燃纸收尾：撤遮罩前旧图必须已不可见（opacity + visibility）",
       re.search(r'from\.style\.opacity = "0"[\s\S]{0,160}?visibility = "hidden"[\s\S]{0,80}?applyMask\("none"\)',
                 _burn) is not None)
+# ★★★★ 燃纸必须有**不依赖 rAF** 的收尾保险。
+#   整套燃纸靠 requestAnimationFrame 推进；rAF 被暂停/严重掉帧时循环走不到
+#   `el >= END` ⇒ 遮罩停在"没烧穿"⇒ 纸还是旧图 ⇒ settle 只好直接藏掉 = 硬切，
+#   而且只在那种情况出现 = 用户说的"偶尔"。定时器保险到点强制摘遮罩 + 藏旧层。
+check("★★★ 燃纸必须有定时器收尾保险（rAF 掉帧时不至于停在旧图再硬切）",
+      "setTimeout(function(){" in _burn and "_burnSafety" in _burn,
+      "需要 clearTimeout(_burnSafety) 一起，避免残留定时器")
+check("★★ 保险必须由 stopped 守卫（正常收尾时它什么都不做）",
+      "if (stopped) return;" in _burn)
 check("★★ 且仍保持正确顺序：先摘 .on 再归一化（否则又会旧图闪现）",
       _settle.find('classList.remove("on")') >= 0
       and _settle.find("wpNormalize(") > _settle.find('classList.remove("on")'))
