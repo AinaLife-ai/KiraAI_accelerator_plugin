@@ -598,11 +598,12 @@ _tag = _svg.group(0) if _svg else ""
 check("★★★ 墨染载体有**显式 width/height**（替换元素靠 inset 撑不开）",
       "width:calc(" in _tag and "height:calc(" in _tag,
       "只给 inset 会退回固有尺寸 300×150 ⇒ 只剩左上角一小块")
-check("★★★ 载体盒子 = 视口 + 2×max(72px,6%)，与 .wp-stage 同大",
-      re.search(r"width:calc\(100vw \+ 2 \* max\(72px, 6vw\)\)", _tag) is not None
-      and re.search(r"height:calc\(100vh \+ 2 \* max\(72px, 6vh\)\)", _tag) is not None
-      and re.search(r"\.wp-stage\{[^}]*?inset:calc\(-1 \* max\(72px, 6%\)\)", HTML) is not None,
-      _tag[:80] if _tag else "找不到")
+check("★★★ 墨染载体用**与 .wp-stage 完全相同**的 inset 表达式（含正负号），保证同盒",
+      re.search(r"\.wp-stage\{[^}]*?inset:calc\(-1 \* max\(72px, 6%\)\)", HTML) is not None
+      and re.search(r"left:calc\(-1 \* max\(72px, 6%\)\)", HTML) is not None
+      and re.search(r"width:calc\(100% \+ 2 \* max\(72px, 6%\)\)", HTML) is not None
+      and re.search(r"height:calc\(100% \+ 2 \* max\(72px, 6%\)\)", HTML) is not None,
+      "百分比与 .wp-stage 同源 ⇒ 不用再假设 vw/vh 与 % 解析一致")
 check("★ 且不接收指针事件（不挡操作）", "pointer-events:none" in _tag)
 
 print()
@@ -1111,13 +1112,15 @@ print("═══ 38) ★★★ 墨渗必须真的看得见，且不能造成亮�
 # ① SVG 载体必须在 .wp-scrim **之下**（否则揭开的图没被压暗 ⇒ 亮度跳变 = 硬切感）
 _wi = HTML.index('<div class="wallpaper"')
 _scrim = HTML.index('<div class="wp-scrim"></div>', _wi)
-_svg = HTML.find('<svg style="position:fixed', _wi)
+_svg = HTML.find('<svg style="position:absolute', _wi)
 check("★★ 墨渗的 SVG 载体在 .wp-scrim **之前**（= 之下，受同样压暗）",
-      0 < _svg < _scrim, f"svg@{_svg} scrim@{_scrim}")
+      HTML.find("<svg style=") >= 0
+      and HTML.find("<svg style=") < HTML.find('class="wp-scrim"'))
 # ② SVG 载体必须有确定大小（0×0 时 <image width=100%> 就是 0 ⇒ 什么都画不出）。
 #    ★★★ 不过"有大小"还不够：2026-09-27 起它必须**与 .wp-stage 同盒**，
 #    否则收尾跳 ~16% —— 那条由下面的 ⑤ 单独把关，这里只要求"不是 0×0"。
-_svgtag = HTML[_svg:HTML.index('>', _svg) + 1]
+_svg = HTML.find("<svg style=")      # ★ 重新定位（样式改过，旧索引会失效 ⇒ .index() 抛 ValueError）
+_svgtag = HTML[_svg:HTML.index(">", _svg) + 1] if _svg >= 0 else ""
 check("★ SVG 载体有显式尺寸（<svg> 是替换元素，只给 inset 会退回 300×150）",
       "width:calc(" in _svgtag and "height:calc(" in _svgtag)
 check("★ 且不接收指针事件", "pointer-events:none" in _svgtag)
@@ -1182,10 +1185,10 @@ check("★★ fxInk 会清掉壁纸层上残留的 inline z-index（防 burn 的
 #   `.wp-stage` 的 `6%` 水平＝6vw、垂直＝6vh（包含块就是视口大小的 .wallpaper）。
 check("★★★ 载体与 .wp-stage 用同一个 72px/6% 余量规则（否则收尾跳 ~16%）",
       re.search(r"\.wp-stage\{[^}]*?inset:calc\(-1 \* max\(72px, 6%\)\)", HTML) is not None
-      and re.search(r"left:calc\(-1 \* max\(72px, 6vw\)\)", HTML) is not None
-      and re.search(r"top:calc\(-1 \* max\(72px, 6vh\)\)", HTML) is not None)
+      and re.search(r"left:calc\(-1 \* max\(72px, 6%\)\)", HTML) is not None
+      and re.search(r"top:calc\(-1 \* max\(72px, 6%\)\)", HTML) is not None)
 check("★★ 载体不能只写视口尺寸而不加余量（那与 .wp-stage 不等价）",
-      re.search(r"width:calc\(100vw \+ 2 \* max\(72px, 6vw\)\)", HTML) is not None)
+      re.search(r"width:calc\(100% \+ 2 \* max\(72px, 6%\)\)", HTML) is not None)
 
 # ⑥ ★★★ 燃纸：用动画「保持旧图不透明」之后，**必须 cancel 才能隐藏它**。
 #    `anim(from,[{opacity:1},{opacity:1}],{fill:forwards})` 的优先级**高于行内样式**
@@ -1265,11 +1268,26 @@ check("★★ 燃纸收尾：撤遮罩前旧图必须已不可见（opacity + vi
 #   整套燃纸靠 requestAnimationFrame 推进；rAF 被暂停/严重掉帧时循环走不到
 #   `el >= END` ⇒ 遮罩停在"没烧穿"⇒ 纸还是旧图 ⇒ settle 只好直接藏掉 = 硬切，
 #   而且只在那种情况出现 = 用户说的"偶尔"。定时器保险到点强制摘遮罩 + 藏旧层。
-check("★★★ 燃纸必须有定时器收尾保险（rAF 掉帧时不至于停在旧图再硬切）",
-      "setTimeout(function(){" in _burn and "_burnSafety" in _burn,
-      "需要 clearTimeout(_burnSafety) 一起，避免残留定时器")
-check("★★ 保险必须由 stopped 守卫（正常收尾时它什么都不做）",
-      "if (stopped) return;" in _burn)
+# ★★★★ 保险必须是**完整且正确**的收尾：停循环 + 藏旧层 + 摘遮罩。
+#   曾经有过一道错的保险（SPAN+150 触发，只 cancel + 摘遮罩），
+#   它会把声明式淡出一起取消、让纸重新变回不透明（还亮着）
+#   ⇒ 而且与"帧循环正常收尾"竞速 ⇒ 约 50% 概率出现"旧图变亮再硬切"。
+check("★★★ 收尾保险必须包含「藏旧层」与「摘遮罩」两步（缺一个就会露出旧图）",
+      re.search(r"_burnHide = setTimeout[\s\S]{0,600}?visibility = \"hidden\"[\s\S]{0,200}?applyMask\(\"none\"\)",
+                _burn) is not None)
+check("★★★ 不许再有「只 cancel + 摘遮罩」的早触发保险（会让纸重新变不透明）",
+      "_burnSafety = setTimeout" not in re.sub(r"#[^\n]*", "", _burn))
+# ★★★★ 保险必须落在**视觉烧穿的那一刻**（SPAN），不能拖到 dur+80 ——
+#   否则中间那 ~800ms 里只要帧循环没跑到终点，旧图就一直挂着（还在变亮），
+#   等保险到点才消失 = 用户报的"燃完还是旧图变亮再硬切"。
+check("★★★ 燃纸保险必须在视觉烧穿时触发（SPAN+60），不能等到 dur+80",
+      re.search(r"Math\.max\(60, Math\.round\(SPAN\) \+ 60\)", _burn) is not None)
+check("★★ 墨染也必须有不依赖帧循环的收尾保险（_inkHide，藏旧层 + 撤墨渗图）",
+      re.search(r"_inkHide = setTimeout[\s\S]{0,400}?img\.style\.display = \"none\"", _ink) is not None)
+check("★★★ 墨染不许再给旧层加缩放（新旧两层必须几何一致，否则边缘位移 = 复位感）",
+      re.search(r"scale\(1\.03\)", _ink) is None)
+check("★★ 保险要有 stopped 守卫（正常收尾时什么都不做）",
+      re.search(r"if \(stopped\) return;", _burn) is not None)
 check("★★ 且仍保持正确顺序：先摘 .on 再归一化（否则又会旧图闪现）",
       _settle.find('classList.remove("on")') >= 0
       and _settle.find("wpNormalize(") > _settle.find('classList.remove("on")'))
