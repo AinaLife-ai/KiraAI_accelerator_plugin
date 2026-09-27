@@ -2905,6 +2905,15 @@ function fxBurn(to, from, rim, id, fromId){
   anim(from, [{opacity:1, offset:0},{opacity:1, offset:.45},{opacity:0, offset:.72}],
        {duration: dur, easing:"linear"});
 
+  /* ★★★ 2026-09-28：**新图必须先隐形、再与旧图对称地淡入**。
+     用户反馈："特效还没开始播，新图就完全淡入进来了" ——
+     因为新图现在在【上层】且一开始就全不透明 ⇒ 它把整个燃烧盖住了。
+     这里让它从 0 开始，并与旧图的淡出（.45→.72）**完全对称** ⇒
+     前 45% 画面还是旧图（火焰在它上面烧），之后交叉过渡，72% 处完成。 */
+  try { to.style.opacity = "0"; } catch (e) { /* 无所谓 */ }
+  anim(to, [{opacity:0, offset:0},{opacity:0, offset:.45},{opacity:1, offset:.72}],
+       {duration: dur, easing:"linear", fill:"forwards"});
+
   /* ★★★ 2026-09-28（按"最坏情况"设计）：**定时器 + !important 硬压**。
      上面那条淡出是"声明式动画"，但收尾路径里有 wpCancelAnimations(from)
      ⇒ 动画被取消后元素会回到 CSS 状态（.on 还在 ⇒ opacity:1）⇒ 旧图又出现 ⇒ 被硬切。
