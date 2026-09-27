@@ -2951,6 +2951,12 @@ function fxBurn(to, from, rim, id, fromId){
       glow.style.backgroundImage = svgURI(lines, strokePaint("rgba(255,140,40,.85)", 9));
       core.style.backgroundImage = svgURI(cores, strokePaint("rgba(255,242,190,.98)", 2.4));
       char.style.backgroundImage = svgURI(chars, strokePaint("rgba(58,30,16,.8)", 2));
+      /* 火光/火芯/炭化线随「烧满进度」一起收：closeT 到 1（整屏已烧尽）时它们正好为 0，
+         这样「旧图被烧掉」和「火光消失」是同一件事，收尾不会多出一段亮光。 */
+      var _fd = 1 - closeT;
+      glow.style.opacity = (0.85 * _fd).toFixed(3);
+      core.style.opacity = (0.95 * _fd).toFixed(3);
+      char.style.opacity = (0.85 * _fd).toFixed(3);
     }
     if (el < END){ rafId = requestAnimationFrame(step); }
     else {
@@ -2987,9 +2993,12 @@ function fxBurn(to, from, rim, id, fromId){
            燃完的那一刻画面就是干净的新图，不再有那一段亮光。 */
       wpHideLayer(fromId);
       applyMask("none");
-      anim(from, [{opacity:0},{opacity:0}], {duration: dur * 0.18, easing:"linear"});
-      anim(glow, [{opacity:.85},{opacity:0}], {duration: dur * 0.18, easing:"linear"});
-      anim(core, [{opacity:.95},{opacity:0}], {duration: dur * 0.18, easing:"linear"});
+      var _cur = parseFloat(getComputedStyle(from).opacity) || 0;
+      anim(from, [{opacity: _cur},{opacity: 0}], {duration: Math.round(dur * 0.03), easing:"linear", fill:"forwards"});
+      var _cur = parseFloat(getComputedStyle(glow).opacity) || 0;
+      anim(glow, [{opacity: _cur},{opacity: 0}], {duration: Math.round(dur * 0.03), easing:"linear", fill:"forwards"});
+      var _cur = parseFloat(getComputedStyle(core).opacity) || 0;
+      anim(core, [{opacity: _cur},{opacity: 0}], {duration: Math.round(dur * 0.03), easing:"linear", fill:"forwards"});
       anim(char,  [{opacity:.85},{opacity:0}], {duration: dur * 0.18, easing:"linear"});
     }
   };
