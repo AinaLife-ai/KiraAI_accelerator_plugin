@@ -2868,8 +2868,28 @@ function fxBurn(to, from, rim, id, fromId){
          火线轮廓的凹处（半径最小可到 0.5r）在 closeT 推满之前可能仍留在视口内，
          那段窗口就是用户看到的"**旧图亮起残留 → settle 硬切**"。
          平台对齐后，"烧穿"与"退场"是**同一时刻**，残留在时间轴上不再存在。 */
-  anim(from, [{opacity:1, offset:0},{opacity:1, offset:.82},{opacity:0, offset:.98}],
+  anim(from, [{opacity:1, offset:0},{opacity:1, offset:.79},{opacity:0, offset:.82}],
        {duration: dur, easing:"linear"});
+
+  /* ★★★ 2026-09-28（用户："结尾概率是变亮的旧图停留至少 1 秒以上，然后新图硬切"）：
+     采样证明：旧层隐藏与"新图不透明"都发生在 **4360ms**，而烧穿在 **SPAN = 3280ms**
+     ⇒ **旧层在烧完之后还带着受热变亮滤镜亮了约 1.1 秒**，直到 settle 才被藏掉 ——
+     这就是用户看到的那一秒。根因是淡出原先走到 .98（3920ms），且收尾**依赖帧循环**。
+     ⇒ 现在淡出在 .82（= 烧穿时刻）就已归零（此刻遮罩已盖满整屏，隐藏**不可见**），
+       再挂 onfinish 直接隐藏旧层 ⇒ **不依赖帧循环 / 定时器**，
+       哪怕 rAF 被 WebView 节流，旧层也在烧穿那一刻退场。 */
+  try {
+    const _fade = from.getAnimations().find(function (a) {
+      try { return a.effect.getKeyframes().some(function (k) { return k.opacity === "0" && k.offset === 0.82; }); }
+      catch (e) { return false; }
+    });
+    if (_fade) _fade.onfinish = function () {
+      try {
+        from.style.setProperty("opacity", "0", "important");
+        from.style.setProperty("visibility", "hidden", "important");
+      } catch (e) { /* 无所谓 */ }
+    };
+  } catch (e) { /* 无所谓 */ }
   /* 最后一道兜底：到点强制藏掉旧层（比 settle 早，保证"燃完一定是新图"）。 */
   const _burnHide = setTimeout(function(){
     if (stopped) return;

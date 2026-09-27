@@ -1304,8 +1304,17 @@ check("★★★ 禁止「保持不透明」的竞争动画（与淡出同属性
 # ★★★ 淡出平台必须**对齐烧穿时刻**（SPAN = dur*0.82）：原来平台在 .88，
 #   意味着"遮罩已烧穿、纸就该没了"之后旧层还带着**受热变亮滤镜**继续可见
 #   ~0.16*dur（≈600ms）—— 那段窗口就是"旧图亮起残留 → 硬切"。
-check("★★★ 旧层淡出平台必须对齐烧穿时刻（offset:.82 且 .98 归零）",
-      re.search(r"anim\(from, \[\{opacity:1, offset:0\},\{opacity:1, offset:\.82\},\{opacity:0, offset:\.98\}\]",
+# ★★★ 淡出必须**在烧穿时刻就归零**（不能拖到 .98）：
+#   烧穿在 SPAN = dur*0.82，那一刻遮罩已盖满整屏 ⇒ 隐藏旧层是**不可见**的；
+#   而拖到 .98（dur 的 98%）意味着"烧完之后旧层还带着受热变亮滤镜亮着"
+#   —— 用户实测："结尾概率是变亮的旧图停留至少 1 秒以上，然后新图硬切"。
+#   实测数字：旧层隐藏与新图到位都在 4360ms，而烧穿在 3280ms ⇒ 差了 1.08 秒。
+check("★★★ 旧层淡出必须在烧穿时刻(.82)归零（否则烧完后还亮着 ≈1 秒）",
+      re.search(r"anim\(from, \[\{opacity:1, offset:0\},\{opacity:1, offset:\.79\},\{opacity:0, offset:\.82\}\]",
+                _burn) is not None)
+# ★★ 且必须挂 onfinish 直接隐藏旧层 ⇒ 不依赖帧循环/定时器（WebView 会节流 rAF）。
+check("★★ 淡出结束必须直接隐藏旧层（不依赖帧循环）",
+      re.search(r"_fade\.onfinish = function \(\) \{[\s\S]{0,300}?setProperty\(\"opacity\", \"0\", \"important\"\)",
                 _burn) is not None)
 check("★★★ 不许再有「只 cancel + 摘遮罩」的早触发保险（会让纸重新变不透明）",
       "_burnSafety = setTimeout" not in re.sub(r"#[^\n]*", "", _burn))
