@@ -1354,7 +1354,7 @@ html.jsfx .sp-rim{animation:none!important}
         这里用 vw/vh 写，和 `.wp-stage` 的 `max(72px, 6%)` 数值等价
         （6% 水平＝6vw、垂直＝6vh，因为包含块就是视口大小的 `.wallpaper`），
         而且不像 `width:100%` 那样依赖包含块解析（历史上有过 100% → 0×0 的坑）。 -->
-<svg style="position:fixed;left:calc(-1 * max(72px, 6vw));top:calc(-1 * max(72px, 6vh));width:calc(100vw + 2 * max(72px, 6vw));height:calc(100vh + 2 * max(72px, 6vh));z-index:2;pointer-events:none"
+<svg style="position:absolute;left:calc(-1 * max(72px, 6%));top:calc(-1 * max(72px, 6%));width:calc(100% + 2 * max(72px, 6%));height:calc(100% + 2 * max(72px, 6%));z-index:2;pointer-events:none"
      aria-hidden="true">
   <!-- maskUnits must be userSpaceOnUse: the inner <rect width="100%"> is in
        userSpaceOnUse units, but the mask declared objectBoundingBox (where it
@@ -2842,9 +2842,13 @@ function fxBurn(to, from, rim, id, fromId){
        {duration: dur, easing:"linear"});
   /* 最后一道兜底：到点强制藏掉旧层（比 settle 早，保证"燃完一定是新图"）。 */
   const _burnHide = setTimeout(function(){
-    try { wpCancelAnimations(from); } catch (e) {}
-    try { from.style.opacity = "0"; from.style.visibility = "hidden"; } catch (e) {}
-  }, Math.round(dur) + 80);
+    if (stopped) return;                 // 帧循环已经正常收尾过了，什么都不做
+    stopped = true;
+    try { if (rafId) cancelAnimationFrame(rafId); } catch (e) { /* 老 WebView */ }
+    try { wpCancelAnimations(from); } catch (e) { /* 老 WebView */ }
+    try { from.style.opacity = "0"; from.style.visibility = "hidden"; } catch (e) { /* 无所谓 */ }
+    try { applyMask("none"); } catch (e) { /* 无所谓 */ }
+  }, Math.max(60, Math.round(SPAN) + 60));
 
   anim(to,   [{transform:"scale(1.05)"},{transform:"scale(1)"}],
        {duration: dur, easing:"cubic-bezier(.33,0,.55,1)"});
@@ -2988,20 +2992,20 @@ function fxBurn(to, from, rim, id, fromId){
        它不依赖 rAF，所以即使帧循环掉链子，露出来的也一定是**新图**。
        时刻取 SPAN（理论上烧穿的时刻）+ 少量余量，所以正常情况下由帧循环先收尾、
        这里什么都不做（`stopped` 已被置位）。 */
-  const _burnSafety = setTimeout(function(){
-    if (stopped) return;
-    stopped = true;
-    try { if (rafId) cancelAnimationFrame(rafId); } catch (e) { /* 老 WebView */ }
-    try { wpCancelAnimations(from); } catch (e) { /* 老 WebView */ }
-    try { from.style.visibility = "hidden"; } catch (e) { /* 无所谓 */ }
-    try { from.style.opacity = "0"; } catch (e) { /* 无所谓 */ }
-    try { applyMask("none"); } catch (e) { /* 无所谓 */ }
-  }, Math.max(60, Math.round(SPAN) + 150));
+  /* ★★★★ 2026-09-27（用户："燃纸约 50% 的概率燃完是旧图变亮再硬切"）：
+     这里原来还有一道 `_burnSafety`（SPAN+150 触发），它做的是
+     `wpCancelAnimations(from)` + `applyMask("none")` —— **这是错的**：
+       · cancel 会把上面那条**声明式淡出**一起取消 ⇒ 旧层恢复成**完全不透明**
+       · 再摘掉遮罩 ⇒ 纸**整张重新露出来**（还带着"受热变亮"的滤镜）
+     ⇒ 而且它跟"帧循环正常收尾"是**竞速**：最后 10% 要画巨大的洞、帧本来就慢，
+       约一半的时候是它先到 ⇒ 于是约 50% 的概率出现"旧图变亮 → 硬切" ✓ 与实测吻合。
+     ⇒ 全部交给下面那道 `_burnHide`（在 `dur+80`，淡出已经走完之后）做**完整且正确**
+       的收尾即可：停循环 + 藏旧层 + 摘遮罩，结果一定落到"新图"上。 */
+
 
   wpLastDur = dur;
   return () => {
     stopped = true;
-    try { clearTimeout(_burnSafety); } catch (e) { /* 无所谓 */ }
     try { clearTimeout(_burnHide); } catch (e) { /* 无所谓 */ }
     try { cancelAnimationFrame(rafId); } catch (e) { /* 老 WebView */ }
     [glow, core, char].forEach(n => { try { n.remove(); } catch (e) { /* 已走 */ } });
@@ -3245,9 +3249,28 @@ function fxInk(to, from, rim){
   };
   raf = requestAnimationFrame(step);
 
+  /* ★★★ 墨染也补一道**不依赖帧循环**的收尾保险（原来完全没有）。
+     帧循环一旦没跑到 `p >= 1`，墨渗图就会一直盖在那儿、旧层也没被藏掉，
+     最后只能由 settle 收拾 ⇒ 硬切。这里到点强制做**完整收尾**：
+     藏旧层（opacity + visibility）→ 撤墨渗图，保证露出的是**新图**。 */
+  const _inkHide = setTimeout(function(){
+    if (stopped) return;
+    stopped = true;
+    try { if (raf) cancelAnimationFrame(raf); } catch (e) { /* 老 WebView */ }
+    try { from.style.opacity = "0"; from.style.visibility = "hidden"; } catch (e) { /* 无所谓 */ }
+    try { img.style.display = "none"; } catch (e) { /* 无所谓 */ }
+  }, Math.max(60, Math.round(dur) + 80));
+
   // 旧层保持可见（被墨吃掉），只做极轻微推近；时长与墨的生长一致
-  anim(from, [{transform:"scale(1)"},{transform:"scale(1.03)"}],
-       {duration:dur, easing:"linear"});
+    /* ★★★★ 2026-09-27（用户："墨染百分百新图会有个复位感的卡顿"）：
+       这里原来给**旧层**加了 scale(1) → scale(1.03) 的"推近"。
+       但墨渗图揭开的是**未缩放**的新图 ⇒ 在"没渗到"的边缘看到的是
+       **放大 3% 的旧图**；收尾一撤旧层、交回未缩放的新层
+       ⇒ 那些边缘的内容整体**位移约 3%** ⇒ 就是"新图像复位了一下才继续"
+       （100% 复现 ⇒ 确定性的几何不一致，不是偶发）。
+       遮盖交接要求新旧两层**几何完全一致**，故去掉这 3% 推近。 */
+    anim(from, [{transform:"scale(1)"},{transform:"scale(1)"}],
+         {duration: dur, easing:"linear"});
 
   if (rim){
     rim.style.background = "radial-gradient(circle at 50% 50%, transparent 42%,"

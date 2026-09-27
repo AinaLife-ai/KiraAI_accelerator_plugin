@@ -223,9 +223,12 @@ check("★★ 墨染 SVG 载体有显式尺寸（替换元素靠 inset 撑不开
       re.search(r'<svg style="[^"]*width:calc\(', HTML) is not None
       and re.search(r'<svg style="[^"]*height:calc\(', HTML) is not None)
 # ★★★ 而且盒子要与 .wp-stage 同大，否则收尾画面跳 ~16%。
-check("★★★ 载体盒子 = 视口 + 2×max(72px,6%)，与 .wp-stage 同大",
-      re.search(r"width:calc\(100vw \+ 2 \* max\(72px, 6vw\)\)", HTML) is not None
-      and re.search(r"\.wp-stage\{[^}]*?inset:calc\(-1 \* max\(72px, 6%\)\)", HTML) is not None)
+check("★★★ 墨染载体用**与 .wp-stage 完全相同**的 inset 表达式（含正负号），保证同盒",
+      re.search(r"\.wp-stage\{[^}]*?inset:calc\(-1 \* max\(72px, 6%\)\)", HTML) is not None
+      and re.search(r"left:calc\(-1 \* max\(72px, 6%\)\)", HTML) is not None
+      and re.search(r"width:calc\(100% \+ 2 \* max\(72px, 6%\)\)", HTML) is not None
+      and re.search(r"height:calc\(100% \+ 2 \* max\(72px, 6%\)\)", HTML) is not None,
+      "百分比与 .wp-stage 同源 ⇒ 不用再假设 vw/vh 与 % 解析一致")
 check("★★ 墨染 maskUnits=userSpaceOnUse（与内部 100% 单位匹配）",
       'id="wpInkMask" maskUnits="userSpaceOnUse"' in HTML)
 
