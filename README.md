@@ -346,6 +346,36 @@ A：把你的图（webp/jpg/png）丢进 `wallpapers/` 目录，面板里就会�
 <details>
 <summary><b>📜 更新日志</b>（点击展开）</summary>
 
+### v1.0.23
+
+**默认特效「新图出现后卡顿一下、位置重置、再继续晃动」**
+
+对比其他特效找到了答案 —— 能正常工作的 `fxFade`/`fxIris`/`fxWipe`/`fxZoom`/`fxStrips`
+都只有 6~55 行、**完全不碰「载层」**；出问题的 `fxInk`(199 行)/`fxBurn`(292 行)
+是它们的 10~30 倍大。但真正的原因**不在载层的盒子上**
+（这也解释了此前所有「对齐盒子」的修改为何全无效果）：
+
+```
+.wallpaper{ ...; transform-origin:50% 45%; animation:wpBreath 22s ease-in-out infinite }
+                                             ^ 持续缩放 1.04 <-> 1.10
+.wp-stage { ...; will-change:transform; backface-visibility:hidden }
+                  ^ 被强制提升为**独立合成层**，却待在「正在做 transform 动画」的祖先里
+```
+
+新图那一层**第一次被合成**时，WebView 会有帧拿不到祖先的 transform
+⇒ 新图瞬间显示在**未缩放**的位置 = 「重置位置」
+（缩放中心在 `50% 45%` ⇒ 位移**随位置变**、量级几个像素）⇒ 随后恢复 = 「再继续晃动」。
+⇒ **移除 `.wp-stage` 的 `will-change:transform` / `backface-visibility`**。
+
+**燃纸「燃烧中旧图还亮着、新图硬切」**
+
+`SPAN`（视觉烧穿时刻）原为 `dur * 0.82 = 3280ms`，
+但 `fxBurn` 的声明式动画**实际跑到 `dur = 4000ms`**
+（旧层淡出 `duration: dur`、新层推近 `duration: dur`、末段 `duration: dur*0.9`）
+⇒ 每次都在 **82% 处把整层掐掉**。帧循环的时钟也源自 SPAN
+（`el = (now - t0) / max(SPAN / END, 1)`）⇒ 一并快了 22%。
+⇒ `SPAN` 改为时间轴**真正的结束点**（`dur`），帧循环随之对齐。
+
 ### v1.0.22
 
 **燃纸：火光/炭化描边在"燃完"后还要多亮约 720ms（用户体感"近 1 秒"）**
