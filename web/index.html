@@ -2980,7 +2980,16 @@ function fxBurn(to, from, rim, id, fromId){
       chars.push(blob(q.x + MX, q.y + MY, r * 0.985, q.lobes, q.amp, q.ph, wob));  // 炭化：略小
     }
     if (holes.length){
-      applyMask(svgURI(holes, maskPaint));
+      (function(_paths, _paint){
+        /* ★ 一串 NaN/Infinity 会让整张 data-URI 失效，而浏览器对无效的 mask-image
+           是**直接忽略**（相当于 none）=> 旧图层会**整屏**露出来（只受热变亮），
+           最后被收尾切掉 —— 正是"旧图亮起 -> 新图硬切"。这里先自检：
+           非法就跳过本帧，保留上一帧有效的遮罩，绝不让它退回"全屏可见"。 */
+        var _u = null;
+        try { _u = svgURI(_paths, _paint); } catch (e) { return; }
+        if (!_u || /NaN|Infinity|undefined/.test(_u)) return;
+        try { applyMask(_u); } catch (e) { /* 无所谓 */ }
+      })(holes, maskPaint);
       glow.style.backgroundImage = svgURI(lines, strokePaint("rgba(255,140,40,.85)", 9));
       core.style.backgroundImage = svgURI(cores, strokePaint("rgba(255,242,190,.98)", 2.4));
       char.style.backgroundImage = svgURI(chars, strokePaint("rgba(58,30,16,.8)", 2));
