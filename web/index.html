@@ -2450,6 +2450,14 @@ function applySway(){
     const el2 = document.getElementById(id);
     if (el2) el2.style.transform = v;
   });
+  /* 墨染的载层（承载新图的 SVG）是 .wp-stage 的**兄弟节点**，不在这份名单里，
+     于是它拿不到视差漂移 ⇒ 过渡期间停在"没漂移"的位置，交接瞬间真实图层带着漂移接管
+     ⇒ 观感"卡顿一下、复位一次、再继续晃动"。让它走同一份位移即可。 */
+  try {
+    const _ii = document.getElementById("wpInkImg");
+    const _isv = _ii && _ii.closest ? _ii.closest("svg") : null;
+    if (_isv) _isv.style.transform = v;
+  } catch (e) { /* 无所谓 */ }
 }
 
 let wpT0 = performance.now();
@@ -2854,8 +2862,22 @@ function fxBurn(to, from, rim, id, fromId){
     if (stopped) return;
     stopped = true;
     try { if (rafId) cancelAnimationFrame(rafId); } catch (e) { /* 老 WebView */ }
-    wpHideLayer(fromId);
-    try { applyMask("none"); } catch (e) { /* 无所谓 */ }
+    /* 兜底也绝不能"硬切"：万一阵循环曾抛异常（例如某个值变成 NaN 让遮罩失效），
+       遮罩会停在原地、旧图保持完整。此时直接藏层就是用户说的"旧图存在 -> 新图硬切"。
+       所以先把整层快速淡出（150ms）—— 火光/炭化线挂在 stage 上，会随整层一起淡掉 ——
+       淡完再藏、再摘遮罩，观感与"烧尽"一致。 */
+    var _fs = null;
+    try { _fs = (typeof wpStage === "function") ? wpStage(fromId) : document.getElementById(fromId); } catch (e) { /* 无所谓 */ }
+    if (_fs) {
+      try { anim(_fs, [{opacity:1},{opacity:0}], {duration:150, easing:"linear", fill:"forwards"}); } catch (e) { /* 无所谓 */ }
+      setTimeout(function () {
+        wpHideLayer(fromId);
+        try { applyMask("none"); } catch (e) { /* 无所谓 */ }
+      }, 170);
+    } else {
+      wpHideLayer(fromId);
+      try { applyMask("none"); } catch (e) { /* 无所谓 */ }
+    }
 }, Math.max(60, Math.round(SPAN) + 60));
 
   anim(to,   [{transform:"scale(1.05)"},{transform:"scale(1)"}],
