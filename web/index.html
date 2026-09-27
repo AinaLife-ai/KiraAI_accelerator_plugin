@@ -1327,8 +1327,25 @@ html.jsfx .sp-rim{animation:none!important}
      解析成 **0×0**（getBoundingClientRect 返回 w=0 h=0），
      而里面 `<image width="100%">` 的百分比是相对**这个 SVG 自身**解析的
      ⇒ 图片也是 0×0 ⇒ **墨渗什么都画不出来** ⇒ 收尾时新图突然出现 = 硬切。
-     改用 100vw/100vh 后尺寸确定，image 才有实际大小。 -->
-<svg style="position:fixed;left:0;top:0;width:100vw;height:100vh;z-index:2;pointer-events:none"
+     改用视口单位后尺寸确定，image 才有实际大小。 -->
+<!-- ★★★ 但"有尺寸"还不够 —— 载体盒子**必须与 `.wp-stage` 完全一致**，
+     否则收尾还是会"跳"一下（用户："新图会突然抖动一下，好像重新定位了"）。
+
+     原因：`.wp-stage`（也就是 `.wp-img` 的盒子）是
+         `inset: calc(-1 * max(72px, 6%))` ⇒ **比视口大 144px**
+     而这里原来写的是视口大小（100vw×100vh）。同一个 `<image>` 用
+     `preserveAspectRatio="slice"`（等价 cover）在**小盒**上算一遍，
+     `.wp-img` 又用 `background-size:cover` 在**大盒**上算一遍 ⇒ 缩放不同：
+
+         1080×1920 的图 / 412×915 视口
+           载体盒（412×915）   ⇒ cover 缩放 0.4766，可见源宽 864 px
+           .wp-img（556×1059） ⇒ cover 缩放 0.5516，可见源宽 747 px
+
+     ⇒ 收尾那一刻画面**突然放大约 16%**（还带偏移）—— 就是那个"抖动 / 重新定位"。
+     ⇒ 必须用**和 `.wp-stage` 一模一样的 inset 表达式**：盒一样，
+       `slice` 与 `cover` 的结果就逐像素一致 ⇒ 收尾无缝。
+       （用 inset 定位而不是 width/height，也不会再出现 0×0 的问题。） -->
+<svg style="position:fixed;inset:calc(-1 * max(72px, 6%));z-index:2;pointer-events:none"
      aria-hidden="true">
   <!-- maskUnits must be userSpaceOnUse: the inner <rect width="100%"> is in
        userSpaceOnUse units, but the mask declared objectBoundingBox (where it
@@ -2869,6 +2886,18 @@ function fxBurn(to, from, rim, id, fromId){
            所以这里只需要"保持不变"。
          （`eatAway` 那种"先保持实再退尽"适用于**普通**特效；
            燃纸是"纸被烧掉"，最终必须不可见 —— 语义相反，不能照抄。） */
+      /* ★★★ "取消动画"这一步缺一不可 —— 否则旧图会**整张重新露出**。
+         上面那句 `anim(from, [{opacity:1},{opacity:1}], {duration: dur*0.9})`
+         带 `fill:"forwards"`，而 **Web Animations 的优先级高于行内样式**
+         ⇒ 所以 `from.style.opacity = "0"` **根本没生效**，
+            但紧随其后的 `applyMask("none")` 却生效了
+         ⇒ 旧图以"**完全不透明 + 已经没有遮罩**"的状态重新露出，
+            并且一直挂到 settle 才消失
+         ⇒ 观感正是"燃完了旧图还在，然后突然变成新图"（用户实测）。
+         ⇒ 必须**先 cancel 那条"保持不透明"的动画**，再设 opacity，最后才摘遮罩。
+           （`wpCancelAnimations(from)` 只作用于 from 自身和它的子树；
+             glow/core/char 挂在 stage 上、是 from 的**兄弟节点**，不会受影响。） */
+      try { wpCancelAnimations(from); } catch (e) { /* 老 WebView */ }
       from.style.opacity = "0";
       applyMask("none");
       anim(from, [{opacity:0},{opacity:0}], {duration: dur * 0.18, easing:"linear"});
