@@ -2790,8 +2790,6 @@ function _wpBurnCarrier(show, LW, LH) {
   } catch (e) { return null; }
 }
 function fxBurn(to, from, rim, id, fromId){
-  /* ★ 强制旧层在最上（消除"旧层在上/在下"带来的二元差异） */
-  try { const _f = from.parentElement, _t2 = to.parentElement; if (_f && _t2) { _f.style.zIndex = "3"; _t2.style.zIndex = "2"; } } catch (e) {}
   const dur = WP_DUR * 1.25;
   const W = Math.max(window.innerWidth, 320);
   const H = Math.max(window.innerHeight, 320);
@@ -2883,8 +2881,8 @@ function fxBurn(to, from, rim, id, fromId){
      ⇒ 必须把 z-index 设在 **stage** 上。 */
   const stFrom = (typeof fromId !== "undefined") ? wpStage(fromId) : null;
   const stTo   = (typeof id     !== "undefined") ? wpStage(id)     : null;
-  if (stFrom) stFrom.style.zIndex = "2";   // 纸在上
-  if (stTo)   stTo.style.zIndex   = "1";   // 新图在下（被烧出来）
+  if (stFrom) stFrom.style.zIndex = "1";   // 纸在上
+  if (stTo)   stTo.style.zIndex   = "2";   // 新图在下（被烧出来）
 
   /* ③ 两层可见性**显式用动画写**（wpLoad 已 remove("on")，不写就会烧在透明层上） */
   anim(from, [{opacity:1},{opacity:1}], {duration: dur * 0.9, easing:"linear"});
@@ -2901,7 +2899,7 @@ function fxBurn(to, from, rim, id, fromId){
        前 88% 保持完全不透明（此时纸已被遮罩挖空，看不见），最后 12% 平滑淡出。
        ⇒ 无论帧循环是否跑完，`dur` 到点旧层一定已经不可见 ⇒ **燃完一定是新图**，
          绝不会再出现"停在变亮的旧图再硬切"。 */
-  anim(from, [{opacity:1, offset:0},{opacity:1, offset:.88},{opacity:0, offset:1}],
+  anim(from, [{opacity:1, offset:0},{opacity:1, offset:.45},{opacity:0, offset:.72}],
        {duration: dur, easing:"linear"});
 
   /* 照抄墨染：真身新层【先隐形】、到末尾【声明式淡入】。
