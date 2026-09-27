@@ -3630,7 +3630,16 @@ function wpSettle(id, fromId){
        紧接着 `wpNormalize(fromId)` 会清掉这行 inline，
        而那时 `.on` 已摘掉 ⇒ CSS 本来就是 opacity:0 ⇒ 不会像"写成 1"那样永久可见。 */
   wpStage(fromId).classList.remove("on");
-  try { wpNormalize(fromId); } catch (e) { console.warn("[accel] 归一化旧层失败", e); }
+  try { wpNormalize(fromId);
+  /* ★★★ 2026-09-28：**归一化之后必须再藏一次旧层**。
+     用户观察："即使正常出新图，也大概在 1~2 秒后旧图闪现一下" ——
+     1~2 秒正是收尾（wpLastDur + 260）发生的时刻。
+     原因：wpNormalize 会 im.style.cssText = "" ⇒ **把上面刚写的 inline 隐藏一起清掉**；
+     而此时旧层上可能还挂着动画（你代码里那套"保持不透明"的 fill:forwards），
+     动画一露头，旧图就在收尾这一瞬重新可见 ⇒ 闪现 / 或被下一步切掉。
+     ⇒ 归一化后再藏一次，并把旧层上所有动画取消，确保彻底退场。 */
+  try { wpCancelAnimations(fromId); } catch (e) { /* 无所谓 */ }
+  try { wpHideLayer(fromId); } catch (e) { /* 无所谓 */ } } catch (e) { console.warn("[accel] 归一化旧层失败", e); }
   /* ★ 新层同理：**先加 .on** 再归一化，避免"清掉 opacity 但 .on 还没加"
      的瞬间（那会让新图闪一下或在墨染这类"本体被隐藏、由 SVG 承载"的特效上
      表现为突然出现 = 硬切）。 */
