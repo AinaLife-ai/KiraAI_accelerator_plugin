@@ -3561,9 +3561,17 @@ function wpSettle(id, fromId){
      （Web Animations 的优先级高于行内样式）；两者都会被 wpNormalize 清掉，无副作用。 */
   try {
     const _st0 = wpStage(fromId), _im0 = wpImg(fromId);
+    /* ★★★ 2026-09-28：**摘 .on 必须是第一步**。
+       用户："火线明明播到最后一下，却像把旧图带出来了一样；有时对有时错"。
+       根因是收尾这几步的**先后竞态**：旧层的"不可见"还依赖一行 inline 隐藏，
+       而后面任何一步都可能把它抹掉（wpNormalize 清 style / 清遮罩后旧层恢复不透明 /
+       wpCleanup 撤载体 / 中途抛异常）——只要发生在"摘 .on"之前，
+       旧图就会**重新整屏可见**，再被下一步切掉。
+       ⇒ 先摘 .on：从这一瞬起 **CSS 就保证旧层不可见**，后面无论哪一步做什么、
+         甚至抛异常，都带不回旧图。 */
+    if (_st0){ _st0.classList.remove("on"); }
     wpHideLayer(fromId);                       // ★ 整层藏（含 stage 上的描边）
     if (_im0){ _im0.style.opacity = "0"; _im0.style.visibility = "hidden"; }
-    if (_st0){ _st0.classList.remove("on"); }
   } catch (e) { /* 无所谓 */ }
   try {
     if (wpCleanup){ wpCleanup(); }
