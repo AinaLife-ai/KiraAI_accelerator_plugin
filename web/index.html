@@ -2450,6 +2450,14 @@ function applySway(){
     const el2 = document.getElementById(id);
     if (el2) el2.style.transform = v;
   });
+  /* 墨染的载层（承载新图的 SVG）是 .wp-stage 的**兄弟节点**，不在这份名单里，
+     于是它拿不到视差漂移 ⇒ 过渡期间停在"没漂移"的位置，交接瞬间真实图层带着漂移接管
+     ⇒ 观感"卡顿一下、复位一次、再继续晃动"。让它走同一份位移即可。 */
+  try {
+    const _ii = document.getElementById("wpInkImg");
+    const _isv = _ii && _ii.closest ? _ii.closest("svg") : null;
+    if (_isv) _isv.style.transform = v;
+  } catch (e) { /* 无所谓 */ }
 }
 
 let wpT0 = performance.now();
