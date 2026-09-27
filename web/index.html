@@ -2845,13 +2845,18 @@ function fxBurn(to, from, rim, id, fromId){
        {duration: dur, easing:"linear"});
   /* 最后一道兜底：到点强制藏掉旧层（比 settle 早，保证"燃完一定是新图"）。 */
   const _burnHide = setTimeout(function(){
-    if (stopped) return;                 // 帧循环已经正常收尾过了，什么都不做
+    if (stopped) return;
+    /* 帧循环可能因为掉帧 / 长任务 / 页面被切走而没跑到 el >= END。
+       那就**先替它把最后一帧画完**：el 推到 END ⇒ 火源半径经 closeT 推到"必定盖满"，
+       并且跑完收尾路径（火光淡出 + 整层藏）。此时画面已经是"烧尽 + 干净的新图"，
+       再收尾就**没有任何可见变化** —— 不会再出现"旧图还亮着被硬切"。 */
+    try { step((t0 === null ? performance.now() : t0) + Math.round(SPAN) + 1); } catch (e) { /* 无所谓 */ }
+    if (stopped) return;
     stopped = true;
     try { if (rafId) cancelAnimationFrame(rafId); } catch (e) { /* 老 WebView */ }
-    try { wpCancelAnimations(from); } catch (e) { /* 老 WebView */ }
-    wpHideLayer(fromId);              // ★ 整层藏（连描边一起）
+    wpHideLayer(fromId);
     try { applyMask("none"); } catch (e) { /* 无所谓 */ }
-  }, Math.max(60, Math.round(SPAN) + 60));
+}, Math.max(60, Math.round(SPAN) + 60));
 
   anim(to,   [{transform:"scale(1.05)"},{transform:"scale(1)"}],
        {duration: dur, easing:"cubic-bezier(.33,0,.55,1)"});
