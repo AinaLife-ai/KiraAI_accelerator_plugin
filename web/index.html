@@ -1405,9 +1405,15 @@ html.jsfx .sp-rim{animation:none!important}
        为什么不用 HTML 元素的 CSS `mask-image: url(#…)`：
        Chromium 对"把 SVG mask 当 CSS mask 用在 HTML 元素上"支持不完整
        ⇒ 遮罩没生效 ⇒ 新图**瞬间全亮**（用户实测："跟瞬间出现一样"）。 -->
-  <image id="wpInkImg" x="0" y="0" width="100%" height="100%"
-         preserveAspectRatio="xMidYMid slice"
-         mask="url(#wpInkMask)" style="display:none"/>
+  <foreignObject x="0" y="0" width="100%" height="100%" mask="url(#wpInkMask)">
+      <!-- ★★★ 这里**故意**不用 <image>：<image> 的 slice 与 .wp-img 的
+           background-size:cover 是**两套渲染**，盒/取整上任何差异都会在
+           "交回 .wp-img"的那一刻表现为位移（用户："新图像往右下平移一下"）。
+           改用一个普通 <div> 并**照抄 .wp-img 的渲染方式**
+           ⇒ 两套渲染**机制相同** ⇒ 构造上无缝。 -->
+      <div xmlns="http://www.w3.org/1999/xhtml" id="wpInkImg"
+           style="width:100%;height:100%;background-size:cover;background-position:center"></div>
+    </foreignObject>
 </svg>
   <div class="wp-scrim"></div>
   <div class="wp-stage" id="wp-a"><div class="wp-img"></div></div>
@@ -2594,6 +2600,9 @@ function wpNormalize(id){
 function wpLoad(id, url){
   const st = wpStage(id);
   wpCancelAnimations(st);
+  /* ★★★ 必须回收上一次 `wpHideLayer()` 留下的整层隐藏，
+     否则这一层轮到上场时会是**不可见**的（那会让画面整个空掉）。 */
+  try { st.style.opacity = ""; st.style.visibility = ""; } catch (e) { /* 无所谓 */ }
   st.querySelectorAll(".s-strip").forEach(s => s.remove());
   st.classList.remove("on");
   const im = wpImg(id);
@@ -2846,7 +2855,7 @@ function fxBurn(to, from, rim, id, fromId){
     stopped = true;
     try { if (rafId) cancelAnimationFrame(rafId); } catch (e) { /* 老 WebView */ }
     try { wpCancelAnimations(from); } catch (e) { /* 老 WebView */ }
-    try { from.style.opacity = "0"; from.style.visibility = "hidden"; } catch (e) { /* 无所谓 */ }
+    wpHideLayer(fromId);              // ★ 整层藏（连描边一起）
     try { applyMask("none"); } catch (e) { /* 无所谓 */ }
   }, Math.max(60, Math.round(SPAN) + 60));
 
@@ -3205,14 +3214,15 @@ function fxInk(to, from, rim){
        {duration: dur, easing:"linear"});
   const url = (to.style.backgroundImage.match(/url\("?([^")]+)"?\)/) || [])[1] || "";
   if (url){
-    img.setAttribute("href", url);
-    img.setAttributeNS("http://www.w3.org/1999/xlink", "xlink:href", url);
+    img.style.backgroundImage = "url('" + url + "')";
+    /* 已改用背景图渲染，不再需要 xlink:href */
   }
   img.style.display = "";
 
   setBias(BIAS0);
   const t0 = performance.now();
   let raf = 0;
+  let stopped = false;   // ★★★ 必须声明：循环第一句就是 if (stopped) return;（原来漏了 ⇒ 第一帧就 ReferenceError，整个墨渗动画是死的）
   const ease = (p) => p * p * (3 - 2 * p);       // smoothstep
   const step = () => {
     const p = Math.min(1, (performance.now() - t0) / dur);
@@ -3257,7 +3267,7 @@ function fxInk(to, from, rim){
     if (stopped) return;
     stopped = true;
     try { if (raf) cancelAnimationFrame(raf); } catch (e) { /* 老 WebView */ }
-    try { from.style.opacity = "0"; from.style.visibility = "hidden"; } catch (e) { /* 无所谓 */ }
+    wpHideEl(from, from.parentElement);              // ★ 整层藏
     try { img.style.display = "none"; } catch (e) { /* 无所谓 */ }
   }, Math.max(60, Math.round(dur) + 80));
 
@@ -3319,6 +3329,33 @@ function wpPreloadWallpaper(url){
 /* 切换入口（带锁 + 异常兜底）
    ★★ 必须包 try/catch：异常会让 wpBusy 永久停在 true ⇒ 之后每次切换都在
      第一行 return ⇒ **轮换静默死掉**（无报错，只是图永远不换）。 */
+
+/* ★★★★ 2026-09-27：**一口气把"旧层"整条链藏掉**。
+   为什么不能只藏 `.wp-img`：燃纸的火光/炭化描边（glow/core/char）挂在
+   **stage** 上（是 .wp-img 的兄弟），只藏 .wp-img 的话它们会留在最上层
+   ⇒ 就是"燃完旧图变亮"的真正来源。
+   ⇒ 统一藏 **stage + img**（opacity + visibility），让"旧层还有东西可见"
+     这件事在**结构上不可能发生**；也就保证了"燃到最后一定是新图"。
+   ⚠️ stage 上的 inline 必须**可回收**：wpLoad / wpNormalize 会把它清掉（见那里）。*/
+function wpHideEl(im, st){
+  try {
+    if (im){ im.style.opacity = "0"; im.style.visibility = "hidden"; }
+    if (st){ st.style.opacity = "0"; st.style.visibility = "hidden"; }
+  } catch (e) { /* 无所谓 */ }
+}
+function wpHideLayer(id){
+  /* ⚠️ 有些特效（如 fxInk）**拿不到 fromId**，只能传元素 —— 那种情况下用 wpHideEl。
+     这里必须走 wpImg/wpStage，不能引用调用方的作用域变量（踩过这个坑）。 */
+  try { wpHideEl(wpImg(id), wpStage(id)); } catch (e) { /* 无所谓 */ }
+}
+function wpShowLayer(id){
+  try {
+    const st = wpStage(id), im = wpImg(id);
+    if (st){ st.style.opacity = ""; st.style.visibility = ""; }
+    if (im){ im.style.visibility = ""; }
+  } catch (e) { /* 无所谓 */ }
+}
+
 function wpTransition(url){
   if (wpBusy) return;
   wpBusy = true;
@@ -3403,6 +3440,7 @@ function wpSettle(id, fromId){
      （Web Animations 的优先级高于行内样式）；两者都会被 wpNormalize 清掉，无副作用。 */
   try {
     const _st0 = wpStage(fromId), _im0 = wpImg(fromId);
+    wpHideLayer(fromId);                       // ★ 整层藏（含 stage 上的描边）
     if (_im0){ _im0.style.opacity = "0"; _im0.style.visibility = "hidden"; }
     if (_st0){ _st0.classList.remove("on"); }
   } catch (e) { /* 无所谓 */ }
@@ -3432,6 +3470,7 @@ function wpSettle(id, fromId){
      的瞬间（那会让新图闪一下或在墨染这类"本体被隐藏、由 SVG 承载"的特效上
      表现为突然出现 = 硬切）。 */
   wpStage(id).classList.add("on");
+  wpShowLayer(id);                             // ★ 与 wpHideLayer 配对，确保新层可见
   try { wpNormalize(id); }     catch (e) { console.warn("[accel] 归一化新层失败", e); }
   /* ★ 兜底：收尾后**当前层必须可见**。上面任何一步被打断（例如别处并发调用
      wpLoad 清掉了 .on），这里也能把画面救回来 —— 让"背景消失"不可能发生。 */

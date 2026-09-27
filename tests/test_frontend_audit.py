@@ -34,6 +34,8 @@ _js_raw = _js_raw.group(1) if _js_raw else HTML
 # ★ 检查代码特征前**必须剥掉注释**：注释里举了反例（"原来这里写了
 #   im.style.opacity = \"1\""），不剥就会把自己的说明文字当成代码误报。
 js = re.sub(r"/\*[\s\S]*?\*/", "", _js_raw)
+# ★ 兜底：早期判据里若引用 MAIN（本意是前端脚本内容），指向 js，避免 NameError
+MAIN = js
 js = re.sub(r"(?m)^\s*//.*$", "", js)
 
 # ★ hudReset 的片段（多处判据要用）——放在这里，避免"先用后定义"
@@ -57,8 +59,11 @@ print(f"     墨渗偏置（从代码读到）: BIAS0={B0}  BIAS1={B1}")
 #   那是为了在开屏淡出的那一刻杜绝"图层不可见"的帧（否则会透出遮罩的黑 ⇒ 弹一下）。
 #   所以判据放宽为：**除了收尾钉住那一处**，没有别的地方给图片层写 inline opacity。
 img_opacity_writes = re.findall(r"\bim\.style\.opacity\s*=", js)
-check("★ 只有收尾钉住那一处给图片层写 inline opacity（其余地方都不写）",
-      len(img_opacity_writes) <= 1, f"找到 {len(img_opacity_writes)} 处")
+check("★★ 藏旧层必须集中在一处（wpHideLayer / wpHideEl），stage 与 img 一起藏",
+      "function wpHideEl" in js and "function wpHideLayer" in js
+      and "st.style.visibility = \"hidden\";" in js)
+check("★★★ 燃纸的描边挂在 stage 上 ⇒ 只藏 .wp-img 不够，必须整层藏",
+      "wpHideLayer(fromId)" in js and "wpHideEl(from, from.parentElement)" in js)
 
 # ⚠️ **不能删空格**：`.wp-stage.on .wp-img` 里的空格是**后代选择器**，
 #    删掉就变成另一个选择器（上一版测试自己写错、自己报红）。
@@ -142,8 +147,9 @@ print("═══ 4) ★★ 墨渗：必须是「随机纹路」而不是圆，�
 # ★ 必须用**原生 SVG mask**（挂在 SVG 的 <image> 上），
 #   而不是 HTML 元素的 CSS `mask-image: url(#…)` ——
 #   Chromium 对后者支持不完整 ⇒ 遮罩不生效 ⇒ 新图**瞬间全亮**（用户实测过）。
-check("★ 墨渗用原生 SVG mask（<image mask=\"url(#wpInkMask)\">）",
-      re.search(r'<image[^>]*mask="url\(#wpInkMask\)"', HTML) is not None)
+check("★ 墨渗用原生 SVG mask（载体带 mask=url(#wpInkMask)）",
+      'mask="url(#wpInkMask)"' in HTML)
+
 check("★ 不再用不可靠的 HTML CSS mask-image 引 SVG mask",
       'maskImage = "url(#wpInkMask)"' not in js)
 # 旧的圆实现应已消失
@@ -1135,8 +1141,12 @@ _delay = re.search(r"anim\(to, \[([^\]]*)\],\s*\{duration: dur, easing:\"linear\
 check("★★★ 兜底淡入必须推迟到 >=60% 才开始（否则整屏提前变亮 ⇒ 墨路被冲淡）",
       _delay is not None and re.search(r"offset:\s*\.(6|7|8|9)", _delay.group(1)) is not None,
       "关键帧: " + (_delay.group(1).strip() if _delay else "未匹配"))
-check("★ fxInk 仍然把图交给 SVG <image>（墨渗本体）",
-      'img.setAttribute("href", url)' in _ink and 'mask="url(#wpInkMask)"' in HTML)
+check("★★★ 墨渗载体用 mask 引用它自己的滤镜（原生 SVG mask 仍在）",
+      'mask="url(#wpInkMask)"' in HTML)
+check("★★★ 墨渗载体必须用**与 .wp-img 相同的渲染机制**（background-size:cover），\n      not SVG <image> —— 两套渲染会在交回时位移",
+      'id="wpInkImg"' in HTML and "background-size:cover" in HTML
+      and "<image id=\"wpInkImg\"" not in HTML)
+
 check("★ 拿不到 SVG 元素时不会卡住（有早退）",
       "if (!cm || !img) return;" in _ink)
 
@@ -1272,9 +1282,9 @@ check("★★ 燃纸收尾：撤遮罩前旧图必须已不可见（opacity + vi
 #   曾经有过一道错的保险（SPAN+150 触发，只 cancel + 摘遮罩），
 #   它会把声明式淡出一起取消、让纸重新变回不透明（还亮着）
 #   ⇒ 而且与"帧循环正常收尾"竞速 ⇒ 约 50% 概率出现"旧图变亮再硬切"。
-check("★★★ 收尾保险必须包含「藏旧层」与「摘遮罩」两步（缺一个就会露出旧图）",
-      re.search(r"_burnHide = setTimeout[\s\S]{0,600}?visibility = \"hidden\"[\s\S]{0,200}?applyMask\(\"none\"\)",
-                _burn) is not None)
+check("★★★ 燃纸收尾保险必须「整层藏旧层 + 摘遮罩」两步（缺一就露旧图/描边）",
+      re.search(r"_burnHide = setTimeout[\s\S]{0,900}?wpHideLayer\(fromId\)[\s\S]{0,300}?applyMask\(\"none\"\)",
+                MAIN) is not None)
 check("★★★ 不许再有「只 cancel + 摘遮罩」的早触发保险（会让纸重新变不透明）",
       "_burnSafety = setTimeout" not in re.sub(r"#[^\n]*", "", _burn))
 # ★★★★ 保险必须落在**视觉烧穿的那一刻**（SPAN），不能拖到 dur+80 ——
