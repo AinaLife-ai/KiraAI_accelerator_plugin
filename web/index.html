@@ -2869,7 +2869,7 @@ function fxBurn(to, from, rim, id, fromId){
     var _fs = null;
     try { _fs = (typeof wpStage === "function") ? wpStage(fromId) : document.getElementById(fromId); } catch (e) { /* 无所谓 */ }
     if (_fs) {
-      try { anim(_fs, [{opacity:1},{opacity:0}], {duration:150, easing:"linear", fill:"forwards"}); } catch (e) { /* 无所谓 */ }
+      try { anim(_fs, [{opacity:1},{opacity:0}], {duration:150, easing:"linear"}); } catch (e) { /* 无所谓 */ }
       setTimeout(function () {
         wpHideLayer(fromId);
         try { applyMask("none"); } catch (e) { /* 无所谓 */ }
@@ -3016,12 +3016,9 @@ function fxBurn(to, from, rim, id, fromId){
       wpHideLayer(fromId);
       applyMask("none");
       anim(from, [{opacity:0},{opacity:0}], {duration: dur * 0.18, easing:"linear"});
-      var _cur = parseFloat(getComputedStyle(glow).opacity) || 0;
-      anim(glow, [{opacity: _cur},{opacity: 0}], {duration: Math.round(dur * 0.03), easing:"linear", fill:"forwards"});
-      var _cur = parseFloat(getComputedStyle(core).opacity) || 0;
-      anim(core, [{opacity: _cur},{opacity: 0}], {duration: Math.round(dur * 0.03), easing:"linear", fill:"forwards"});
-      var _cur = parseFloat(getComputedStyle(char).opacity) || 0;
-      anim(char, [{opacity: _cur},{opacity: 0}], {duration: Math.round(dur * 0.03), easing:"linear", fill:"forwards"});
+      glow.style.opacity = "0";
+      core.style.opacity = "0";
+      char.style.opacity = "0";
     }
   };
   rafId = requestAnimationFrame(step);
