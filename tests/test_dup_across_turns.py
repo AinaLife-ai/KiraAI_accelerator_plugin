@@ -47,18 +47,30 @@ check("★ 仍有 final_result 清理（正常路径）",
       re.search(r"@on\.final_result[\s\S]{0,400}?_clear_round_state", MAIN) is not None)
 
 print()
-print("═══ 2) 消费标记必须自愈（不依赖钩子一定执行）═══")
-# 契约升级：时间戳 -> **轮次 id**（时间戳区分不了"同一轮第二步"与"下一轮第一步"）
-check("★★★ 消费标记存的是轮次 id（不是 True、也不是时间戳）",
-      '"event_id", None) or sid_now' in MAIN,
-      "轮次变了才失效")
-# 变量名可能是 _cons_ts 之类，正则放宽：只要"取标记"后面不远处出现
-# `time.time() - <变量> < 数字` 就算带时效。
-# 直接找"时效判断"语句本身（不依赖它与标记取值之间的注释长度 ——
-# 第一次写的时候窗口只给了 200 字符，中间夹着大段注释 ⇒ 判据假红）
-check("★★★ 读标记时按轮次 id 比较（不是时间窗口）",
-      re.search(r"_cons_ev\s*==\s*_ev", MAIN) is not None)
-check("★ 声明可容纳轮次 id", "_ledger_consumed" in MAIN)
+print("═══ 2) ★★★ 第五次修复：不存在「已消费 ⇒ 跳过剥离」═══")
+# 【为什么推翻旧契约】旧判据断言"消费标记按轮次 id 比较"，即
+#   `_cons_ev == _ev ⇒ ledger=[] / segs=[] / n=0`（跳过剥离）。
+# 这条契约本身是错的，它建立在"抢发只发生在第一步"这个**错误前提**上：
+#   · 流式引擎 patch 在 `ProviderManager.get_model_client` 上
+#     ⇒ 每一次 LLM 请求都新建引擎（`_make_engine`），emit = `_emit_segment`
+#     ⇒ **多步 loop 的每一步都会抢发它自己那一段**；
+#   · 框架 `core/message_manager.py:766` 里，`event` 是
+#     `async for step in agent_executor.run(...)` **循环外**创建的**同一个对象**
+#     ⇒ 同轮各步的 `event_id` **完全相同**；
+#   ⇒ 第二步必然命中"已消费 ⇒ 不剥离" ⇒ 它**自己刚抢发的** C,D 被框架再发一次
+#     ⇒ 用户看到 `C,D | C,D`（线上截图）。
+# 正确契约：每一次 send_xml_messages 对应一步，剥的就是**本步**抢发的段；
+#   `event_id` 只用来判断"台账是否属于本轮"（丢弃跨轮残留，防误剪丢内容）。
+_EI = MAIN.find("def _install_early_sent_strip")
+_EJ = MAIN.find("def page(", _EI)
+_BODY = MAIN[_EI:_EJ] if _EJ > _EI else MAIN[_EI:]
+check("★★★ 不存在「已消费 ⇒ 跳过剥离」的判定（本次 bug 的根因）",
+      re.search(r"_cons_ev\s*==\s*_ev", _BODY) is None,
+      "已删除" if re.search(r"_cons_ev\s*==\s*_ev", _BODY) is None else "仍存在")
+check("★★★ 不再有 _ledger_consumed 参与剥离决策",
+      "_ledger_consumed" not in _BODY)
+check("★★ 轮次 id 仍在使用，但只用于「台账是否属于本轮」",
+      "cur_ev" in _BODY and "_raw_ev" in _BODY)
 
 print()
 print("═══ 3) 轮开始时的兜底清理（双保险）═══")
@@ -95,28 +107,26 @@ check("★ 保险逻辑是纯内存操作（无 IO / 无 await）",
 # 泄漏防护：清理必须覆盖四个字典，而不只是 _ledger_ts
 _i = MAIN.find("def _clear_stale_round_state")
 _blk = MAIN[_i:_i + 2000]
-check("★★ 清理覆盖全部四个字典（否则多会话下会缓慢泄漏）",
-      all(k in _blk for k in ("_ledger_ts", "_sent_ledger", "_ledger_consumed", "_resp_by_sid")))
+check("★★ 清理覆盖全部状态字典（否则多会话下会缓慢泄漏）",
+      all(k in _blk for k in ("_ledger_ts", "_sent_ledger", "_resp_by_sid")))
 
 
 
 print()
-print("═══ 5) ★★★ 跨轮次：标记必须按**轮次 id** 失效（不是按时间）═══")
-# 现场（用户："还是经常触发重复发送"）：
-#   上一版用 `(time.time() - ts) < 300` 做时效 ⇒ **5 分钟内都算已消费**。
-#   连续对话里每轮间隔远小于 5 分钟 ⇒ 标记一直有效 ⇒
-#   **从第二轮起每轮都走"已消费 ⇒ 不剥离"** ⇒ 每轮都重复。
-#   时间戳区分不了"同一轮的第二步"与"下一轮的第一步"。
-check("★★★ 消费标记按 event_id 比较（不是时间窗口）",
-      re.search(r"_cons_ev\s*==\s*_ev", MAIN) is not None)
-check("★★★ 不再用 300 秒时间窗口判断已消费",
-      not re.search(r"_ledger_consumed\.get\(sid_now\)[\s\S]{0,200}?time\.time\(\)\s*-", MAIN))
+print("═══ 5) ★★★ 跨轮次：轮次 id 只用来**丢弃上一轮残留**（不是跳过剥离）═══")
+# 现场（用户："还是经常触发重复发送"）的完整因果见第 2 节。
+# 这里锁定**正确的用法**：轮次 id 用于"这份台账是不是本轮的"。
 check("★★★ 取轮次 id 用 event.event_id（框架注释：唯一标识一个事件）",
       "getattr(event, \"event_id\", None)" in MAIN or "getattr(event, 'event_id', None)" in MAIN)
+check("★★★ 轮次不一致时**丢弃**残留台账（否则会误剪 = 丢内容）",
+      re.search(r"_raw_ev[\s\S]{0,160}?ledger = \[\]", MAIN) is not None,
+      "见 elif _raw: 分支")
 check("★★ 台账带轮次键，轮次变了自动开新账（不依赖钩子清理）",
       "cur_ev" in MAIN and MAIN.count("x00ev") >= 4)
 check("★★ 轮次键被所有清理点覆盖（否则字典会留垃圾）",
       MAIN.count('+ "\\x00ev", None)') >= 4)
+check("★★ 不再有 _ledger_consumed 参与任何剥离决策",
+      "_ledger_consumed.get(" not in MAIN and "self._ledger_consumed" not in MAIN)
 
 if BAD:
     print(f"❌ {len(BAD)} 项未通过: {BAD}")

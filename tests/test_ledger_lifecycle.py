@@ -27,31 +27,33 @@ def check(name, ok, detail=""):
     print(f"  {'✓' if ok else '✗'} {name}" + (f"  [{detail}]" if detail else ""))
 
 
-print("═══ 1) 台账的生命周期：**活到轮结束**，但**只消费一次**")
-# ★★★ 这条契约是两轮修正的结果，两个方向都不能过头：
-#   · 只"消费完就清"（旧）⇒ 多步 loop 的第二步 n=0 ⇒ **整批重复**（用户截图）
-#   · 只"留到轮结束"（过头）⇒ 第二步拿台账按序号切 ⇒ **误切 = 丢内容**
-#   ⇒ 正确契约：台账**留到轮结束**（`final_result` 清），但**只有第一次调用消费它**。
-_fin_i = MAIN.find("finally:")
-_fin = MAIN[_fin_i:_fin_i + 1200]
-check("★ finally 里**不再**清台账（否则多步第二次数不到 ⇒ 整批重复）",
-      "_sent_ledger.pop" not in _fin)
-check("★ 轮结束统一清理（final_result 里调 _clear_round_state）",
+print("═══ 1) 台账的生命周期：**按步消费**（每次 send_xml_messages 之后清）")
+# ★★★ 契约已更正（第五次修复）——旧契约是错的，这里记下它错在哪：
+#   · 旧说："消费完就清 ⇒ 多步 loop 第二步 n=0 ⇒ 整批重复"
+#     → 不对。第二步的台账是**第二步自己抢发时**建的（见 `_emit_segment`），
+#       不会因为这里清了就变空；
+#   · 旧说："第二步拿台账按序号切 ⇒ 误切 = 丢内容"
+#     → 这才是真风险，但正确解法是**按步清**（第二步账上只有它自己的段），
+#       而**不是**"整轮只消费一次"——后者会让第二步**整段跳过剥离** ⇒ 重复。
+#   ⇒ 正确契约：每次调用对应一步，消费完立即清；跨轮残留由**轮次键**丢弃。
+_EI = MAIN.find("def _install_early_sent_strip")
+_EJ = MAIN.find("def page(", _EI)
+_BODY = MAIN[_EI:_EJ] if _EJ > _EI else MAIN[_EI:]
+_fin = _BODY[_BODY.find("finally:"):] if "finally:" in _BODY else ""
+check("★★ 台账在该函数体内**按步消费**（finally 里清）",
+      re.search(r"_sent_ledger\.pop\(sid_now, None\)", _fin) is not None)
+check("★★ 轮次键也在同一处清掉（不再是 finally 之后的死代码）",
+      re.search(r'_sent_ledger\.pop\(sid_now \+ "\\x00ev", None\)', _fin) is not None)
+check("★★★ 不存在「已消费 ⇒ 跳过剥离」的判定（本次 bug 的根因）",
+      re.search(r"_cons_ev\s*==\s*_ev", _BODY) is None)
+check("★★ 轮次 id 仅用于「台账是否属于本轮」",
+      "cur_ev" in _BODY and "_raw_ev" in _BODY)
+check("★ 轮结束仍统一清理（final_result 里调 _clear_round_state，作为兜底）",
       "_clear_round_state" in MAIN
       and re.search(r"async def observe_final[\s\S]{0,500}?_clear_round_state", MAIN) is not None)
-check("★ 轮结束清理**同时**清台账 / 消费标记 / 响应缓存",
-      all(k in MAIN[MAIN.find("def _clear_round_state"):MAIN.find("def _clear_round_state") + 800]
-          for k in ("_sent_ledger.pop", "_ledger_consumed.pop", "_resp_by_sid.pop")))
-# ★ 标记已从「纯布尔」升级为「时间戳」—— 因为钩子可能被跳过，
-#   纯布尔会永久卡在 True ⇒ 每轮都重复（线上"更明显了"的根因）。
-# ★ 契约再升级：从「时间戳」改为「**轮次 id**」——
-#   时间戳区分不了"同一轮的第二步"与"下一轮的第一步"（连续对话间隔远小于 5 分钟）
-#   ⇒ 曾导致"从第二轮起每轮都不剥离"= 每轮重复。
-check("★★ 有「只消费一次」的标记（按**轮次 id**，不依赖钩子清理）",
-      "_ledger_consumed" in MAIN and '"event_id", None) or sid_now' in MAIN)
-check("★★ 已消费时 n 归零（后续步原样交出）",
-      re.search(r"_cons_ev[\s\S]{0,200}?n = 0", MAIN) is not None
-      or re.search(r"ledger = \[\][\s\S]{0,120}?n = 0", MAIN) is not None)
+check("★ 轮结束清理仍覆盖台账与响应缓存",
+      all(k in MAIN[MAIN.find("def _clear_round_state"):MAIN.find("def _clear_round_state") + 900]
+          for k in ("_sent_ledger.pop", "_resp_by_sid.pop")))
 
 print()
 print("═══ 2) ★★★ 台账是权威来源（不是兜底），且拿不到标记时不该告警")

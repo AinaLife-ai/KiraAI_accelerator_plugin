@@ -167,10 +167,10 @@ class AcceleratorPlugin(BasePlugin):
         #   （响应标记丢失时的兜底；存原文而不是只存个数，
         #     这样兜底时也能按内容剥离，对文本被改写同样稳健）
         self._sent_ledger: dict[str, list] = {}
-        #: 台账被消费的**时间戳**（sid -> float）。
-        #: 用它区分"第一步"与"后续步"；带时间戳是为了**不依赖清理钩子**
-        #: （钩子可能被前面 stop() 的处理器跳过，纯布尔会永久卡在 True）。
-        self._ledger_consumed: dict[str, float] = {}
+        # （`_ledger_consumed` 已删除：它编码的是"已消费 ⇒ 跳过剥离"这个
+        #   错误设计，而它正是"还是经常重复发送"的根因 ——
+        #   每一次 send_xml_messages 对应多步 loop 的一步，台账按步消费即可，
+        #   不需要、也不能有"整轮只消费一次"的概念。）
         #: 台账最后一次活动时间（用于清理陈旧状态，双保险）
         self._ledger_ts: dict[str, float] = {}
         self._proxy_cache: dict[tuple, LLMClientProxy] = {}
@@ -359,16 +359,21 @@ class AcceleratorPlugin(BasePlugin):
     def _clear_round_state(self, sid):
         """一轮真正结束时清理"本轮状态"（台账 / 响应缓存）。
 
-        ★ 为什么必须等到**轮结束**而不是"每次 send_xml_messages 返回"：
-          框架的多步 agent loop 每一步都会调用 send_xml_messages，
-          若在每次调用后就清台账，**第二步就剥离不了**（n=0）
-          ⇒ 整批重复发送（用户线上现象）。
+        ⚠️ 这里**不是**剥离能否生效的前提 —— 台账在每次 `send_xml_messages`
+        返回时就已经按步消费掉了（见 `_install_early_sent_strip` 的 finally）。
+        本函数是**兜底**：一轮里若"抢发了却没走到发送"（事件被 stop），
+        残留会留到下一轮，靠这里 + 轮次键一起清掉。
+
+        （历史误区，留个记号免得再踩：曾以为"每次调用后就清台账 ⇒ 第二步
+          剥离不了 ⇒ 整批重复"，并据此把台账改成"留到轮结束才清"。
+          那个推断是错的 —— 第二步的台账是**第二步自己抢发时建的**，
+          不会因为这里清了就变空。真正造成重复的是随后据此加上的
+          "已消费 ⇒ 跳过剥离"，现已删除。）
         """
         try:
             if sid:
                 self._sent_ledger.pop(sid, None)
                 self._sent_ledger.pop(sid + "\x00ev", None)
-                self._ledger_consumed.pop(sid, None)
                 self._resp_by_sid.pop(sid, None)
         except Exception:  # noqa: BLE001
             logger.exception("[accel] 清理本轮发送状态失败（不影响发送）")
@@ -435,30 +440,36 @@ class AcceleratorPlugin(BasePlugin):
         ★ 为什么需要：`_clear_round_state` 挂在 `@on.final_result` 上，而事件处理器
           的循环是「按优先级从高到低、遇 `event.stop()` 就 break」
           ⇒ **排在后面的处理器可能不执行**。
-          一旦没执行，台账与"已消费"标记就会**残留到下一轮**
+          一旦没执行，台账就会**残留到下一轮**
           ⇒ 下一轮要么不剥离（**重复**）、要么误剥离（**丢内容**）。
         ⇒ 这里在**每轮请求前**兜一次底：凡是超过 10 分钟没动过的状态一律清掉。
           正常一轮远短于 10 分钟，所以不会误清正在用的状态。
         """
         try:
             now = time.time()
-            # ⚠️ 必须遍历**四个字典的键并集**，不能只看 _ledger_ts ——
-            #    否则某些键（比如只写过 `_ledger_consumed` 的）永远清不掉 ⇒
+            # ⚠️ 必须遍历**各字典的键并集**，不能只看 _ledger_ts ——
+            #    否则某些键（比如只出现在 _resp_by_sid 里的）永远清不掉 ⇒
             #    多群聊场景下这几个字典会**随会话数缓慢增长**（内存泄漏）。
             keys = set()
-            for d in (self._ledger_ts, self._sent_ledger, self._ledger_consumed,
-                      self._resp_by_sid):
+            for d in (self._ledger_ts, self._sent_ledger, self._resp_by_sid):
                 if isinstance(d, dict):
                     keys |= set(d.keys())
             for k in keys:
-                ts = float(self._ledger_ts.get(k, 0) or 0) if isinstance(self._ledger_ts, dict) else 0
+                # ★ 轮次键（`sid\x00ev`）**没有自己的时间戳** —— 它属于 sid。
+                #   旧写法直接 `_ledger_ts.get(k, 0)` ⇒ 轮次键永远取到 0
+                #   ⇒ 被当成"陈旧遗留"在**每次请求**都被清掉，
+                #   而同一个 sid 的 `_sent_ledger[sid]` 因为时间戳新鲜而保留
+                #   ⇒ 出现"台账在、轮次键没了"的**不对称**状态，
+                #     下一轮就可能拿上一轮的残留去剥离（配按序号回退 = 丢内容）。
+                #   所以轮次键一律**跟随所属 sid** 的时间戳。
+                _base = k[:-4] if k.endswith("\x00ev") else k
+                ts = float(self._ledger_ts.get(_base, 0) or 0) if isinstance(self._ledger_ts, dict) else 0
                 # 没有时间戳的（陈旧遗留）按「更早」处理 ⇒ 一并清掉
                 if ts and (now - ts) <= 600:
                     continue
                 self._ledger_ts.pop(k, None)
                 self._sent_ledger.pop(k, None)
                 self._sent_ledger.pop(k + "\x00ev", None)
-                self._ledger_consumed.pop(k, None)
                 self._resp_by_sid.pop(k, None)
         except Exception:  # noqa: BLE001
             logger.exception("[accel] 陈旧状态清理失败（不影响请求）")
@@ -1270,50 +1281,44 @@ class AcceleratorPlugin(BasePlugin):
                 from .early_sent import early_sent_segments, strip_early_sent_smart
                 segs = early_sent_segments(resp) if resp is not None else []
                 ledger = plugin._sent_ledger.get(sid_now, []) if sid_now else []
-                # ★★★ 「已经剥过一轮 = 台账已消费」的标记。
+                # ★★★ 【2026-09-27 第五次修复】按【步】消费台账 ——
+                #   彻底删掉"已消费 ⇒ 跳过剥离"这个判断（它才是重复的来源）。
                 #
-                #   为什么要它：框架的多步 agent loop（message_manager.py:793）
-                #   **每一步**都调一次 send_xml_messages，而抢发只发生在**第一步**
-                #   （后续步的文本是新生成的，从没发过）。
-                #   若第二步还拿台账去剥，就是**拿不相关的文本按序号切**
-                #   ⇒ 可能把该发的内容切掉 = **丢内容**（比重复更严重）。
+                #   前四版都建立在同一个**错误前提**上：
+                #       「抢发只发生在第一步，后续步的文本是新生成的、从没发过」
+                #   —— 这个前提是错的。流式引擎 patch 在
+                #   `ProviderManager.get_model_client` 上（见 `_install_stream_engine`），
+                #   **每一次 LLM 请求都会新建一个引擎**（`_make_engine`），
+                #   而 `emit` 回调就是 `_emit_segment`
+                #   ⇒ **多步 loop 的每一步都会抢发它自己那一段**。
                 #
-                #   所以：台账只在**第一次**调用时消费，之后置为已消费。
-                #   而"整批重复"的根因是台账**在第一次调用后就被 pop**
-                #   ⇒ 第一步之外的路径拿不到它。两者一起修才对：
-                #     · 台账活到轮结束（避免第二步 n=0 ⇒ 整批重复）
-                #     · 但只消费一次（避免第二步按序号误切 ⇒ 丢内容）
-                # ★★★ 消费标记带**时间戳**，而不是纯布尔。
+                #   于是旧逻辑必然出错（框架 `core/message_manager.py:766`）：
+                #       `event` 是**整个多步循环共用的同一个对象**
+                #       （`async for step in agent_executor.run(...)` 在循环外创建）
+                #       ⇒ 同轮各步的 `event_id` **完全相同**
+                #       ⇒ 第二步命中"已消费 ⇒ n=0 ⇒ 不剥离"
+                #       ⇒ 第二步**自己刚抢发的** C,D 被框架**再发一次**
+                #       ⇒ 用户看到 `C,D | C,D`（每一步各重复一次）。
                 #
-                #   为什么：这个标记的清除原来只挂在 `final_result` 上，
-                #   而事件处理器**可能不执行**（排在后面的处理器会被
-                #   前面调用 `event.stop()` 的处理器跳过）。
-                #   一旦没清掉，标记就**永久为真** ⇒ 之后每一轮都走
-                #   "已消费 ⇒ 不剥离" ⇒ **每轮都重复发送**（用户报"更明显了"）。
-                #   ⇒ 用时间戳做**自愈**：只在一轮可能的时间窗内认它，
-                #     超时自动失效，不依赖任何钩子一定被执行。
-                #      （正常一轮远短于 5 分钟；真的跑那么久，
-                #        宁可不剥离（最坏重复一次）也不能永久失效。）
-                # ★★★ 用**轮次标识**（event_id）判断"是否已消费"，而不是时间戳。
+                #   ⇒ 正确模型：**每一次 send_xml_messages 对应一步，
+                #     要剥的就是"上一次发送之后、这一步抢发的那些段"。**
+                #     而 `finally` 里每次调用后清台账，天然就是这个语义。
                 #
-                #   踩过的坑（用户："还是经常触发重复发送"）：
-                #   上一版用 `(time.time() - ts) < 300` 做时效 —— 也就是
-                #   **5 分钟内都算"已消费"**。但连续对话里每轮间隔通常远小于 5 分钟
-                #   ⇒ 标记一直有效 ⇒ **从第二轮起每轮都走"已消费 ⇒ 不剥离"**
-                #   ⇒ 每一轮都重复发送。时间戳根本区分不了"同一轮的第二步"
-                #   和"下一轮的第一步"。
-                #
-                #   ⇒ 正确做法：**按轮次 id 判断**。框架的 `event.event_id`
-                #     就是"唯一标识一个事件"的字段（见 message_utils.py 注释）。
-                #     同一轮的不同步：event_id 相同 ⇒ 已消费 ⇒ 不剥离；
-                #     下一轮：event_id 变了 ⇒ 视为**新轮** ⇒ 正常剥离。
-                #     ⇒ 既不依赖钩子一定执行，也不会跨轮误判。
-                _ev = getattr(event, "event_id", None) or sid_now
-                _cons_ev = plugin._ledger_consumed.get(sid_now) if sid_now else None
-                if _cons_ev is not None and _cons_ev == _ev:
-                    ledger = []
-                    segs = []
-                    n = 0
+                #   `event_id` 依然有用，但用途**完全不同**：不是"跳过剥离"，
+                #   而是**判断台账是否属于本轮** —— 万一上一轮"抢发了但没走到发送"
+                #   （事件被 stop），残留台账若参与本轮剥离就会**误剪 = 丢内容**。
+                cur_ev = getattr(event, "event_id", None)
+                if sid_now:
+                    _raw = plugin._sent_ledger.get(sid_now, [])
+                    _raw_ev = plugin._sent_ledger.get(sid_now + "\x00ev")
+                    # 轮次键缺失（老数据 / 异常）时不丢，宁可信其为本轮
+                    if _raw and (cur_ev is None or _raw_ev is None or _raw_ev == cur_ev):
+                        ledger = list(_raw)
+                    elif _raw:
+                        ledger = []
+                        logger.info(
+                            "[accel] 丢弃上一轮的残留台账 %d 段（轮次已变，不参与剥离）",
+                            len(_raw))
                 if ledger:
                     # 台账优先（更权威）
                     if n > 0 and n != len(ledger):
@@ -1324,11 +1329,6 @@ class AcceleratorPlugin(BasePlugin):
                         )
                     n = len(ledger)
                     segs = list(ledger)
-                    if sid_now:
-                        # 记**轮次 id**（不是 True、也不是时间戳）——
-                        # 下一轮 event_id 变了就会被视为"新轮"，见上
-                        plugin._ledger_consumed[sid_now] = (
-                            getattr(event, "event_id", None) or sid_now)
                 elif n > 0 and not segs:
                     # 台账没有、标记在但段原文不在（理论上不该发生）
                     # ⇒ 只能按序号剥离，留一条线索
@@ -1400,29 +1400,22 @@ class AcceleratorPlugin(BasePlugin):
                         resp.__dict__.pop("_accel_early_sent_count", None)
                     if sid_now:
                         plugin._resp_by_sid.pop(sid_now, None)
-                    # ★★★ **不要在这里清台账** —— 这里踩过一个真 bug：
-                    #
-                    #   框架的多步 agent loop（message_manager.py:793）是
-                    #       async for step in agent_executor.run(...):
-                    #           if not await send_llm_text(llm_resp): break
-                    #   也就是**每一步**都调一次 send_xml_messages。
-                    #   原来台账在这里 pop ⇒ 第二步时台账已空 ⇒ n=0 ⇒ 不剥离
-                    #   ⇒ 该步文本被**整段再发一遍** ⇒ 用户截图里"整批消息重复"。
-                    #
-                    #   台账的清理由 `final_result`（真正的一轮结束）负责 ——
-                    #   见 `_clear_round_state`。
-                        # ★★ 台账也要**消费完立即清**。
-                        #   原来它只等"下一轮开始"才清，于是同一轮内只要
-                        #   `send_xml_messages` 被调用第二次（多步 loop / 框架的其它
-                        #   调用点），就会出现：
-                        #     · 响应已 pop ⇒ n = 0
-                        #     · 台账仍在   ⇒ 走兜底 ⇒ **每次都告警**（用户实测"经常性 warning"）
-                        #   而且它会拿**本次的（可能完全不相关的）文本**去按内容剥离
-                        #   ⇒ **可能把不该切的内容切掉 = 丢内容**（比重复更严重）。
-                        #   清掉之后：第二次调用 n=0、不告警、原样交给框架（正确）；
-                        #   而"真抢发过但标记丢了"的场景台账仍在，兜底依旧生效。
+                        # ★★★ 台账**按步消费后立即清**（连同轮次键）。
+                        #
+                        #   这不是"过早清理" —— 它正是正确语义：
+                        #   每次 `send_xml_messages` 对应多步 loop 的**一步**，
+                        #   要剥的就是"上一次发送之后、这一步抢发的那几段"。
+                        #   清掉之后，下一步在 `_emit_segment` 里重新开账
+                        #   （它会带上新的轮次键）。
+                        #
+                        #   历史教训（这段注释以前自相矛盾，现在只留正确的那条）：
+                        #   这里一度被改成"留到轮结束才清"，理由是
+                        #   "第二步台账已空 ⇒ n=0 ⇒ 整批重复"。
+                        #   但那个推断是错的 —— 第二步的台账是**第二步自己抢发时建的**
+                        #   （见 `_emit_segment`），并不会因为这里清了就变空。
+                        #   真正造成重复的是后来据此加上的"已消费 ⇒ 跳过剥离"，已删除。
                         plugin._sent_ledger.pop(sid_now, None)
-                plugin._sent_ledger.pop(sid_now + "\x00ev", None)
+                        plugin._sent_ledger.pop(sid_now + "\x00ev", None)
             # ★★ 声明「有不可撤销的副作用」：这个函数的调用会**真的把消息发出去**。
             #   一旦它抛异常，`patches.guard` 默认会"回落原实现"——那等于**再发一遍**
             #   （用户线上看到的就是同一段回复重复出现）。
