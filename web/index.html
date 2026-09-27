@@ -56,14 +56,20 @@ body{
 /* ★★ 漂移会产生最大约 34(鼠标) + 30(漂移) ≈ 64px 的位移。
    原来余量只有 3%（视口宽 1600 时约 96px，够；但窄屏 380px 时只有 11px ⇒ **露黑底**）。
    改成 min(72px, 6%)：既能覆盖位移，又不会把图放大太多（放大太多会损失细节）。 */
-.wp-stage{position:absolute;inset:calc(-1 * max(72px, 6%));will-change:transform;backface-visibility:hidden}
+/* ★★★ 显式分层（原来的 `z-index:auto` 导致全按 DOM 顺序绘制，墨染被压在最底下）：
+     .wp-stage  = 1   两个壁纸层（谁上谁下仍由 DOM 顺序决定，与原来一致）
+     墨染 SVG   = 2   必须盖在**旧图之上**，否则它一个像素都看不见
+     .wp-rim    = 3   揭示光晕，在最上面
+   注意 fxBurn 会**临时**给两个 stage 写 inline z-index（纸=2 / 新图=1）
+   来换上下层，那套靠 inline 覆盖 CSS，且它的清理函数会还原 —— 互不干扰。 */
+.wp-stage{position:absolute;inset:calc(-1 * max(72px, 6%));z-index:1;will-change:transform;backface-visibility:hidden}
 .wp-img{position:absolute;inset:0;background-size:cover;background-position:center;
   opacity:0;will-change:transform,opacity,clip-path,filter}
 .wp-stage.on .wp-img{opacity:1}
 /* 条带特效的每一片（全尺寸 + 各自 clip-path 拼成整图） */
 .s-strip{position:absolute;inset:0;background-size:cover;background-position:center}
 /* 揭示边缘的光环：让"边界"看得见 —— 纯柔边遮罩看起来就只是淡入 */
-.wp-rim{position:absolute;inset:0;pointer-events:none;opacity:0}
+.wp-rim{position:absolute;inset:0;z-index:3;pointer-events:none;opacity:0}
 /* 待验证功能：置灰 + 徽标 */
 .sw.locked{opacity:.45;cursor:not-allowed;filter:grayscale(1)}
 .sw.locked input{cursor:not-allowed}
@@ -73,6 +79,23 @@ body{
 /* 遮罩：既保证 UI 可读，又让壁纸透出来（不是把图盖死） */
 /* ★ 遮罩（头号问题）：旧版最深到 .92，壁纸几乎被盖死 —— 特效再花也看不出来。
    新版整体减淡，只在顶部/底部保持深度保证文字可读，中间让画面透出来。 */
+/* ★★★ 层叠实况与**已定决策**（2026-09-27）：
+   `.wp-scrim` 在 DOM 里排在两个 `.wp-stage` **之前**，而大家都是
+   `position` 定位 + `z-index:auto` ⇒ 按 DOM 顺序绘制 ⇒ **遮罩画在壁纸层下面**，
+   被不透明的 `.wp-img` 整个盖住。也就是说：它上面的数值（含上面那条
+   "只在顶部/底部保持深度、中间让画面透出来"）**当前看不出效果** ——
+   平时看到的壁纸是**原图亮度**。
+
+   ⚠️ 这不一定是"写错"：`<div class="wallpaper">` 开头那条注释明确写了
+   "遮罩必须在两个图层下面"，理由是避免交接瞬间露出底色。
+   两种读法（刻意 / 疏漏）都不影响现状，**已与用户确认：保持现状不动** ——
+   因为它是**常驻**元素（JS 零引用、无开关、无动画），
+   改动等于**永久**改变壁纸观感，而不是只影响切图那一下。
+
+   若哪天想让它生效（会明显压暗壁纸，实测平均约 47%）：
+   只加 `z-index:4` 即可；此时**必须**保证墨染载体（z-index:2）仍在它之下，
+   否则墨渗揭开的那块不会被压暗 ⇒ 收尾亮度跳变。
+   —— 本次 PR 未做此改动。 */
 .wp-scrim{position:absolute;inset:0;
   background:
     linear-gradient(180deg,
@@ -1283,21 +1306,36 @@ html.jsfx .sp-rim{animation:none!important}
      里面 `<image width="100%" height="100%">` 的百分比是相对**这个 SVG 自身**解析的；
      SVG 若是 0×0，image 也就是 0×0 ⇒ **什么都画不出来** ⇒ 墨渗的"新图"根本不可见
      ⇒ 收尾时画面直接跳出来 = 用户说的"硬切"（这是第三个真 bug）。
-     只作载体、不接收指针事件；z-index 与壁纸层同层（在 .wp-scrim 之下）。 -->
+     只作载体、不接收指针事件。 -->
+<!-- ★★★ 层叠：墨染载体必须画在**两个壁纸层之上**（z-index:2），
+     且在 `.wp-rim`（z-index:3，揭示光晕）之下。
+
+     踩的坑（用户："墨染还是硬切、我怀疑完全没生效"）：
+       `.wallpaper` 里所有子元素都是 `position` 定位 + z-index auto/0，
+       于是**按 DOM 顺序绘制**。原来的顺序是
+           svg(0) → .wp-scrim → .wp-stage#wp-a → .wp-stage#wp-b → .wp-rim
+       ⇒ 墨染载体被排在**两个不透明壁纸层下面**，旧图（`.wp-stage.on`，
+         `.wp-img` opacity:1）整块把它盖住 ⇒ **一个像素都看不见**
+       ⇒ 观感就是"墨渗完全没生效，只有本体兜底淡入"= 看起来像硬切。
+       现在给三层显式 z-index：.wp-stage=1 / 墨染 SVG=2 / .wp-rim=3
+       ⇒ 墨渗真正盖在旧图上，由它一点一点把新图"渗"出来。
+
+     注意 `.wp-scrim` 仍然是 z-index:auto（在壁纸层之下）——
+       它的实际效果见 CSS 里的标注，本次**没有**动它，避免顺带改变画面亮度。 -->
 <!-- ★★★ 尺寸必须用**视口单位**，不能靠 100%。
      实测：`position:fixed;inset:0;width:100%;height:100%` 在这个结构里
      解析成 **0×0**（getBoundingClientRect 返回 w=0 h=0），
      而里面 `<image width="100%">` 的百分比是相对**这个 SVG 自身**解析的
      ⇒ 图片也是 0×0 ⇒ **墨渗什么都画不出来** ⇒ 收尾时新图突然出现 = 硬切。
      改用 100vw/100vh 后尺寸确定，image 才有实际大小。 -->
-<svg style="position:fixed;left:0;top:0;width:100vw;height:100vh;z-index:0;pointer-events:none"
+<svg style="position:fixed;left:0;top:0;width:100vw;height:100vh;z-index:2;pointer-events:none"
      aria-hidden="true">
   <!-- maskUnits must be userSpaceOnUse: the inner <rect width="100%"> is in
        userSpaceOnUse units, but the mask declared objectBoundingBox (where it
        should be 1). That mismatch makes the mask behave unpredictably - commonly
        fully transparent or fully opaque - so ink either shows nothing or snaps
        to full, which is what "hard cut" looks like. -->
-  <mask id="wpInkMask" maskUnits="userSpaceOnUse"
+  <mask id="wpInkMask" maskUnits="userSpaceOnUse" mask-type="alpha"
         x="0" y="0" width="100%" height="100%">
     <rect x="0" y="0" width="100%" height="100%"
           fill="#fff" filter="url(#wpInkF)"/>
@@ -1319,9 +1357,19 @@ html.jsfx .sp-rim{animation:none!important}
       <feFuncG type="linear" slope="2.6" intercept="-0.8"/>
       <feFuncB type="linear" slope="2.6" intercept="-0.8"/>
     </feComponentTransfer>
-    <!-- ★ 这一行的最后一个系数（bias）由 JS 逐帧改写 ⇒ 墨量增长 -->
+    <!-- ★★★ 这里**必须**让 RGB 输出**白色**（各行第 5 个系数 = 1），不能是 0。
+         这是"墨染完全没生效"的**决定性原因**：
+           `<mask>` 不写 mask-type 时默认 `mask-type:luminance`（CSS Masking 规范），
+           而 luminance 遮罩的值 = **亮度 × alpha**。
+           原来三行 RGB 全输出 0（纯黑）⇒ 亮度恒为 0 ⇒ 遮罩值 = 0 × alpha = **0**
+           ⇒ 整张 <image> 被**完全遮掉**，一个像素都画不出来。
+         改成输出白色后：亮度 = 1 ⇒ 遮罩值 = 1 × alpha = **alpha**，
+           与 `mask-type:alpha` 的结果**完全一致** ⇒ 无论浏览器按 luminance
+           还是按 alpha 解释，结果都对（不依赖 mask-type 的支持情况）。
+         注意：只改 RGB 的**偏置**，不改 0.55/0.35/0.10 那三个权重 ——
+           阈值曲线（以及下面注释里那张覆盖率对照表）保持原样。 -->
     <feColorMatrix id="wpInkCM" in="nc" type="matrix"
-      values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0.55 0.35 0.10 0 -0.45"
+      values="0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  0.55 0.35 0.10 0 -0.45"
       result="a"/>
     <feComponentTransfer in="a">
       <feFuncA type="discrete" tableValues="0 0.55 1"/>
@@ -2978,12 +3026,24 @@ function fxInk(to, from, rim){
   wpLastDur = dur;
   if (!cm || !img) return;                 // 拿不到就退化为普通显示（不崩）
 
+  /* ★ 清掉两个壁纸层上**可能残留**的 inline z-index。
+     fxBurn 会临时写（纸=2 / 新图=1）并在清理函数里还原；万一下一次切换
+     赶在它还原之前开始，残留的 2 就能让那一层跑到墨染（z-index:2）**之上**
+     ⇒ 墨染又被盖住、再次"没生效"。这里先清一遍，保证墨染恒在两层之上。 */
+  [to, from].forEach(function(el){
+    const st = el && el.parentElement;
+    if (st && st.style) st.style.zIndex = "";
+  });
+
   if (n1) n1.setAttribute("seed", String(1 + Math.floor(Math.random() * 999)));
   if (n2) n2.setAttribute("seed", String(1 + Math.floor(Math.random() * 999)));
 
   const setBias = (b) => {
+    /* ★ RGB 三行必须保持"输出白色"（偏置 1）——和 SVG 里那份静态 values 一致。
+       若这里写成 0，则**每一帧都会把遮罩打回全黑**（luminance 遮罩值 = 亮度×alpha = 0）
+       ⇒ 墨染依旧什么都画不出来。详见 #wpInkCM 处的注释。 */
     cm.setAttribute("values",
-      "0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0.55 0.35 0.10 0 " + b.toFixed(3));
+      "0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  0.55 0.35 0.10 0 " + b.toFixed(3));
   };
 
   // 新层本体隐藏 —— 由 #wpInkImg（带遮罩）负责显示
@@ -2995,8 +3055,16 @@ function fxInk(to, from, rim){
        · SVG 异常 ⇒ 仍是一次平滑淡入，**绝不会硬切**
      （这正是"不能让单一脆弱机制独自决定"的做法。） */
   to.style.opacity = "0";
-  anim(to, [{opacity:0},{opacity:1}],
-       {duration: Math.round(dur * 0.9), easing:"cubic-bezier(.4,0,.5,1)"});
+  /* ★★★ 兜底淡入必须**推迟到 70% 之后**，否则会把墨渗整个洗掉。
+     墨渗的载体（#wpInkImg）画在 `to` **之上**，而还没渗到的区域透出的是**旧图**。
+     原来 `to` 从 0 就开始淡入（到 90% 结束）⇒ 中段时**整屏**已经混进约 50% 的新图，
+     连墨还没渗到的地方也一起变亮 ⇒ 墨路的形状被冲淡
+     ⇒ 观感正是"看不出墨渗，只像一次普通淡入 / 硬切"。
+     推迟到 70% 起：按上面的覆盖率曲线，70% 时墨已铺满 **99%**
+     ⇒ 淡入几乎完全被墨盖住（墨渗正常时等于没发生）；
+     而如果某个环境墨渗渲染失败，它仍然后半段平滑淡入 —— **绝不硬切**。 */
+  anim(to, [{opacity:0, offset:0},{opacity:0, offset:.70},{opacity:1, offset:1}],
+       {duration: dur, easing:"linear"});
   const url = (to.style.backgroundImage.match(/url\("?([^")]+)"?\)/) || [])[1] || "";
   if (url){
     img.setAttribute("href", url);

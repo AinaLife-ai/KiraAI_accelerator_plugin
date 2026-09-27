@@ -1107,14 +1107,55 @@ _svgtag = HTML[_svg:HTML.index('>', _svg) + 1]
 check("★ SVG 载体是全屏的（视口单位）",
       "width:100vw" in _svgtag and "height:100vh" in _svgtag)
 check("★ 且不接收指针事件", "pointer-events:none" in _svgtag)
-# ③ fxInk 必须**始终**淡入新图（SVG 万一没渲染也不会硬切）
+# ③ fxInk 必须**始终**保留淡入兜底（SVG 万一没渲染也不会硬切），
+#    ★★★ 但必须**推迟** —— 否则会把墨渗洗掉（这是 2026-09-27 修掉的第三个真 bug：
+#    兜底淡入原本从 0 就走，中段整屏已混进约 50% 新图 ⇒ 连墨没渗到的地方也一起变亮
+#    ⇒ 墨路形状被冲淡 ⇒ 用户看到的正是"看不出墨渗 / 像硬切"）。
 _ink = js[js.index("function fxInk"):js.index("\nfunction ", js.index("function fxInk") + 12)]
-check("★★ fxInk 里新图始终淡入（不能只依赖 SVG 渲染成功）",
-      "anim(to, [{opacity:0},{opacity:1}]" in _ink)
+check("★★ fxInk 里新图仍有淡入兜底（不能只依赖 SVG 渲染成功）",
+      re.search(r"anim\(to, \[\{opacity:0[\s\S]{0,220}?opacity:1", _ink) is not None)
+_delay = re.search(r"anim\(to, \[([^\]]*)\],\s*\{duration: dur, easing:\"linear\"\}\)", _ink)
+check("★★★ 兜底淡入必须推迟到 >=60% 才开始（否则整屏提前变亮 ⇒ 墨路被冲淡）",
+      _delay is not None and re.search(r"offset:\s*\.(6|7|8|9)", _delay.group(1)) is not None,
+      "关键帧: " + (_delay.group(1).strip() if _delay else "未匹配"))
 check("★ fxInk 仍然把图交给 SVG <image>（墨渗本体）",
       'img.setAttribute("href", url)' in _ink and 'mask="url(#wpInkMask)"' in HTML)
 check("★ 拿不到 SVG 元素时不会卡住（有早退）",
       "if (!cm || !img) return;" in _ink)
+
+# ④ ★★★ 2026-09-27：墨染"完全没生效"的两个决定性原因（此前 4 个版本都没查出来）
+#    ① `<mask>` 不写 mask-type 时默认 **mask-type:luminance**，
+#       而 luminance 遮罩值 = **亮度 × alpha**。
+#       滤镜的 feColorMatrix 若把 RGB 输出成 0（纯黑），亮度恒为 0
+#       ⇒ 遮罩值 = 0 × alpha = 0 ⇒ 整张 <image> 被**完全遮掉**，
+#         一个像素都画不出来 —— 这就是"完全没生效"。
+#       ⇒ 必须让 RGB 输出**白色**（各行第 5 个系数=1）：亮度=1 ⇒ 遮罩值=alpha，
+#         于是 luminance 与 alpha 两种解释**结果一致**，不依赖 mask-type 支持情况。
+_cm = re.search(r'<feColorMatrix id="wpInkCM"[^>]*values="([^"]+)"', HTML)
+_cmv = _cm.group(1).split() if _cm else []
+check("★★★ feColorMatrix 的 RGB 必须输出白色（否则 luminance 遮罩恒为 0 ⇒ 什么都画不出）",
+      _cm is not None and len(_cmv) >= 15
+      and _cmv[4] == "1" and _cmv[9] == "1" and _cmv[14] == "1",
+      "values=" + (_cm.group(1) if _cm else "未找到"))
+check("★★★ 逐帧改写的 setBias 也必须输出白色（否则每一帧都把遮罩打回全黑）",
+      re.search(r'cm\.setAttribute\("values",[\s\S]{0,120}?"0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  ', js) is not None)
+check("★★ mask 显式声明 mask-type（与白色输出双保险，任一写法都能正确渲染）",
+      'mask-type="alpha"' in HTML)
+#    ② 层叠：墨染载体必须画在**两个壁纸层之上**。
+#       `.wallpaper` 的子元素全是定位 + z-index auto ⇒ **按 DOM 顺序绘制**；
+#       SVG 原来排在两个 `.wp-stage` 之前 ⇒ 被不透明的旧图整块盖住
+#       ⇒ 即使遮罩修好了也依然"没生效"。
+_svgz = re.search(r'<svg style="[^"]*z-index:(\d+)', HTML)
+_stz  = re.search(r"\.wp-stage\{[^}]*?z-index:(\d+)", HTML)
+_rimz = re.search(r"\.wp-rim\{[^}]*?z-index:(\d+)", HTML)
+check("★★★ 墨染载体 z-index 必须**大于**壁纸层（否则被旧图盖住 ⇒ 完全没生效）",
+      _svgz is not None and _stz is not None and int(_svgz.group(1)) > int(_stz.group(1)),
+      f"载体={_svgz.group(1) if _svgz else '?'} 壁纸层={_stz.group(1) if _stz else '?'}")
+check("★★ 揭示光环在最上层（rim > 墨染载体）",
+      _rimz is not None and _svgz is not None and int(_rimz.group(1)) > int(_svgz.group(1)),
+      f"rim={_rimz.group(1) if _rimz else '?'} 载体={_svgz.group(1) if _svgz else '?'}")
+check("★★ fxInk 会清掉壁纸层上残留的 inline z-index（防 burn 的层级把墨染压下去）",
+      re.search(r"st\.style\.zIndex = \"\";", _ink) is not None)
 
 print()
 print("═══ 39) ★★★ 点标题不退出欣赏模式 + 心电图用真实 SVG")
@@ -1222,19 +1263,30 @@ check("★★ 噪声先拉对比（feFuncR/G/B slope）再阈值化",
       re.search(r'<feComponentTransfer in="n" result="nc">[\s\S]{0,300}slope="2\.6"', HTML) is not None)
 check("★ feColorMatrix 用的是拉过对比的 nc",
       'id="wpInkCM" in="nc"' in HTML)
-# ③ 新图始终淡入（SVG 万一失效也不硬切）
-check("★★ fxInk 里新图始终淡入（不依赖 SVG 是否渲染成功）",
-      "anim(to, [{opacity:0},{opacity:1}]" in _ink2)
+# ③ 新图仍有淡入兜底（SVG 万一失效也不硬切）——但必须**推迟**，别洗掉墨渗
+check("★★ fxInk 里新图仍有淡入兜底（不依赖 SVG 是否渲染成功）",
+      re.search(r"anim\(to, \[\{opacity:0[\s\S]{0,220}?opacity:1", _ink2) is not None)
 # ④ 覆盖率曲线：验证 50% 进度时**不该**超过 70%（否则"散太快"）
 def _frac(bias, mu0=0.5, sd=0.15, slope=2.6):
     mu = mu0 * slope - (1 - mu0) * (slope - 1) + bias
     import math as _m
     z = ((1.0 / 3.0) - mu) / (sd * slope)
     return 0.5 * (1 - _m.erf(z / _m.sqrt(2)))
-_b0, _b1 = -0.58, 0.30
-_mid = _frac(_b0 + (_b1 - _b0) * 0.5) * 100
+# ★★★ 必须用**代码里真实的值和曲线形状**，绝不能在测试里写死：
+#   旧版这里硬编码 `-0.58, 0.30` 并按**线性 p** 计算 ⇒ 代码改成
+#   BIAS1=1.35 + `p^2.5` 之后，这条判据仍在验证一条**已经不存在的曲线**（假绿）。
+#   同型问题在本项目已踩过多次（"判据写死旧实现值"），所以这里改成动态读。
+_b0, _b1 = B0, B1                      # ← 来自前面从源码解析出的 BIAS0/BIAS1
+_EXP = 2.5
+_mexp = re.search(r"Math\.pow\(p,\s*([\d.]+)\)", js)
+if _mexp:
+    _EXP = float(_mexp.group(1))
+_mid = _frac(_b0 + (_b1 - _b0) * (0.5 ** _EXP)) * 100
+_end = _frac(_b1) * 100
 check("★★ 50% 进度时覆盖率 <=70%（墨是慢慢渗而不是一下散完）",
-      _mid <= 70, f"实际 {_mid:.1f}%")
+      _mid <= 70, f"实际 {_mid:.1f}%（BIAS0={_b0} BIAS1={_b1} 指数={_EXP}）")
+check("★★★ 画完时覆盖率必须 >=99%（否则最后一块永远渗不到 ⇒ 只能靠新图补 = 硬切）",
+      _end >= 99, f"实际 {_end:.1f}%")
 
 print("=" * 60)
 print(f"通过 {len(PASS)}  失败 {len(FAIL)}")

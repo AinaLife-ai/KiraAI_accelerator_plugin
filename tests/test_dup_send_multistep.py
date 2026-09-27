@@ -1,18 +1,37 @@
-"""多步 agent loop 里的重复发送 —— 本次用户报的现场。
+"""多步 agent loop：**每一步都会各自抢发** —— 这是本套件现在的正确模型。
 
-框架的调用形状（message_manager.py:793）：
-    async for step in agent_executor.run(agent_ctx, max_steps=max_steps):
-        ...
-        if not await send_llm_text(llm_resp):   # ← **每一步**都调 send_xml_messages
-            break
+## ⚠️ 这个文件的前一版是有害的，它锁住了一个错误的契约
 
-也就是说 `send_xml_messages` 在一轮里可能被调用多次（每步一次）。
-而我们在它的 `finally` 里 `pop` 掉台账 ⇒ **第二次调用时 n=0 ⇒ 不剥离
-⇒ 该步的文本被整段重发**。
+旧版假设：
 
-这个套件就是为此写的：**同 sid 连续两次调用**，第二次必须**不重复**。
+    第二步的文本**与第一步相同**（"框架重放 / 模型复读"）
+    ⇒ 据此断言"台账必须活到轮结束、且只消费一次"
+
+**这个前提是错的**，它让真 bug 连续躲过 4 个版本（1.0.8 → 1.0.12）。
+事实（都有代码取证）：
+
+  ① `_install_stream_engine` patch 的是 `ProviderManager.get_model_client`
+     ⇒ **每一次 LLM 请求**都会新建引擎（`_make_engine`），
+     `emit` 回调 = `_emit_segment`
+     ⇒ **多步 loop 的每一步都会抢发它自己那一段**；
+  ② 框架 `core/message_manager.py:766`：
+     `async for step in agent_executor.run(agent_ctx, ...)` 里的 `event`
+     是**循环外**创建的**同一个对象**
+     ⇒ 同轮各步的 `event_id` **完全相同**；
+  ③ 于是"已消费（轮次 id 相同）⇒ n=0 ⇒ 不剥离"会命中**第二步**
+     ⇒ 第二步自己刚抢发的 C,D 被框架**再发一次** ⇒ 用户看到 `C,D | C,D`。
+
+## 现在锁住的契约
+
+  · 每次 `send_xml_messages` 对应一步，**按步消费**台账（调用后清）；
+  · **不存在**"同轮第二步就跳过剥离"的任何判断；
+  · 轮次 id 只用来判断"台账是否属于本轮"（丢弃跨轮残留，防误剪丢内容）。
+
+行为层的收口测试在 `tests/test_dup_per_step.py`（用**真实** patch 层 +
+真实 `_emit_segment` 跑两步，并做反向验证）。本文件负责"剥离语义 + 静态契约"。
 """
 import pathlib
+import re
 import sys
 from pathlib import Path
 
@@ -33,56 +52,51 @@ def check(name, cond, detail=""):
 
 
 ES = _env.load("early_sent")
+MAIN = (ROOT / "main.py").read_text(encoding="utf-8")
 
-print("═══ 多步循环：同 sid 连续两次调用 send_xml_messages ═══")
-
-# 第 1 步：抢发了 2 段，框架拿到的仍是完整文本
+print("═══ 1) 剥离语义：本步的段必须能剥干净")
 segs = ["<msg>你好呀</msg>", "<msg>在的</msg>"]
 full = "".join(segs)
-
-n1 = 2
-rest1 = ES.strip_early_sent_smart(full, n1, segs)
-check("步1：剥离后没有剩余（两段都已抢发）",
+rest1 = ES.strip_early_sent_smart(full, len(segs), segs)
+check("本步抢发的段 ⇒ 剥离后没有剩余",
       rest1 is None or rest1.strip() in ("", "<msg/>"), repr(rest1))
 
-# 第 2 步：框架又来一次，文本是**本步新生成的**
 step2 = "<msg>那我先看看</msg>"
-# ⚠️ 若台账/标记已被清（n=0），剥离不发生 ⇒ 这段原样发出去（这是**对的**，
-#    因为它确实没发过）。真正的问题在于：**如果第二步的文本与第一步相同**
-#    （模型复读 / 框架重放），n=0 就会把它**再发一遍**。
-rest2_when_n0 = ES.strip_early_sent_smart(step2, 0, [])
-check("步2：n=0 时原样交出（新的内容就该发）",
-      rest2_when_n0 == step2, repr(rest2_when_n0))
+check("没有抢发过的内容 ⇒ 原样交出（新的内容就该发）",
+      ES.strip_early_sent_smart(step2, 0, []) == step2)
 
-# ★ 关键场景：第二步的文本**与已抢发的相同**（框架重放 / 模型复读）
-#   此时若 n=0 ⇒ 会**再发一遍** = 用户看到的"整批重复"
-replay = full
-rest_replay_n0 = ES.strip_early_sent_smart(replay, 0, [])
-check("★★ n=0 且文本与已抢发相同 ⇒ 会重复（这就是线上现象）",
-      ES._norm_seg(rest_replay_n0) == ES._norm_seg(replay),
-      "⇒ 说明台账必须活到该轮结束，不能在第一次调用后就清")
+print()
+print("═══ 2) 两步各自抢发：各剥各的，互不影响")
+step2_segs = ["<msg>第三步</msg>", "<msg>第四步</msg>"]
+r = ES.strip_early_sent_smart("".join(step2_segs), len(step2_segs), step2_segs)
+check("第二步用它**自己**的台账，同样剥干净",
+      r is None or r.strip() in ("", "<msg/>"), repr(r))
 
-# ✅ 正确做法：台账要**保留到该轮结束**，第二次仍能剥离
-rest_replay_ok = ES.strip_early_sent_smart(replay, n1, segs)
-check("★★★ 台账保留时：同样文本第二次也能被剥掉 ⇒ 不重复",
-      rest_replay_ok is None or rest_replay_ok.strip() in ("", "<msg/>"), repr(rest_replay_ok))
+print()
+print("═══ 3) 静态核查（窗口按**函数体**取 —— 旧版截 900 字符，够不到就假绿）")
+_EI = MAIN.find("def _install_early_sent_strip")
+_EJ = MAIN.find("def page(", _EI)
+BODY = MAIN[_EI:_EJ] if _EJ > _EI else MAIN[_EI:]
+check("★ 定位到了 send_xml_messages 的接管函数（不是别的 finally）",
+      "send_xml_messages" in BODY and len(BODY) > 3000, f"函数体 {len(BODY)} 字符")
+check("★★★ 不存在「已消费 ⇒ 跳过剥离」的判定（整批/逐步重复的根因）",
+      re.search(r"_cons_ev\s*==\s*_ev", BODY) is None)
+check("★★ 台账在 finally 里按步消费",
+      re.search(r"finally:[\s\S]{0,2000}?_sent_ledger\.pop\(sid_now, None\)", BODY) is not None)
+check("★ 轮次键在同一处清掉（消除 finally 之后的死代码）",
+      re.search(r'_sent_ledger\.pop\(sid_now \+ "\\x00ev", None\)', BODY) is not None)
+check("★★ 轮次 id 仅用于「台账是否属于本轮」", "cur_ev" in BODY and "_raw_ev" in BODY)
+check("★ 轮结束仍有兜底清理", "_clear_round_state" in MAIN)
+
+print()
+print("═══ 4) 反向自检：本文件必须真的能发现旧实现")
+# 把旧版的判定"注入"一段文本，检查判据会报红 —— 证明判据不是恒真
+_FAKE = BODY + "\n_cons_ev = plugin._ledger_consumed.get(sid_now)\nif _cons_ev == _ev:\n    n = 0\n"
+check("★ 若旧判定复活，本套件会报红（判据非恒真）",
+      re.search(r"_cons_ev\s*==\s*_ev", _FAKE) is not None)
 
 print()
 if BAD:
     print(f"❌ {len(BAD)} 项未通过: {BAD}")
     sys.exit(1)
-print(f"🎉 全部通过（{len(OK)} 项）—— 多步循环下不会整批重复")
-
-
-print()
-print("═══ 静态核查：清理时机是否修对了 ═══")
-import re as _re
-_main = (pathlib.Path(ROOT) / "main.py").read_text(encoding="utf-8")
-_i = _main.find("finally:")
-_fin = _main[_i:_i + 900]
-check("★★★ finally 里不再清台账（整批重复的根因）",
-      "_sent_ledger.pop" not in _fin,
-      "仍有 pop" if "_sent_ledger.pop" in _fin else "已移走")
-check("★ 轮结束有统一清理 _clear_round_state", "_clear_round_state" in _main)
-check("★ final_result 里调用清理（不受 observe 开关影响）",
-      _re.search(r"async def observe_final[\s\S]{0,500}?_clear_round_state", _main) is not None)
+print(f"🎉 全部通过（{len(OK)} 项）—— 多步每一步各自抢发，剥离互不干扰")
