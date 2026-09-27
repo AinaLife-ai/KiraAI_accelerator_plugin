@@ -2948,6 +2948,9 @@ function fxBurn(to, from, rim, id, fromId){
              glow/core/char 挂在 stage 上、是 from 的**兄弟节点**，不会受影响。） */
       try { wpCancelAnimations(from); } catch (e) { /* 老 WebView */ }
       from.style.opacity = "0";
+      /* ★ visibility 是**保险**：万一某条 fill:forwards 的动画把 opacity 顶回去
+         （Web Animations 优先级高于行内样式），它仍能保证旧图不可见。 */
+      try { from.style.visibility = "hidden"; } catch (e) {}
       applyMask("none");
       anim(from, [{opacity:0},{opacity:0}], {duration: dur * 0.18, easing:"linear"});
       anim(glow, [{opacity:.85},{opacity:0}], {duration: dur * 0.18, easing:"linear"});
@@ -3174,7 +3177,18 @@ function fxInk(to, from, rim){
          所以"铺满"与"有过程"必须靠曲线形状同时满足。） */
     setBias(BIAS0 + (BIAS1 - BIAS0) * Math.pow(p, 2.5));
     if (p < 1) raf = requestAnimationFrame(step);
-    else img.style.display = "none";
+    else {
+      /* ★★★★ 顺序：**先藏旧层，再撤墨渗图**（上一版是反的）。
+         墨染的设计是"旧图保持可见、被墨一点点吃掉"，
+         所以整套动画期间旧层是**不透明的**，全靠墨渗图盖在最上面。
+         ⇒ 原来直接把墨渗图 display:none ⇒ 露出来的就是**旧图**
+           （而且还带着下面给旧层加的 scale(1.03) 推近）
+           ⇒ 观感正是"切到新图后旧图又闪一下 / 新图抖一下再晃"。
+         先藏旧层 ⇒ 撤掉墨渗图时露出来的是**新图**，而且它与墨渗图的几何
+         完全一致（载体盒已对齐）⇒ 无缝。 */
+      try { from.style.opacity = "0"; from.style.visibility = "hidden"; } catch (e) {}
+      img.style.display = "none";
+    }
   };
   raf = requestAnimationFrame(step);
 
@@ -3299,6 +3313,23 @@ function wpSettle(id, fromId){
   /* ★★ 清理（移除条带）单独包一层：它一旦抛异常，**绝不能连累后面的状态更新**。
      否则 wpCur 不推进、锁不释放 ⇒ 轮换静默死掉 —— 而失败的只是"移除几个
      已经看不见的条带元素"这种无关紧要的事。状态正确性优先于清理干净。 */
+  /* ★★★★ 2026-09-27（第三次修"收尾闪旧图"）：**必须先把旧层藏掉，再跑 wpCleanup()**。
+     为什么：`wpCleanup()` 会**撤掉视觉载体** ——
+       · 墨染：把承载新图的 SVG `<image>` 设成 display:none
+       · 燃纸/条带：移除那些描边/条带元素
+     而墨染的旧层是**设计上全程可见**的（"旧图保持可见，被墨吃掉"），
+     燃纸的旧层在 `applyMask("none")` 之后也会**恢复成完全不透明**。
+     ⇒ 载体一撤、旧层又还在 ⇒ 露出来的就是**旧图**
+       ⇒ 观感"切到新图后旧图又闪一下 / 最后停在旧图，然后硬切到新图"。
+     ⇒ 顺序改成：**先藏旧层**（opacity:0 + visibility:hidden 双保险），
+       **再**撤载体 ⇒ 任何时刻露出来的都只会是**新图**。
+     用 visibility 一起写是防"某个动画用 fill:forwards 把 opacity 顶回去"
+     （Web Animations 的优先级高于行内样式）；两者都会被 wpNormalize 清掉，无副作用。 */
+  try {
+    const _st0 = wpStage(fromId), _im0 = wpImg(fromId);
+    if (_im0){ _im0.style.opacity = "0"; _im0.style.visibility = "hidden"; }
+    if (_st0){ _st0.classList.remove("on"); }
+  } catch (e) { /* 无所谓 */ }
   try {
     if (wpCleanup){ wpCleanup(); }
   } catch (e) {
@@ -3319,7 +3350,6 @@ function wpSettle(id, fromId){
      只对**旧层**写 opacity:0 是安全的：
        紧接着 `wpNormalize(fromId)` 会清掉这行 inline，
        而那时 `.on` 已摘掉 ⇒ CSS 本来就是 opacity:0 ⇒ 不会像"写成 1"那样永久可见。 */
-  try { const _imFrom = wpImg(fromId); if (_imFrom) _imFrom.style.opacity = "0"; } catch (e) {}
   wpStage(fromId).classList.remove("on");
   try { wpNormalize(fromId); } catch (e) { console.warn("[accel] 归一化旧层失败", e); }
   /* ★ 新层同理：**先加 .on** 再归一化，避免"清掉 opacity 但 .on 还没加"

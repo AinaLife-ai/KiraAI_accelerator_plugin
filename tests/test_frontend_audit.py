@@ -1239,8 +1239,21 @@ check("★★ 预加载必须有超时兜底（不能因为一张图没加载完
 # ⚠️ wpNormalize 在文件里**排在 wpSettle 之前**，不能拿它当右边界（会把切片取空 ⇒ 假绿）
 _wp_s = js.index("function wpSettle")
 _settle = js[_wp_s: _wp_s + 3000]
-check("★★★ 收尾第一步就确定性隐藏旧层（inline opacity:0）",
-      '_imFrom.style.opacity = "0"' in _settle)
+# ★★★★ 2026-09-27：顺序必须是 **先藏旧层、再跑 wpCleanup()**。
+#   wpCleanup 会撤掉"视觉载体"（墨染的 SVG 图 / 燃纸的描边），
+#   而旧层在墨染里**设计上全程可见**、在燃纸里 `applyMask("none")` 后会恢复不透明
+#   ⇒ 载体一撤、旧层还在 ⇒ 露出**旧图**（用户："最后停在旧图，再硬切到新图"）。
+check("★★★ 收尾必须**先藏旧层**再跑 wpCleanup（否则撤载体时露出旧图）",
+      _settle.find('_im0.style.opacity = "0"') >= 0
+      and _settle.find('_im0.style.opacity = "0"') < _settle.find("wpCleanup()"))
+check("★★ 藏旧层要 opacity:0 + visibility:hidden 双保险（防动画把 opacity 顶回去）",
+      '_im0.style.visibility = "hidden"' in _settle)
+check("★★★ 墨染收尾：先藏旧层、再撤墨渗图（顺序反了就会闪旧图）",
+      re.search(r'from\.style\.opacity = "0"[\s\S]{0,80}?img\.style\.display = "none"',
+                _ink) is not None)
+check("★★ 燃纸收尾：撤遮罩前旧图必须已不可见（opacity + visibility）",
+      re.search(r'from\.style\.opacity = "0"[\s\S]{0,160}?visibility = "hidden"[\s\S]{0,80}?applyMask\("none"\)',
+                _burn) is not None)
 check("★★ 且仍保持正确顺序：先摘 .on 再归一化（否则又会旧图闪现）",
       _settle.find('classList.remove("on")') >= 0
       and _settle.find("wpNormalize(") > _settle.find('classList.remove("on")'))
