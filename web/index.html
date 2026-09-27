@@ -2458,6 +2458,15 @@ function applySway(){
     const _isv = _ii && _ii.closest ? _ii.closest("svg") : null;
     if (_isv) _isv.style.transform = v;
   } catch (e) { /* 无所谓 */ }
+
+  /* ★★★ 2026-09-28：**燃纸的载层也要走同一份位移**。用户观察："旧图被切换前出现墨染同款停顿、
+     影响晃动" —— 那正是载层与图层位移不同步（墨染载层当初的原因）。燃纸载层同为图层的兄弟节点，
+     拿不到 applySway 的位移 ⇒ 交接瞬间错开几像素。这里一并带上，交接前后完全一致。 */
+  try {
+    const _bi = document.getElementById("wpBurnImg");
+    const _bsv = _bi && _bi.closest ? _bi.closest("svg") : null;
+    if (_bsv) _bsv.style.transform = v;
+  } catch (e) { /* 无所谓 */ }
 }
 
 let wpT0 = performance.now();
