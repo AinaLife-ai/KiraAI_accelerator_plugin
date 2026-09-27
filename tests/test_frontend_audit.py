@@ -1143,9 +1143,11 @@ check("★★★ 兜底淡入必须推迟到 >=60% 才开始（否则整屏提�
       "关键帧: " + (_delay.group(1).strip() if _delay else "未匹配"))
 check("★★★ 墨渗载体用 mask 引用它自己的滤镜（原生 SVG mask 仍在）",
       'mask="url(#wpInkMask)"' in HTML)
-check("★★★ 墨渗载体必须用**与 .wp-img 相同的渲染机制**（background-size:cover），\n      not SVG <image> —— 两套渲染会在交回时位移",
-      'id="wpInkImg"' in HTML and "background-size:cover" in HTML
-      and "<image id=\"wpInkImg\"" not in HTML)
+check("★★★ 载层必须用 SVG 原生 <image slice>（= cover 等价），且外层 SVG 坐标 1:1",
+      '<image id="wpInkImg"' in HTML and 'preserveAspectRatio="xMidYMid slice"' in HTML
+      and 'preserveAspectRatio="none"' in HTML)
+check("★★ 载层不得再用 foreignObject 元素（HTML-in-SVG 会被缩放 => 位移 + 模糊）",
+      "<foreignObject" not in HTML)
 
 check("★ 拿不到 SVG 元素时不会卡住（有早退）",
       "if (!cm || !img) return;" in _ink)

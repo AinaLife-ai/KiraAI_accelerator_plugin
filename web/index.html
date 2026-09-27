@@ -1405,15 +1405,9 @@ html.jsfx .sp-rim{animation:none!important}
        为什么不用 HTML 元素的 CSS `mask-image: url(#…)`：
        Chromium 对"把 SVG mask 当 CSS mask 用在 HTML 元素上"支持不完整
        ⇒ 遮罩没生效 ⇒ 新图**瞬间全亮**（用户实测："跟瞬间出现一样"）。 -->
-  <foreignObject x="0" y="0" width="100%" height="100%" mask="url(#wpInkMask)">
-      <!-- ★★★ 这里**故意**不用 <image>：<image> 的 slice 与 .wp-img 的
-           background-size:cover 是**两套渲染**，盒/取整上任何差异都会在
-           "交回 .wp-img"的那一刻表现为位移（用户："新图像往右下平移一下"）。
-           改用一个普通 <div> 并**照抄 .wp-img 的渲染方式**
-           ⇒ 两套渲染**机制相同** ⇒ 构造上无缝。 -->
-      <div xmlns="http://www.w3.org/1999/xhtml" id="wpInkImg"
-           style="width:100%;height:100%;background-size:cover;background-position:center"></div>
-    </foreignObject>
+  <image id="wpInkImg" x="0" y="0" width="100%" height="100%"
+         preserveAspectRatio="xMidYMid slice"
+         mask="url(#wpInkMask)" style="display:none"/>
 </svg>
   <div class="wp-scrim"></div>
   <div class="wp-stage" id="wp-a"><div class="wp-img"></div></div>
@@ -2851,13 +2845,18 @@ function fxBurn(to, from, rim, id, fromId){
        {duration: dur, easing:"linear"});
   /* 最后一道兜底：到点强制藏掉旧层（比 settle 早，保证"燃完一定是新图"）。 */
   const _burnHide = setTimeout(function(){
-    if (stopped) return;                 // 帧循环已经正常收尾过了，什么都不做
+    if (stopped) return;
+    /* 帧循环可能因为掉帧 / 长任务 / 页面被切走而没跑到 el >= END。
+       那就**先替它把最后一帧画完**：el 推到 END ⇒ 火源半径经 closeT 推到"必定盖满"，
+       并且跑完收尾路径（火光淡出 + 整层藏）。此时画面已经是"烧尽 + 干净的新图"，
+       再收尾就**没有任何可见变化** —— 不会再出现"旧图还亮着被硬切"。 */
+    try { step((t0 === null ? performance.now() : t0) + Math.round(SPAN) + 1); } catch (e) { /* 无所谓 */ }
+    if (stopped) return;
     stopped = true;
     try { if (rafId) cancelAnimationFrame(rafId); } catch (e) { /* 老 WebView */ }
-    try { wpCancelAnimations(from); } catch (e) { /* 老 WebView */ }
-    wpHideLayer(fromId);              // ★ 整层藏（连描边一起）
+    wpHideLayer(fromId);
     try { applyMask("none"); } catch (e) { /* 无所谓 */ }
-  }, Math.max(60, Math.round(SPAN) + 60));
+}, Math.max(60, Math.round(SPAN) + 60));
 
   anim(to,   [{transform:"scale(1.05)"},{transform:"scale(1)"}],
        {duration: dur, easing:"cubic-bezier(.33,0,.55,1)"});
@@ -2889,7 +2888,7 @@ function fxBurn(to, from, rim, id, fromId){
 
   const svgURI = (paths, paint) =>
     "url(\"data:image/svg+xml;charset=utf-8," +
-    encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 '
+    encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none" viewBox="0 0 '
       + LW + " " + LH + '">' + paint(paths) + "</svg>") + "\")";
 
   /* ★ 用 **fill-rule="evenodd" 单路径**挖洞：
@@ -2952,6 +2951,12 @@ function fxBurn(to, from, rim, id, fromId){
       glow.style.backgroundImage = svgURI(lines, strokePaint("rgba(255,140,40,.85)", 9));
       core.style.backgroundImage = svgURI(cores, strokePaint("rgba(255,242,190,.98)", 2.4));
       char.style.backgroundImage = svgURI(chars, strokePaint("rgba(58,30,16,.8)", 2));
+      /* 火光/火芯/炭化线随「烧满进度」一起收：closeT 到 1（整屏已烧尽）时它们正好为 0，
+         这样「旧图被烧掉」和「火光消失」是同一件事，收尾不会多出一段亮光。 */
+      var _fd = 1 - closeT;
+      glow.style.opacity = (0.85 * _fd).toFixed(3);
+      core.style.opacity = (0.95 * _fd).toFixed(3);
+      char.style.opacity = (0.85 * _fd).toFixed(3);
     }
     if (el < END){ rafId = requestAnimationFrame(step); }
     else {
@@ -2989,9 +2994,12 @@ function fxBurn(to, from, rim, id, fromId){
       wpHideLayer(fromId);
       applyMask("none");
       anim(from, [{opacity:0},{opacity:0}], {duration: dur * 0.18, easing:"linear"});
-      anim(glow, [{opacity:.85},{opacity:0}], {duration: dur * 0.18, easing:"linear"});
-      anim(core, [{opacity:.95},{opacity:0}], {duration: dur * 0.18, easing:"linear"});
-      anim(char,  [{opacity:.85},{opacity:0}], {duration: dur * 0.18, easing:"linear"});
+      var _cur = parseFloat(getComputedStyle(glow).opacity) || 0;
+      anim(glow, [{opacity: _cur},{opacity: 0}], {duration: Math.round(dur * 0.03), easing:"linear", fill:"forwards"});
+      var _cur = parseFloat(getComputedStyle(core).opacity) || 0;
+      anim(core, [{opacity: _cur},{opacity: 0}], {duration: Math.round(dur * 0.03), easing:"linear", fill:"forwards"});
+      var _cur = parseFloat(getComputedStyle(char).opacity) || 0;
+      anim(char, [{opacity: _cur},{opacity: 0}], {duration: Math.round(dur * 0.03), easing:"linear", fill:"forwards"});
     }
   };
   rafId = requestAnimationFrame(step);
@@ -3174,7 +3182,7 @@ function fxInk(to, from, rim){
        ⇒ 载体盒 == 图层盒，**逐像素相同**，不依赖任何 CSS 解析假设。 */
   try {
     const _st = to.parentElement;
-    /* ⚠️ img 现在是 foreignObject 里的 <div>，`ownerSVGElement` 对 HTML 元素是 undefined
+    /* ⚠️ img 是 SVG 原生 <image>，ownerSVGElement/closest(svg) 都可用
        ⇒ 必须用 closest("svg") 才拿得到载体 SVG（这个坑差点让对齐静默失效）。 */
     const _sv = img && (img.closest ? img.closest("svg") : null);
     if (_st && _sv){
@@ -3240,7 +3248,8 @@ function fxInk(to, from, rim){
        {duration: dur, easing:"linear"});
   const url = (to.style.backgroundImage.match(/url\("?([^")]+)"?\)/) || [])[1] || "";
   if (url){
-    img.style.backgroundImage = "url('" + url + "')";
+    img.setAttribute("href", url);
+  try { img.setAttributeNS("http://www.w3.org/1999/xlink", "xlink:href", url); } catch (e) { /* 老引擎 */ }
     /* 已改用背景图渲染，不再需要 xlink:href */
   }
   img.style.display = "";
