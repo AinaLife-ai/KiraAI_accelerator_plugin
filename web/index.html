@@ -2790,8 +2790,6 @@ function _wpBurnCarrier(show, LW, LH) {
   } catch (e) { return null; }
 }
 function fxBurn(to, from, rim, id, fromId){
-  /* ★ 强制旧层在最上（消除"旧层在上/在下"带来的二元差异） */
-  try { const _f = from.parentElement, _t2 = to.parentElement; if (_f && _t2) { _f.style.zIndex = "3"; _t2.style.zIndex = "2"; } } catch (e) {}
   const dur = WP_DUR * 1.25;
   const W = Math.max(window.innerWidth, 320);
   const H = Math.max(window.innerHeight, 320);
