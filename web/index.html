@@ -2993,8 +2993,7 @@ function fxBurn(to, from, rim, id, fromId){
            燃完的那一刻画面就是干净的新图，不再有那一段亮光。 */
       wpHideLayer(fromId);
       applyMask("none");
-      var _cur = parseFloat(getComputedStyle(from).opacity) || 0;
-      anim(from, [{opacity: _cur},{opacity: 0}], {duration: Math.round(dur * 0.03), easing:"linear", fill:"forwards"});
+      anim(from, [{opacity:0},{opacity:0}], {duration: dur * 0.18, easing:"linear"});
       var _cur = parseFloat(getComputedStyle(glow).opacity) || 0;
       anim(glow, [{opacity: _cur},{opacity: 0}], {duration: Math.round(dur * 0.03), easing:"linear", fill:"forwards"});
       var _cur = parseFloat(getComputedStyle(core).opacity) || 0;
