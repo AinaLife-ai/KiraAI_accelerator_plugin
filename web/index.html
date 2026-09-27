@@ -2902,7 +2902,7 @@ function fxBurn(to, from, rim, id, fromId){
        前 88% 保持完全不透明（此时纸已被遮罩挖空，看不见），最后 12% 平滑淡出。
        ⇒ 无论帧循环是否跑完，`dur` 到点旧层一定已经不可见 ⇒ **燃完一定是新图**，
          绝不会再出现"停在变亮的旧图再硬切"。 */
-  anim(from, [{opacity:1, offset:0},{opacity:1, offset:.45},{opacity:0, offset:.72}],
+  anim(from, [{opacity:1, offset:0},{opacity:1, offset:.86},{opacity:0, offset:.98}],
        {duration: dur, easing:"linear"});
 
   /* ★★★ 2026-09-28：**新图必须先隐形、再与旧图对称地淡入**。
@@ -2911,7 +2911,7 @@ function fxBurn(to, from, rim, id, fromId){
      这里让它从 0 开始，并与旧图的淡出（.45→.72）**完全对称** ⇒
      前 45% 画面还是旧图（火焰在它上面烧），之后交叉过渡，72% 处完成。 */
   try { to.style.opacity = "0"; } catch (e) { /* 无所谓 */ }
-  anim(to, [{opacity:0, offset:0},{opacity:0, offset:.45},{opacity:1, offset:.72}],
+  anim(to, [{opacity:0, offset:0},{opacity:0, offset:.84},{opacity:1, offset:.98}],
        {duration: dur, easing:"linear", fill:"forwards"});
 
   /* ★★★ 2026-09-28（按"最坏情况"设计）：**定时器 + !important 硬压**。
@@ -2926,7 +2926,7 @@ function fxBurn(to, from, rim, id, fromId){
       from.style.setProperty("opacity", "0", "important");
       from.style.setProperty("visibility", "hidden", "important");
     } catch (e) { /* 无所谓 */ }
-  }, Math.round(dur * 0.75));
+  }, Math.round(dur * 0.995));
 
   /* 照抄墨染：真身新层【先隐形】、到末尾【声明式淡入】。
      这样到收尾那一刻，新层已自己就位、旧层已自己淡走 ⇒ 撤载层时看不出任何变化。
