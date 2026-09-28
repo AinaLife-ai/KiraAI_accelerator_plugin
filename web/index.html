@@ -3495,9 +3495,19 @@ function wpPreloadWallpaper(url){
      这件事在**结构上不可能发生**；也就保证了"燃到最后一定是新图"。
    ⚠️ stage 上的 inline 必须**可回收**：wpLoad / wpNormalize 会把它清掉（见那里）。*/
 function wpHideEl(im, st){
+  /* ★★★ 2026-09-28（用户："还是概率旧图变亮，1 秒以上然后硬切"）—— 根因：
+     这里原来是**普通 inline**（`im.style.opacity = "0"`）。
+     普通 inline 会被**任何后写的 inline** 覆盖 —— 例如开屏收尾的"钉住当前图层"
+     （`finishSplash` 对带 .on 的层写 `style.opacity = "1"`）。
+     于是：帧循环收尾刚把旧层藏好 → 开屏收尾把它写回可见 → 旧图（受热滤镜还在）
+     一直亮到 settle 才被藏 ⇒ **"变亮的旧图停留 1 秒以上，然后新图硬切"** ✗
+     ⇒ 改用 **!important**：层叠里它高于普通 inline、也高于动画，
+       一旦藏了，之后任何普通写入都顶不回来。
+     回收不受影响：wpShowLayer / wpLoad 用 removeProperty、
+     wpNormalize 用 cssText=""，都能连 !important 一起清掉 ✓ */
   try {
-    if (im){ im.style.opacity = "0"; im.style.visibility = "hidden"; }
-    if (st){ st.style.opacity = "0"; st.style.visibility = "hidden"; }
+    if (im){ im.style.setProperty("opacity", "0", "important"); im.style.setProperty("visibility", "hidden", "important"); }
+    if (st){ st.style.setProperty("opacity", "0", "important"); st.style.setProperty("visibility", "hidden", "important"); }
   } catch (e) { /* 无所谓 */ }
 }
 function wpHideLayer(id){
@@ -4070,15 +4080,28 @@ function finishSplash(){
      一旦有，就会透出遮罩的黑 ⇒ "弹一下"。
      收尾结束后由 wpNormalize 统一清掉这个 inline 值。 */
   const OUT_MS = 1400;
-  try {
-    ["wp-a", "wp-b"].forEach(function (id) {
-      const st = document.getElementById(id);
-      if (st && st.classList.contains("on")) {
-        const im = st.querySelector(".wp-img");
-        if (im) im.style.opacity = "1";
-      }
-    });
-  } catch (e) { /* 钉不住也不影响收尾 */ }
+  /* ★★★ 2026-09-28（用户："还是概率旧图变亮，1 秒以上然后硬切"）—— 真根因就在这段：
+     它会挑**带 .on 的那一层**写 `inline opacity:1`，而开屏收尾发生在加载后约 6.2 秒，
+     随时可能**落在一次燃纸切换的窗口里**；切换在飞时，带 .on 的那层正是
+     **"正在被烧的旧层"**。如果它落在"帧循环收尾之后、settle 之前"那约 1 秒里：
+       帧循环收尾：wpHideLayer 把旧层藏掉（当时普通 inline，可以被覆盖）
+       开屏收尾：  又把它写回 opacity:1 ⇒ **旧图（受热滤镜仍在）重新亮起**
+       settle：   才把旧层藏掉 ⇒ **"然后新图硬切"** ✓
+     "概率性"正来自"开屏收尾是否落在那 1 秒里"。
+     ⇒ 切换在飞（wpBusy）时**绝不钉层**：那段时间图层可见性由切换自己负责
+       （旧层该亮就亮、该藏就藏），开屏只管淡出自己，不需要插手。
+     另：wpHideEl 已改为写 !important ⇒ 即便有别的即时写入也顶不回"隐藏"状态。 */
+  if (!wpBusy){
+    try {
+      ["wp-a", "wp-b"].forEach(function (id) {
+        const st = document.getElementById(id);
+        if (st && st.classList.contains("on")) {
+          const im = st.querySelector(".wp-img");
+          if (im) im.style.opacity = "1";
+        }
+      });
+    } catch (e) { /* 钉不住也不影响收尾 */ }
+  }
   try {
     sp.animate([
       {opacity:1, transform:"scale(1)",     filter:"blur(0px)"},
