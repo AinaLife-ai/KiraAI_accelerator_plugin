@@ -1119,7 +1119,21 @@ class AcceleratorPlugin(BasePlugin):
             params = build_nothinking_extra_body(style)
         else:
             return kwargs
-        return apply_thinking_params(kwargs, params, client_kind)
+        # ★★★ 2026-09-28（用户："是否能由我们来成功控制"）：
+        #   注入时**清掉提供商那份同维度的思考键**，让"思不思考"在请求体里
+        #   只剩一个声音（否则两把不同拼写的钥匙同时到达网关，谁生效是轮盘赌——
+        #   实测提供商配 `thinking:{enabled/disabled}` 时我们**压不住也打不开**）。
+        #   清场范围 = 我们实际表达的维度：
+        #     · 我们仍在发强度（或压根没开「跟随」）⇒ 强度维度也归我们 ⇒ 清
+        #     · 「跟随提供商强度」开着、且我们没发强度 ⇒ 强度归它 ⇒ **不清**
+        #     · 我们本轮在**关思考** ⇒ 强度没有意义 ⇒ 清掉（免得网关看到
+        #       disabled + max 这种混合体）
+        _has_our_effort = any(("effort" in str(k).lower() or "budget" in str(k).lower())
+                              for k in params)
+        _clear_effort = ((not decision.enabled) or (not self.thinking_follow_provider)
+                         or _has_our_effort)
+        return apply_thinking_params(kwargs, params, client_kind,
+                                     clear_effort=_clear_effort)
 
 
     def _install_parallel_tools(self) -> None:

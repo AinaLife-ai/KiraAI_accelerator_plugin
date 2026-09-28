@@ -627,19 +627,27 @@ def follow_provider_effort(params: dict, prov_effort: "Optional[str]") -> dict:
 
     对应面板开关「开思考时跟随提供商的强度」（默认关）。
 
-    实现上就是：把我们要注入的 `reasoning_effort` 去掉 ——
-    提供商自己那份设置（框架会照常发出去）就成了唯一的强度来源。
-    于是"设了 max 就还是 max"，插件不会改成别的值。
+    ★★★ 2026-09-28 修正（用户："是否能由我们来成功控制"）—— 这里原来有个**真缺陷**：
+      旧实现是"把我们的 `reasoning_effort` **去掉**，让提供商那份自己生效"。
+      但**框架不一定发**提供商那份！实测（DeepSeek 客户端）：
+          `if thinking_enabled: kwargs["reasoning_effort"] = reasoning_effort`
+      —— 提供商配了 `thinking_enabled=False` + `reasoning_effort=max` 时，
+      框架**永远不写**这个强度；而我们把思考打开之后，用户设的 `max`
+      就变成了默认值 ⇒ 「跟随」**名不副实**（这也正是用户感觉"控制不住"的一面）。
+      ⇒ 现在改为**把提供商的强度值替进我们的参数**（按本客户端该在的位置发出去），
+        不再依赖框架的条件写入 ⇒ "设的 max 就是 max"。
+      提供商**没配**强度时保持我们算出来的档位（否则就没强度了）。
 
     为什么**不**默认这么做：插件按轮次调节强度本来就是它的功能之一
     （简单轮次用低档更省更快）。想要"只开不动强度"的人再打开这个开关。
 
     注意：这个函数只管"开思考"这一路；"关思考"（inject_nothinking）不受影响。
     """
-    if not prov_effort or "reasoning_effort" not in params:
+    if not prov_effort:
         return params
     out = dict(params)
-    out.pop("reasoning_effort", None)
+    if "reasoning_effort" in out:
+        out["reasoning_effort"] = prov_effort
     return out
 
 
@@ -674,7 +682,84 @@ def resolve_style(user_style: str, client_kind: str) -> str:
     return user_style
 
 
-def apply_thinking_params(kwargs: dict, params: dict, client_kind: str) -> dict:
+# ── 思考相关键的"全拼写"集合 ──
+# ★★★ 2026-09-28（用户："自动思考疑似并没有真的有效，尤其注意确认如果原本提供商
+#   那我们选择了开启思考的，是否能由我们来成功控制"）—— 复现出的**真实缺陷**：
+#
+#   各家"开/关思考"用的字段名不同（thinking / enable_thinking / reasoning_effort /
+#   chat_template_kwargs...），而**提供商自己也可能配**其中某一种。
+#   以前我们只发自己那两把钥匙（enable_thinking + reasoning_effort），
+#   提供商那把（比如 `thinking`）**原样留在请求体里** ⇒ 两把钥匙同时到达网关，
+#   它先认哪把是**轮盘赌**：
+#     · 提供商配 `thinking:{enabled}` + 我们判"关" ⇒ 仍可能被读成**开**（压不住）
+#     · 提供商配 `thinking:{disabled}` + 我们判"开" ⇒ 仍可能被读成**关**（打不开）
+#   实测（tests/test_thinking_conflict.py）：`thinking:{enabled}` / `{disabled}` 两条
+#   都会残留 ⇒ 用户看到的就是"插件好像控制不住思考"。
+#
+#   ⇒ 修法：我们**表达哪个维度，就拿走那个维度**（清掉提供商那份的同维键），
+#     让该维度在请求体里**只剩一个声音**；我们没表达的维度**原样保留**
+#     （例如「跟随提供商强度」开启时，强度维度不属于我们，不能清）。
+#
+# 维度划分：
+#   D1「要不要思考」= thinking / enable_thinking / (chat_template_kwargs.enable_thinking)
+#   D2「想多深」    = reasoning_effort / budget_tokens / reasoning_max_tokens
+_THINK_D1_EXTRA = (
+    "thinking", "enable_thinking", "include_reasoning", "reasoning",
+    "chat_template_kwargs", "thinking_config",
+)
+_THINK_D2_EXTRA = (
+    "reasoning_effort", "thinking_budget", "reasoning_max_tokens",
+)
+_THINK_D1_TOP = (
+    "thinking", "enable_thinking", "include_reasoning", "reasoning",
+)
+_THINK_D2_TOP = (
+    "reasoning_effort", "thinking_budget", "reasoning_max_tokens",
+)
+
+
+def strip_conflicting_thinking(kwargs: dict, clear_effort: bool = True) -> int:
+    """清掉请求体里**与我们本次判定冲突**的思考键。返回清掉的个数。
+
+    :param clear_effort: 是否连"强度"维度也清。
+        · 我们按自己的判定发强度（默认）⇒ True（否则提供商那份强度会打架）
+        · 「跟随提供商强度」开启 ⇒ **False**（强度归提供商，不能清）
+
+    ★ 只清"思考"这一类键，**绝不碰** temperature / max_tokens / tools 等无关字段。
+    ★ 保留 `chat_template_kwargs` 里的非思考子键（该字典可能装别的东西）。
+    """
+    removed = 0
+    extra = kwargs.get("extra_body")
+    if isinstance(extra, dict):
+        keys = list(_THINK_D1_EXTRA) + (list(_THINK_D2_EXTRA) if clear_effort else [])
+        for k in list(extra.keys()):
+            if k not in keys:
+                continue
+            if k == "chat_template_kwargs" and isinstance(extra[k], dict):
+                inner = dict(extra[k])
+                for ik in list(inner.keys()):
+                    if any(w in ik.lower() for w in ("think", "reason")):
+                        inner.pop(ik, None)
+                        removed += 1
+                if inner:
+                    extra[k] = inner
+                else:
+                    extra.pop(k, None)
+                continue
+            extra.pop(k, None)
+            removed += 1
+        if not extra:
+            kwargs.pop("extra_body", None)
+    top_keys = list(_THINK_D1_TOP) + (list(_THINK_D2_TOP) if clear_effort else [])
+    for k in list(kwargs.keys()):
+        if k in top_keys and k != "extra_body":
+            kwargs.pop(k, None)
+            removed += 1
+    return removed
+
+
+def apply_thinking_params(kwargs: dict, params: dict, client_kind: str,
+                          clear_effort: bool = True) -> dict:
     """把思考参数放进**正确的位置**。
 
     实测三家位置不同（读框架源码确认）：
@@ -683,7 +768,14 @@ def apply_thinking_params(kwargs: dict, params: dict, client_kind: str) -> dict:
         —— 框架自己的 `DeepSeekLLMClient._build_request_kwargs` 就是
         `kwargs["reasoning_effort"] = ...`（不是塞进 extra_body）
       · **Anthropic**：**`thinking` 必须在顶层**（body 参数，不是 extra_body）
+
+    ★★★ 2026-09-28（用户："是否能由我们来成功控制"）：**先清场、再注入**。
+      否则提供商自己配的那把"钥匙"（不同拼写）会与我们的**同时**到达网关，
+      谁生效取决于网关先读哪个 ⇒ 表现为"插件控制不住思考"（已实测复现）。
+      我们表达的维度清掉提供商那份、再放上我们的；没表达的维度不动。
     """
+    strip_conflicting_thinking(kwargs, clear_effort=clear_effort)
+
     extra = dict(kwargs.get("extra_body") or {})
     for k, v in params.items():
         if client_kind == "deepseek" and k == "reasoning_effort":
