@@ -2868,19 +2868,13 @@ function fxBurn(to, from, rim, id, fromId){
          火线轮廓的凹处（半径最小可到 0.5r）在 closeT 推满之前可能仍留在视口内，
          那段窗口就是用户看到的"**旧图亮起残留 → settle 硬切**"。
          平台对齐后，"烧穿"与"退场"是**同一时刻**，残留在时间轴上不再存在。 */
-  /* ★★★★ 2026-09-28（用户："还是概率旧图变亮，1 秒以上然后硬切"）—— 真机制：
-     CSS 里 `.wp-stage.on .wp-img{opacity:1}`（行 68）**优先级高于动画的 fill:forwards**
-     ⇒ 我那条 `from` 的淡出动画**根本压不住它**，旧层在整个燃烧期始终不透明；
-     一旦遮罩被提前清掉（帧循环中途抛错、并发 wpLoad、动画被取消…），
-     旧层就带着受热变亮滤镜**整屏露出**，直到 settle 才被藏 ⇒ "变亮停留 → 硬切" ✓
-     ⇒ 不再靠"动画淡出 + onfinish"（都依赖帧循环/动画活着），
-       改为**让旧层立刻退出 .on**：从这一刻起 CSS 就保证它不可见，
-       而遮罩此刻才刚开始烧（.82 的淡出/收尾都是后面的事）⇒ **观感零影响**。
-       这样"旧层可见"只剩一个来源：`wpHideLayer` 写的 inline
-       （异常安全、且被 try/catch 包住），结构上不可能再冻住。 */
-  try {
-    if (stFrom) stFrom.classList.remove("on");
-  } catch (e) { /* 无所谓 */ }
+  /* ★★★ 2026-09-28（重要回退）：1.0.71 曾在这里 `stFrom.classList.remove("on")`，
+     想靠 CSS 保证旧层不可见 —— **那是错的，而且造成了新问题**：
+     `.wp-stage.on` 是**整个 stage 的可见性**（`inset` 比视口大、img 铺满），
+     把它摘掉 ⇒ **旧层整层不可见** ⇒ 燃烧时"还没烧到的纸"区域露出的不是旧图，
+     而是**空底板**（用户实测："切换完会有空底板的恶心情况"）✗✗
+     ⇒ 恢复：旧层在燃烧期间必须**保持 .on**（它承载"被烧的那张纸"），
+       它的退场交给收尾（帧循环 / 兜底 / settle），不再用摘 .on 这条激进手段。 */
   anim(from, [{opacity:1, offset:0},{opacity:1, offset:.79},{opacity:0, offset:.82}],
        {duration: dur, easing:"linear"});
 
@@ -2924,17 +2918,20 @@ function fxBurn(to, from, rim, id, fromId){
                    绝不置位 stopped、绝不 cancelAnimationFrame，
                    让帧循环继续跑完（它自己会收尾）。 */
     try { step((t0 === null ? performance.now() : t0) + Math.round(SPAN * (END + 0.5))); } catch (e) { /* 无所谓 */ }
-    if (!stopped) return;
-    /* ★★★ 2026-09-28（兜底只服务一件事：新图必须在最终画面上）：
-       正常路径（帧循环走到 el >= END）已经把一切都收好了：
-         · 旧层：声明式淡出（.88 平台 → 淡出）走完 + wpHideLayer 整层藏 + display:none
-         · 新层：.on 已挂、opacity 淡入动画已走完、scale 已归位
-       ⇒ 兜底此刻唯一可能还欠的，就是"极端掉帧下动画没跑完"的那一点。
-       所以**绝不再碰旧层**（任何"再藏一次/再取消动画/再补一条 opacity 动画"
-       都可能把已经隐藏的旧层顶回来一瞬 —— 用户看到的"旧图亮起残留→硬切"正属此类），
-       只做两件事：确认帧循环收尾真的执行过（否则补一帧让它收尾），
-       然后把新层钉死在可见状态。 */
-    /* （上面那一帧若已把帧循环收尾，stopped 已被置位 ⇒ 这里直接返回） */
+    if (stopped) return;                      // 收尾已由上面那一帧完成
+    /* ★★★ 2026-09-28（最后手段）：上面那一帧若**抛错**（罕见但可能），
+       收尾就没跑成、帧循环也未必还能继续 ⇒ 旧层会带着受热变亮滤镜停在那里，
+       直到 settle 才被藏 = 用户报的"变亮停留 1 秒以上然后硬切"。
+       ⇒ 宁可"早切"，也绝不留下"变亮的旧图"：
+         既然遮罩推不动了，就直接把旧层整层藏掉 + 摘遮罩 + 熄火光。 */
+    stopped = true;
+    try { wpHideLayer(fromId); } catch (e) { /* 无所谓 */ }
+    try { applyMask("none"); } catch (e) { /* 无所谓 */ }
+    try { glow.style.opacity = "0"; core.style.opacity = "0"; char.style.opacity = "0"; } catch (e) { /* 无所谓 */ }
+    try {
+      from.style.setProperty("opacity", "0", "important");
+      from.style.setProperty("visibility", "hidden", "important");
+    } catch (e) { /* 无所谓 */ }
     /* 钉死新层：mask 洞里透出来的就是它，settle 前它是画面的全部。
        wpLoad 只加了 .on（CSS opacity:1），这里再加一条 fill:forwards 的
        显式动画，双保险 ⇒ "画面上没有新图"在结构上不可能发生。 */
