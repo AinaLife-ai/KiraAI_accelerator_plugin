@@ -73,6 +73,8 @@ run "★台账生命周期（防误告警）" tests/test_ledger_lifecycle.py
 run "★★跨轮清理安全（防重叠误清）" tests/test_cross_turn_clear_safety.py
 run "★★生产抢发契约（emit必返回）" tests/test_production_emit_contract.py
 run "★★不可解析段安静交回"     tests/test_unparsable_handback.py
+run "★★跨会话路由（并发/漂移）" tests/test_cross_session_routing.py
+run "★★故障转移不重复（failover）" tests/test_failover_no_dup.py
 
 
 run "前端URL前缀守卫"         tests/test_frontend_api.py

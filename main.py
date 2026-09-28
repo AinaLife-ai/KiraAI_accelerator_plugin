@@ -477,11 +477,16 @@ class AcceleratorPlugin(BasePlugin):
                     keys |= set(d.keys())
             for k in keys:
                 # ★ 现在是复合键 (sid\x00轮次)，**每个键都有自己的时间戳**
-                #   （`_emit_segment` 写的）⇒ 直接查即可，不再需要
-                #   "轮次键跟随所属 sid 时间戳"那套特例。
+                #   （`_emit_segment` / `_remember` 写的）⇒ 直接查即可。
                 ts = float(self._ledger_ts.get(k, 0) or 0) if isinstance(self._ledger_ts, dict) else 0
+                # ★★★ 2026-09-28（慢轮次加固）：窗口从 600s 放宽到 **1800s**。
+                #   600s（10 分钟）对"工具多、模型慢"的轮次偏紧：一轮里连着几个
+                #   大工具 + 本地模型推理，超过 10 分钟完全可能；那时下一轮的清理
+                #   会把**仍在跑的那一轮**台账清掉 ⇒ 它走到发送层 n=0 ⇒ 框架重发。
+                #   放宽的代价只是"残留多留 20 分钟"，而残留本身有上限、且
+                #   正确性由轮次键保证（不会误用）⇒ 划算。
                 # 没有时间戳的（陈旧遗留）按「更早」处理 ⇒ 一并清掉
-                if ts and (now - ts) <= 600:
+                if ts and (now - ts) <= 1800:
                     continue
                 for _d in (self._ledger_ts, self._sent_ledger, self._resp_by_sid, self._early_results):
                     _d.pop(k, None)
@@ -693,6 +698,18 @@ class AcceleratorPlugin(BasePlugin):
                 #   ⇒ 要么重复发送、要么把内容丢掉（见 _ckey 的说明）。
                 _k = self._ckey(ctx.sid, getattr(ctx.event, "event_id", None))
                 self._resp_by_sid[_k] = resp
+                # ★★★ 2026-09-28（慢轮次加固）：**同时写活动时间戳**。
+                #   以前只有 `_emit_segment`（真抢发过）才写 `_ledger_ts`；
+                #   而"响应已记录、但还没走到发送层"的键**没有时间戳** ⇒
+                #   下一轮的陈旧清理把它按"更早"处理、直接清掉 ⇒
+                #   那一轮走到发送层时拿不到响应与台账 ⇒ 剥离失败 ⇒ 框架重发。
+                #   写时间戳后，这类键会被正确地按活动时间保护。
+                try:
+                    if not isinstance(getattr(self, "_ledger_ts", None), dict):
+                        self._ledger_ts = {}
+                    self._ledger_ts[_k] = time.time()
+                except Exception:  # noqa: BLE001
+                    pass
                 if len(self._resp_by_sid) > 32:          # 防泄漏
                     self._resp_by_sid.clear()
                     self._resp_by_sid[_k] = resp
@@ -836,6 +853,34 @@ class AcceleratorPlugin(BasePlugin):
         if ctx is None or mp is None or not ctx.sid or ctx.tag_set is None:
             logger.error("[accel] 抢先发送上下文不完整，本段交回框架发送")
             return False
+
+        # ★★★ 2026-09-28（串会话加固 —— 用户："消息发送到错误会话，比如使用了跨会话功能后"）：
+        #   **发送目标必须与"框架最终会用的那个 sid"一致**，否则同一条回复会被劈到两个会话：
+        #     · 我们：用请求时捕获的 `ctx.sid`
+        #     · 框架：`send_xml_messages(event, ...)` 里取 **事件当前** 的 `event.sid`
+        #   两者在正常轮次里恒等；但只要**有插件在轮次中途更换了事件的会话**
+        #   （生态里确实存在这种形状：主动消息 / 定时任务先构造事件、再 `event.session = ...`
+        #    覆盖成真实会话；任何在钩子里改写事件的插件同理），二者就会分叉 ——
+        #   那一刻我们若继续"按旧 sid 抢发"，这一句就会进**旧会话**，
+        #   而框架随后把同一段再发进**新会话** ⇒ 用户看到"消息发错会话"。
+        #   ⇒ 这里做一次显式核对：**分叉就拒绝抢发、整段交回框架**
+        #     （由它按当前会话统一发送）。宁可少抢发一段（只影响首字速度），
+        #     也绝不把内容送进错误的会话。
+        #   为什么用"当前事件"而不是实例缓存：`ctx.event` 是**本次请求**的事件对象，
+        #   它被改写时我们看到的就是改写后的值 —— 正是要与框架保持一致的那个值。
+        try:
+            _ev_now = getattr(ctx, "event", None)
+            _sid_now = getattr(_ev_now, "sid", None) if _ev_now is not None else None
+            _sess = getattr(_ev_now, "session", None)
+            if _sid_now is None and _sess is not None:
+                _sid_now = getattr(_sess, "sid", None)
+            if _sid_now and _sid_now != ctx.sid:
+                logger.warning(
+                    "[accel] 会话在轮次中途被更换（%s → %s）⇒ 本段不再抢发，"
+                    "交回框架按当前会话发送（防串会话）", ctx.sid, _sid_now)
+                return False
+        except Exception:  # noqa: BLE001
+            logger.exception("[accel] 会话一致性核对失败（按原 sid 继续）")
 
         # 本段在"抢发结果 / 台账"里共用的键：`(sid, 轮次)` 复合键（见 `_ckey`）。
         # ★ 一次算好、处处用同一个 —— 之前 `_early_results` 用裸 sid、其它两处用
