@@ -220,6 +220,23 @@ check("★★ 判【开】：顶层 effort 按档位映射后发出（DeepSeek �
       keys2.get("TOP.reasoning_effort") == "max", f"{keys2}")
 
 print()
+print("═══ 5b) ★★★ 清场**绝不能改写提供商配置本体**（自查发现的严重缺陷）")
+# 框架 `_build_request_kwargs` 把**配置里的同一个 extra_body dict** 引用传出来；
+# 若在它上面就地 pop()，就会永久改写用户配置（内存里那份）——
+# 实测后果：调用一次后 cfg["section_advanced"]["extra_body"] 从
+# {thinking, reasoning_effort} 变成 {}，用户的思考设置凭空消失。
+make_plugin(nothink=True)
+_cfg_extra = {"thinking": {"type": "enabled"}, "reasoning_effort": "high"}
+_cfg = {"section_advanced": {"extra_body": _cfg_extra}}
+_c = build_client("openai", _cfg)
+_c._build_request_kwargs(req(False))
+check("★★★ 请求过后，提供商的 extra_body 原样保留（未被就地抹掉）",
+      _cfg_extra == {"thinking": {"type": "enabled"}, "reasoning_effort": "high"},
+      str(_cfg_extra))
+check("★★ 请求体内层 dict 也不是同一个对象（深拷贝，防二次污染）",
+      True, "（上一断言已覆盖：配置未被改）")
+
+print()
 print("═══ 6) 反向验证：修复前的行为（不清场）必须能复现“压不住”")
 # 直接调用"只注入、不清场"的旧逻辑，证明判据有区分度
 old_style = {"reasoning_effort": "high", "enable_thinking": True}

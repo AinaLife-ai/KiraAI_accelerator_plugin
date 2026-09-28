@@ -727,29 +727,51 @@ def strip_conflicting_thinking(kwargs: dict, clear_effort: bool = True) -> int:
 
     ★ 只清"思考"这一类键，**绝不碰** temperature / max_tokens / tools 等无关字段。
     ★ 保留 `chat_template_kwargs` 里的非思考子键（该字典可能装别的东西）。
+
+    ★★★ 2026-09-29（自查发现的**严重缺陷**，必须记牢）：
+      框架的 `_build_request_kwargs` 是这么写的：
+          extra_body = section_advanced.get("extra_body")   # ← 配置里的**同一个 dict**
+          kwargs["extra_body"] = extra_body                  # ← 原样引用传出去
+      所以**绝不能在这个 dict 上就地 pop()** —— 那会**永久改写用户的配置对象**
+      （内存里那份），第一次请求过后用户的思考设置就被抹掉了
+      （实测：调用一次后 `cfg["section_advanced"]["extra_body"]` 从
+        `{thinking: ..., reasoning_effort: ...}` 变成 `{}`）。
+      ⇒ 必须先**拷贝**出我们自己的一份再清；这样：
+        · 本次请求体里只有我们的声音（控制得住）
+        · 用户配置一字不动（下次请求、其它模型、面板读到的都还是原样）
     """
+    extra_raw = kwargs.get("extra_body")
+    if not isinstance(extra_raw, dict):
+        return 0
+
+    # ★ 深拷贝一层（值本身多是 dict，如 {"type": "enabled"} —— 用 copy.deepcopy 保险）
+    import copy as _copy
+    extra = _copy.deepcopy(extra_raw)
+
     removed = 0
-    extra = kwargs.get("extra_body")
-    if isinstance(extra, dict):
-        keys = list(_THINK_D1_EXTRA) + (list(_THINK_D2_EXTRA) if clear_effort else [])
-        for k in list(extra.keys()):
-            if k not in keys:
-                continue
-            if k == "chat_template_kwargs" and isinstance(extra[k], dict):
-                inner = dict(extra[k])
-                for ik in list(inner.keys()):
-                    if any(w in ik.lower() for w in ("think", "reason")):
-                        inner.pop(ik, None)
-                        removed += 1
-                if inner:
-                    extra[k] = inner
-                else:
-                    extra.pop(k, None)
-                continue
-            extra.pop(k, None)
-            removed += 1
-        if not extra:
-            kwargs.pop("extra_body", None)
+    keys = list(_THINK_D1_EXTRA) + (list(_THINK_D2_EXTRA) if clear_effort else [])
+    for k in list(extra.keys()):
+        if k not in keys:
+            continue
+        if k == "chat_template_kwargs" and isinstance(extra[k], dict):
+            inner = dict(extra[k])
+            for ik in list(inner.keys()):
+                if any(w in ik.lower() for w in ("think", "reason")):
+                    inner.pop(ik, None)
+                    removed += 1
+            if inner:
+                extra[k] = inner
+            else:
+                extra.pop(k, None)
+            continue
+        extra.pop(k, None)
+        removed += 1
+
+    if extra:
+        kwargs["extra_body"] = extra
+    else:
+        kwargs.pop("extra_body", None)
+
     top_keys = list(_THINK_D1_TOP) + (list(_THINK_D2_TOP) if clear_effort else [])
     for k in list(kwargs.keys()):
         if k in top_keys and k != "extra_body":

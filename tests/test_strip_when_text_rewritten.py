@@ -144,6 +144,37 @@ check("★★ 真正的已发内容被整段剥掉（E1+E2 都不得留在文本
 check("★ 未发的 T3 保留", "第三段" in (got6c or ""), got6c)
 
 print()
+print("═══ 6d) ★★★ 媒体段（无可见文字）必须能剥掉 —— 否则贴纸/图片会重复发送")
+# 自查发现的回归（本 PR 的第二处）：锚点搜索若只按"可见文字"匹配，
+# 媒体段（贴纸/图片/语音）没有文字 ⇒ 匹配不到 ⇒ 保守不剥 ⇒ **框架再发一遍**。
+# 这里把常见形态全部锁住（含"文本里有个*别的*媒体在前"这种歧义形态）。
+MEDIA_CASES = [
+    ("单个贴纸", ["<msg><sticker id=\"7\"/></msg>"],
+     "<msg><sticker id=\"7\"/></msg><msg>尾</msg>",
+     "<msg>尾</msg>"),
+    ("图片在前", ["<msg><image file=\"a.png\"/></msg>", "<msg>甲</msg>"],
+     "<msg><image file=\"a.png\"/></msg><msg>甲</msg><msg>尾</msg>",
+     "<msg>尾</msg>"),
+    ("语音条", ["<msg><record file=\"a.silk\"/></msg>"],
+     "<msg><record file=\"a.silk\"/></msg><msg>尾</msg>",
+     "<msg>尾</msg>"),
+    ("媒体+文字混合", ["<msg>丙<image file=\"c.png\"/></msg>"],
+     "<msg>丙<image file=\"c.png\"/></msg><msg>尾</msg>",
+     "<msg>尾</msg>"),
+]
+for name, segs, text, expect in MEDIA_CASES:
+    got = es.strip_early_sent_smart(text, len(segs), segs)
+    check(f"★★ 媒体段可剥：{name}", got == expect, f"得到 {got!r} 期望 {expect!r}")
+
+# ★ 歧义形态：文本里**另一个**媒体（从未发过）在前 —— 必须保留它、剥掉我们的
+segs_amb = ["<msg><sticker id=\"7\"/></msg>", "<msg>甲</msg>"]
+text_amb = "<msg><sticker id=\"9\"/></msg><msg><sticker id=\"7\"/></msg><msg>甲</msg><msg>尾</msg>"
+got_amb = es.strip_early_sent_smart(text_amb, len(segs_amb), segs_amb)
+check("★★★ 歧义：别的媒体(9)保留、我们的(7)剥掉（不误吃、不重复）",
+      "9" in (got_amb or "") and "7" not in (got_amb or "") and "甲" not in (got_amb or ""),
+      f"{got_amb!r}")
+
+print()
 print("═══ 7) 全部发完 ⇒ 返回 <msg/>（框架不发任何东西）")
 got7 = es.strip_early_sent_smart(ORIG, 4, [E1, E2, T3, T4])
 check("全发完 ⇒ <msg/>", got7 == "<msg/>", got7)

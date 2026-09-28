@@ -76,7 +76,46 @@ def _top_level_msgs(text: str) -> list[tuple[int, int]]:
     return out
 
 
-def _find_anchor_run(text: str, blocks: list, emitted_full: str):
+def _block_has_content(text: str, span) -> bool:
+    """块内（去掉 <msg> 开/闭标签后）是否还有东西。
+
+    用来区分两种"规范化文本为空"的块：
+      · `<msg/>` / `<msg></msg>`          ⇒ 纯占位，没有内容
+      · `<msg><sticker id="7"/></msg>` 等 ⇒ **媒体段**（贴纸/图片/语音/转发…）
+
+    ★★★ 2026-09-28（自查发现的回归）：锚点搜索原来只按"可见文字"匹配，
+      而**媒体段没有文字**（`_norm_seg` 去标签后为空）⇒ 匹配不到 ⇒ 保守不剥
+      ⇒ **框架把贴纸/图片再发一遍**（本仓库实测：6 个媒体用例全部残留）。
+      修法：把"媒体段"作为**第二类可匹配对象**，与文字流并行按序消费。
+    """
+    s, e = span
+    seg = text[s:e]
+    seg = re.sub(r"^<msg(?:\s[^>]*)?/?>", "", seg)      # 开标签（含自闭合 <msg/>）
+    seg = re.sub(r"</msg>$", "", seg)                    # 闭标签
+    return bool(seg.strip())
+
+
+def _seg_sig(seg: str) -> str:
+    """媒体段的"身份签名"：块内**标签本身**（标签名 + 全部属性），去掉空白。
+
+    ★★★ 2026-09-28（自查发现的回归，两次）：
+      锚点搜索原来只按"可见文字"匹配 ⇒ 媒体段（没有文字）匹配不到：
+        ① 先修成"按序消费媒体段"—— 但那在"文本里有个*别的*媒体在前"时会**误吃**
+           （实测：已发 sticker7、文本是 `sticker9 + sticker7 + 甲 + 尾`
+            ⇒ 按序吃掉了 sticker9、留下 sticker7 ⇒ 9 丢 + 7 重复）；
+        ② 最终改成**按签名匹配**：`<sticker id="7"/>` 只与**同签名**的块配对，
+           位置无关 ⇒ 上面那例正确保留 9、剥掉 7 和甲。
+      这样对"同一条媒体"（属性一致）稳，对"另一条媒体"（属性不同）不会误吃。
+    """
+    if not seg:
+        return ""
+    inner = re.sub(r"^<msg(?:\s[^>]*)?/?>", "", seg)
+    inner = re.sub(r"</msg>$", "", inner)
+    return re.sub(r"\s+", "", inner)
+
+
+def _find_anchor_run(text: str, blocks: list, emitted_full: str,
+                     media_sigs: list, media_total: int):
     """扫描出"匹配最完整"的一段连续块 —— 它们合起来正是**已发内容**。
 
     与"必须从第一块开始累加"不同（那是审计 P3 之前的实现，**确认会丢内容 + 重复**），
@@ -89,25 +128,43 @@ def _find_anchor_run(text: str, blocks: list, emitted_full: str):
         "块的文字是待消费内容的**前缀**"这一条对拆分/合并都成立）；
       · ★ 万一**前导的无关块**恰好也是已发内容的某个前缀（罕见但可能），
         从它开始扫只会消费一点点；从正确的块开始扫能消费满 ⇒ 取满的那组，
-        不会因为"前面撞了一下"就剥错位置。
+        不会因为"前面撞了一下"就剥错位置；
+      · ★★★ **媒体段**（没有可见文字）：按**签名**配对（见 `_seg_sig`），
+        位置无关 ⇒ 既不会漏剥（重复），也不会误吃别的媒体（丢内容）。
 
-    返回 `(consumed_len, first_idx, last_idx)`；一段都没消费到则返回 None。
+    返回 `(consumed_len, consumed_indices, media_used)`；一段都没消费到则返回 None。
     """
     n = len(blocks)
     norm = [_norm_seg(text[s:e]) for (s, e) in blocks]
+    sig = [_seg_sig(text[s:e]) for (s, e) in blocks]
     best = None
     for start in range(n):
         pos = 0
+        media_left = list(media_sigs)
         consumed = []
         for i in range(start, n):
             piece = norm[i]
             if not piece:
-                continue                  # 空块（<msg/>）：不参与内容匹配
-            if emitted_full[pos:].startswith(piece):
+                # 没文字的块：与"已发媒体"里**同签名**的配对消费（各匹配一次）
+                s_i = sig[i]
+                if s_i and s_i in media_left:
+                    media_left.remove(s_i)
+                    consumed.append(i)
+                continue
+            # ★ 用 startswith(piece, pos) 而不是 emitted_full[pos:] 切片 ——
+            #   切片在段数多时是多余的字符串拷贝。语义完全一致。
+            if emitted_full.startswith(piece, pos):
                 consumed.append(i)
                 pos += len(piece)
-        if consumed and (best is None or pos > best[0]):
-            best = (pos, consumed[0], consumed[-1])
+        media_used = media_total - len(media_left)
+        if consumed and (best is None or (pos, media_used) > (best[0], best[2])):
+            best = (pos, consumed, media_used)
+            # ★★ 强早退（证明正确）：已把**全部**已发内容消费掉 ⇒ 任何其它起点
+            #   最多也只能消费同样多（不可能更多）⇒ 再扫也不会更优，直接停。
+            #   这正好覆盖最常见的形态（前面有新增块、我们的段连续），
+            #   把这种 O(n²) 降到实际 O(n)。
+            if pos >= len(emitted_full) and media_used >= media_total:
+                break
     return best
 
 
@@ -128,32 +185,30 @@ def strip_by_content(text: str, segments: list[str]) -> str | None:
     if not text or not segments:
         return None
     emitted_full = "".join(_norm_seg(s) for s in segments)
-    if not emitted_full:
-        return None                     # 只发过空段（<msg/>）：没有可锚定的文字
+    # 已发段里的"媒体签名"清单（有内容但没文字的段 = 媒体段）
+    media_sigs = [sig for s in segments
+                  if (sig := _seg_sig(s)) and _norm_seg(s) == ""]
+    if not emitted_full and not media_sigs:
+        return None                     # 只发过空占位（<msg/>）：没有可锚定的东西
     blocks = _top_level_msgs(text)
     if not blocks:
         return None
 
-    anchor = _find_anchor_run(text, blocks, emitted_full)
+    anchor = _find_anchor_run(text, blocks, emitted_full, media_sigs, len(media_sigs))
     if anchor is None:
         return None
 
     # 逐块重建：把"匹配上已发内容"的块删掉，其余（新增 / 未发的块、以及
     # <msg> 之外的散段文本）**原样保留**。
-    # 空块（<msg/>）若夹在已消费块之间 ⇒ 一并删（属于同一段已发内容）；
+    # 空块（`<msg/>` 占位）若夹在已消费块之间 ⇒ 一并删（属于同一段已发内容的间隔）；
     # 落在消费区之外的 ⇒ 保留（可能是别的插件新增的占位）。
-    _consumed, first_idx, last_idx = anchor
-    norm = [_norm_seg(text[s:e]) for (s, e) in blocks]
-    pos = 0
-    drop = set()
-    # ★ 从 first_idx 起按同一规则重算"哪些块被消费"（与 _find_anchor_run 的择优组一致）
-    for i in range(first_idx, len(blocks)):
-        piece = norm[i]
-        if piece and emitted_full[pos:].startswith(piece):
-            drop.add(i)
-            pos += len(piece)
+    _consumed_len, consumed_idxs, _media_used = anchor
+    drop = set(consumed_idxs)
+    norm_all = [_norm_seg(text[s:e]) for (s, e) in blocks]
+    first_idx, last_idx = consumed_idxs[0], consumed_idxs[-1]
     for i in range(first_idx, last_idx + 1):
-        if not norm[i]:
+        # 纯占位 <msg/>：夹在中间，一并删（我们从不抢发这种段）
+        if not norm_all[i] and not _block_has_content(text, blocks[i]):
             drop.add(i)
 
     out = []
