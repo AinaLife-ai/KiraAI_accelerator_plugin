@@ -70,6 +70,9 @@ run "★壁纸切换特效（防硬切/燃纸）" tests/test_wallpaper_fx.py
 run "★日志行为（不误导/不误报）" tests/test_log_behaviour.py
 run "★媒体描述不计入评分"     tests/test_thinking_media.py
 run "★台账生命周期（防误告警）" tests/test_ledger_lifecycle.py
+run "★★跨轮清理安全（防重叠误清）" tests/test_cross_turn_clear_safety.py
+run "★★生产抢发契约（emit必返回）" tests/test_production_emit_contract.py
+run "★★不可解析段安静交回"     tests/test_unparsable_handback.py
 
 
 run "前端URL前缀守卫"         tests/test_frontend_api.py

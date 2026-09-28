@@ -2897,46 +2897,15 @@ function fxBurn(to, from, rim, id, fromId){
       } catch (e) { /* 无所谓 */ }
     };
   } catch (e) { /* 无所谓 */ }
-  /* 最后一道兜底：到点强制藏掉旧层（比 settle 早，保证"燃完一定是新图"）。 */
-  const _burnHide = setTimeout(function(){
-    if (stopped) return;
-    /* 帧循环可能因为掉帧 / 长任务 / 页面被切走而没跑到 el >= END。
-       那就**先替它把最后一帧画完**：el 推到 END ⇒ 火源半径经 closeT 推到"必定盖满"，
-       并且跑完收尾路径（火光淡出 + 整层藏）。此时画面已经是"烧尽 + 干净的新图"，
-       再收尾就**没有任何可见变化** —— 不会再出现"旧图还亮着被硬切"。 */
-    /* ★★★ 2026-09-28（用户："还是概率旧图变亮，1 秒以上然后硬切"）—— 真根因：
-       收尾条件是 `el >= END`，而 `END = max(t0 + rate)` ∈ **[0.88, 1.22]**
-       （t0 ∈ [0,0.08]、rate ∈ [0.88,1.14] ⇒ 实测约 97% 的情况下 END > 1.0183）。
-       原来这里只把 el 推到 `1.0183` ⇒ **END 稍大就进不去收尾分支**，
-       旧层不被隐藏；可**紧接着却照样 `stopped = true` + `cancelAnimationFrame`**
-       ⇒ 把本来还能自己跑完的帧循环**杀掉** ⇒ 画面冻在"旧层可见"的状态，
-       而旧层上还挂着 `brightness(1.10) saturate(1.45)` 的 forwards 滤镜
-       ⇒ **旧图变亮地留着**，直到 settle 才被藏掉 = **硬切** ✓
-       "概率性"也由此而来：只有帧循环没抢在保险前收尾（rAF 被节流/掉帧）时才触发。
-       ⇒ 两处修：① 把 el 推到 **END 之外**（SPAN × (END + 0.5)），保证必进收尾；
-                ② 万一仍未收尾（step 抛错等），**什么都不做** ——
-                   绝不置位 stopped、绝不 cancelAnimationFrame，
-                   让帧循环继续跑完（它自己会收尾）。 */
-    try { step((t0 === null ? performance.now() : t0) + Math.round(SPAN * (END + 0.5))); } catch (e) { /* 无所谓 */ }
-    if (stopped) return;                      // 收尾已由上面那一帧完成
-    /* ★★★ 2026-09-28（最后手段）：上面那一帧若**抛错**（罕见但可能），
-       收尾就没跑成、帧循环也未必还能继续 ⇒ 旧层会带着受热变亮滤镜停在那里，
-       直到 settle 才被藏 = 用户报的"变亮停留 1 秒以上然后硬切"。
-       ⇒ 宁可"早切"，也绝不留下"变亮的旧图"：
-         既然遮罩推不动了，就直接把旧层整层藏掉 + 摘遮罩 + 熄火光。 */
-    stopped = true;
-    try { wpHideLayer(fromId); } catch (e) { /* 无所谓 */ }
-    try { applyMask("none"); } catch (e) { /* 无所谓 */ }
-    try { glow.style.opacity = "0"; core.style.opacity = "0"; char.style.opacity = "0"; } catch (e) { /* 无所谓 */ }
-    try {
-      from.style.setProperty("opacity", "0", "important");
-      from.style.setProperty("visibility", "hidden", "important");
-    } catch (e) { /* 无所谓 */ }
-    /* 钉死新层：mask 洞里透出来的就是它，settle 前它是画面的全部。
-       wpLoad 只加了 .on（CSS opacity:1），这里再加一条 fill:forwards 的
-       显式动画，双保险 ⇒ "画面上没有新图"在结构上不可能发生。 */
-    try { anim(to, [{opacity:1},{opacity:1}], {duration: 220, easing:"linear"}); } catch (e) { /* 无所谓 */ }
-}, Math.max(60, Math.round(SPAN) + 60));
+  /* ★★★ 2026-09-28（1.0.74）：保险定时器**移到帧循环启动之后**再挂。
+     原来它挂在这里（`let stopped` / `step` / `glow` 等声明**之前**）：
+     只要 fxBurn 在两者之间**中途抛错**（任何一句：动画、SVG 构建、DOM 挂载…），
+     那些 `let/const` 就永远停在 TDZ，而**已经预约的定时器**到点执行
+     `if (stopped) return;` ⇒ `ReferenceError: Cannot access stopped before initialization`
+     ⇒ 整个面板脚本崩掉（本仓库的 node 真跑测试抓到了这条，约一半概率）。
+     移到所有绑定都初始化之后 ⇒ 结构上不可能再有这个 TDZ；
+     而且一旦中途抛错就**根本不会预约**这个定时器（干净失败）。
+     新的挂载点见本函数里 `rafId = requestAnimationFrame(_safeStep);` 的下一行。 */
 
   anim(to,   [{transform:"scale(1.05)"},{transform:"scale(1)"}],
        {duration: dur, easing:"cubic-bezier(.33,0,.55,1)"});
@@ -3125,6 +3094,48 @@ function fxBurn(to, from, rim, id, fromId){
     }
   };
   rafId = requestAnimationFrame(_safeStep);
+  /* 最后一道兜底：到点强制藏掉旧层（比 settle 早，保证"燃完一定是新图"）。 */
+  const _burnHide = setTimeout(function(){
+   try {
+    if (stopped) return;
+    /* 帧循环可能因为掉帧 / 长任务 / 页面被切走而没跑到 el >= END。
+       那就**先替它把最后一帧画完**：el 推到 END ⇒ 火源半径经 closeT 推到"必定盖满"，
+       并且跑完收尾路径（火光淡出 + 整层藏）。此时画面已经是"烧尽 + 干净的新图"，
+       再收尾就**没有任何可见变化** —— 不会再出现"旧图还亮着被硬切"。 */
+    /* ★★★ 2026-09-28（用户："还是概率旧图变亮，1 秒以上然后硬切"）—— 真根因：
+       收尾条件是 `el >= END`，而 `END = max(t0 + rate)` ∈ **[0.88, 1.22]**
+       （t0 ∈ [0,0.08]、rate ∈ [0.88,1.14] ⇒ 实测约 97% 的情况下 END > 1.0183）。
+       原来这里只把 el 推到 `1.0183` ⇒ **END 稍大就进不去收尾分支**，
+       旧层不被隐藏；可**紧接着却照样 `stopped = true` + `cancelAnimationFrame`**
+       ⇒ 把本来还能自己跑完的帧循环**杀掉** ⇒ 画面冻在"旧层可见"的状态，
+       而旧层上还挂着 `brightness(1.10) saturate(1.45)` 的 forwards 滤镜
+       ⇒ **旧图变亮地留着**，直到 settle 才被藏掉 = **硬切** ✓
+       "概率性"也由此而来：只有帧循环没抢在保险前收尾（rAF 被节流/掉帧）时才触发。
+       ⇒ 两处修：① 把 el 推到 **END 之外**（SPAN × (END + 0.5)），保证必进收尾；
+                ② 万一仍未收尾（step 抛错等），**什么都不做** ——
+                   绝不置位 stopped、绝不 cancelAnimationFrame，
+                   让帧循环继续跑完（它自己会收尾）。 */
+    try { step((t0 === null ? performance.now() : t0) + Math.round(SPAN * (END + 0.5))); } catch (e) { /* 无所谓 */ }
+    if (stopped) return;                      // 收尾已由上面那一帧完成
+    /* ★★★ 2026-09-28（最后手段）：上面那一帧若**抛错**（罕见但可能），
+       收尾就没跑成、帧循环也未必还能继续 ⇒ 旧层会带着受热变亮滤镜停在那里，
+       直到 settle 才被藏 = 用户报的"变亮停留 1 秒以上然后硬切"。
+       ⇒ 宁可"早切"，也绝不留下"变亮的旧图"：
+         既然遮罩推不动了，就直接把旧层整层藏掉 + 摘遮罩 + 熄火光。 */
+    stopped = true;
+    try { wpHideLayer(fromId); } catch (e) { /* 无所谓 */ }
+    try { applyMask("none"); } catch (e) { /* 无所谓 */ }
+    try { glow.style.opacity = "0"; core.style.opacity = "0"; char.style.opacity = "0"; } catch (e) { /* 无所谓 */ }
+    try {
+      from.style.setProperty("opacity", "0", "important");
+      from.style.setProperty("visibility", "hidden", "important");
+    } catch (e) { /* 无所谓 */ }
+    /* 钉死新层：mask 洞里透出来的就是它，settle 前它是画面的全部。
+       wpLoad 只加了 .on（CSS opacity:1），这里再加一条 fill:forwards 的
+       显式动画，双保险 ⇒ "画面上没有新图"在结构上不可能发生。 */
+    try { anim(to, [{opacity:1},{opacity:1}], {duration: 220, easing:"linear"}); } catch (e) { /* 无所谓 */ }
+   } catch (e) { /* 保险绝不允许把面板带崩 */ }
+}, Math.max(60, Math.round(SPAN) + 60));
 
   /* ★★★★ 2026-09-27（用户："燃纸偶尔还会燃到最后还是旧图，而不是直接是新图 ⇒ 硬切"）：
      整套燃纸是靠 `requestAnimationFrame` 推进的。rAF 一旦被暂停或严重掉帧

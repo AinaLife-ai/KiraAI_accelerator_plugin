@@ -178,6 +178,19 @@ class StreamEngine:
                     except Exception:                 # noqa: BLE001
                         ok = False
                         logger.exception("[accel] 抢先发送回调异常，本段交回框架")
+                    if ok is None:
+                        # ★★★ 2026-09-28（审计 P0 的**防复发**）：
+                        #   `None` 几乎只有一个来路 —— 回调**忘了 return**。
+                        #   （历史事故：`_make_engine` 的 `_emit` 写成了
+                        #    `await self._emit_segment(...)` 却没 return ⇒
+                        #    每次抢发都被判"没投递" ⇒ 整轮只剩首段 + 响应标记全空，
+                        #    而 `None` 既不抛异常、又与"真没投递"无法区分 ⇒ 完全静默。）
+                        #   行为保持不变（保守当"没投递"），但**留下线索**，
+                        #   让同类断链下次能一眼看见 —— 不再有无声的灾难。
+                        #   守卫：tests/test_production_emit_contract.py
+                        logger.warning(
+                            "[accel] 抢发回调返回 None（疑似忘了 return 投递结果）"
+                            " —— 本段按未投递处理，请检查 emit 回调实现")
                     if ok is False or ok is None:
                         # ★ 没投递 ⇒ 这一段**以及后面还没处理的**全部放回缓冲，
                         #   稍后由 remaining() 交回框架发送。

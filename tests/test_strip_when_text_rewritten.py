@@ -98,11 +98,50 @@ check("★ 补全标签后仍能剥掉（不重复）", "第一段" not in got5,
 check("★ 未发段保留", "第三段" in got5, got5)
 
 print()
-print("═══ 6) 匹配不上时：退回按序号（不静默失效）")
+print("═══ 6) ★★★ 匹配不上时：**保守不剥**（审计 P3 更正契约）")
+# 旧契约"匹配不上就退回按序号切前 N 块"**确认会同时丢内容 + 重复**：
+#   下游插件在已发段**之前**新增块时（xml_tag_fixer 把裸文本包成 <msg> 是常规行为），
+#   按序号切会删掉**从未发出的新增块**（丢内容），而已发的第 2 段却留下（重复）。
+#   新契约：宁可"少剥一次（最多多一条重复）"，**绝不误删未发内容**。
+#   配套：锚点搜索已能处理"前面插入新块"（见第 6b 节），所以这条兜底很少走到。
 SENT6 = ["完全不同的内容"]
 got6 = es.strip_early_sent_smart(ORIG, 2, SENT6)
-check("★ 匹配不上 ⇒ 退回按序号切 2 段（保持旧行为，不会反而丢内容）",
-      got6 == T3 + T4, got6)
+check("★ 完全匹配不上 ⇒ 原样交回（不剥、不删任何内容）", got6 == ORIG, got6)
+
+print()
+print("═══ 6b) ★★★ 前置插入新块：必须精确剥掉已发段、**保住**新增块（P3 的核心）")
+E1 = "<msg><text>第一段</text></msg>"
+E2 = "<msg><text>第二段</text></msg>"
+T3B = "<msg><text>第三段</text></msg>"
+X = "<msg><text>开场白新增</text></msg>"          # 插件新包出来的块（从未抢发）
+REWRITTEN = X + E1 + E2 + T3B
+got6b = es.strip_early_sent_smart(REWRITTEN, 2, [E1, E2])
+check("★★★ 新增块 X 必须**保留**（旧版按序号切会把它删掉 = 丢内容）",
+      "开场白新增" in (got6b or ""), got6b)
+check("★★★ 已发的 E1/E2 必须剥掉（旧版会留下 E2 = 重复发送）",
+      "第一段" not in (got6b or "") and "第二段" not in (got6b or ""), got6b)
+check("★ 未发的 T3 保留", "第三段" in (got6b or ""), got6b)
+# 反向验证：旧写法（按序号）在同样输入下必须出错 —— 证明这条判据不恒真
+old_way = es.strip_early_sent(REWRITTEN, 2)
+check("★ 反向：旧写法确实丢 X 且留 E2（证明修复有效）",
+      "开场白新增" not in old_way and "第二段" in old_way, old_way)
+
+print()
+print("═══ 6c) ★★ 前导无关块「恰好撞上前缀」时，仍要选**匹配最完整**的起点")
+# 罕见但可能：改写后的第一个块（如"第一"两字）恰好是已发内容的前缀，
+# 若贪心"从头扫"，它会被吃掉一部分 ⇒ 剥掉错误的块。择优起点可避免。
+E1B = "<msg><text>第一段</text></msg>"
+E2B = "<msg><text>第二段</text></msg>"
+T3B2 = "<msg><text>第三段</text></msg>"
+SENT6c = ["<msg><text>第一段第二段</text></msg>"]     # 一段被合并：内容=第一段+第二段
+LURE = "<msg><text>第一</text></msg>"                # 诱饵：也是"第一段…"的前缀
+REW6c = LURE + E1B + E2B + T3B2
+got6c = es.strip_early_sent_smart(REW6c, 1, SENT6c)
+check("★★ 诱饵块必须保留（不能因为撞上前缀就把从未发过的它吃掉）",
+      LURE in (got6c or ""), got6c)
+check("★★ 真正的已发内容被整段剥掉（E1+E2 都不得留在文本里）",
+      "第一段" not in (got6c or "") and "第二段" not in (got6c or ""), got6c)
+check("★ 未发的 T3 保留", "第三段" in (got6c or ""), got6c)
 
 print()
 print("═══ 7) 全部发完 ⇒ 返回 <msg/>（框架不发任何东西）")

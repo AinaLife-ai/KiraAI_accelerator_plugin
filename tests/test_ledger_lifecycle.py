@@ -52,9 +52,16 @@ check("★★ 复合键 ⇒ 不再需要比较轮次键（_raw_ev 已移除）",
 check("★ 轮结束仍统一清理（final_result 里调 _clear_round_state，作为兜底）",
       "_clear_round_state" in MAIN
       and re.search(r"async def observe_final[\s\S]{0,500}?_clear_round_state", MAIN) is not None)
-check("★ 轮结束清理仍覆盖台账与响应缓存（按前缀清该会话所有轮次）",
-      all(k in MAIN[MAIN.find("def _clear_round_state"):MAIN.find("def _clear_round_state") + 1200]
-          for k in ("_sent_ledger", "_resp_by_sid", "_pre = sid + ")))
+# ★★★ 2026-09-28（审计 P1）：契约已更正 —— 轮结束清理**只清本轮**。
+#   旧契约"按前缀清该会话所有轮次"**确认会造成真实重复发送**：
+#   重叠处理同一会话时，第 2 轮的轮结束会把还在跑的第 1 轮的台账清掉
+#   ⇒ 第 1 轮剥离失败 ⇒ 框架重发。详见 tests/test_cross_turn_clear_safety.py
+check("★ 轮结束清理覆盖台账/响应缓存/抢发结果（三份状态一起清）",
+      all(k in MAIN[MAIN.find("def _clear_round_state"):MAIN.find("def _clear_round_state") + 1600]
+          for k in ("_sent_ledger", "_resp_by_sid", "_early_results")))
+check("★★★ 轮结束清理**只清本轮**（接受 event_id；不再按 sid 前缀全清）",
+      "def _clear_round_state(self, sid, event_id=None)" in MAIN
+      and "startswith(_pre)" not in re.sub(r"(?m)^\s*#.*$", "", MAIN))
 
 print()
 print("═══ 2) ★★★ 台账是权威来源（不是兜底），且拿不到标记时不该告警")

@@ -122,7 +122,8 @@ async def main():
         plugin._mark_sent(ctx)
 
     # ② 交给框架发剩余 2 段
-    plugin._early_results["test:gm:1"] = [FakeMP(plugin) for _ in range(3)]
+    # ★★★ 2026-09-28（审计 P2）：`_early_results` 现在是**复合键**（与台账/响应一致）
+    plugin._early_results[plugin._ckey("test:gm:1", Ev.event_id)] = [FakeMP(plugin) for _ in range(3)]
     class R:
         def __init__(self):
             self.__dict__["_accel_early_sent_count"] = 3

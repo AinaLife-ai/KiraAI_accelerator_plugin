@@ -8,11 +8,15 @@ sh run_tests.sh          # 在插件根目录执行
 
 ## 两档测试
 
-**纯逻辑套件（10 个）** —— 不需要框架、不需要网络，clone 下来直接跑：
+**纯逻辑套件（20 个）** —— 不需要框架、不需要网络，clone 下来直接跑：
 `patches` / `stream_first` / `early_sent` / `stream_engine` / `auto_thinking` /
-`parallel` / `parallel_equiv` / `rotation` / `compat` / `load`。
+`parallel` / `parallel_equiv` / `rotation` / `compat` / `load` /
+`dup_send_guard` / `v102_features` / `wallpaper_fx` / `frontend_audit` /
+`log_behaviour` / `thinking_media` / `ledger_lifecycle` 等
+（总数会随版本演进，确切清单以 `run_tests.sh` 里不带框架依赖的那些为准）。
 
-**集成套件（5 个）** —— 需要 **KiraAI 框架源码**，找不到会**自动跳过**（不算失败）：
+**集成套件（22 个）** —— 需要 **KiraAI 框架源码**（少数还需要 `node`），
+找不到会**自动跳过**（不算失败）：
 
 | 套件 | 它真的做了什么 |
 |---|---|
@@ -33,17 +37,21 @@ cp -r /path/to/KiraAI kira_fw_v2346/         # ② 放到插件根下
 > 框架源码只要 `core/` 与 `webui/` 两个目录即可
 > （`git archive v2.34.6 core webui`）。
 
-## 为什么有 5 个套件要"真"跑
+## 为什么这些套件要"真"跑
 
-因为吃过两次亏，都是**静态验证正常、运行时其实坏的**：
+因为吃过**三次**亏，都是**静态验证正常、运行时其实坏的**：
 
 - 面板只用「注入假数据 + 截图」验证过 ⇒ 截图好看，但 URL 前缀写错、
   切换特效里一个 `TypeError` 把轮换永久卡死，都发现不了。
 - 装载自检只测了 install/uninstall ⇒ 从没走过框架的真实调用链，
   于是代理破坏了 `isinstance`、整个消息链路全挂，测试还是全绿。
+- **全部 `test_dup_*` 都自己写 emit 回调** ⇒ 从没走过**生产路径** `_make_engine`，
+  于是那里"忘了 return"的回调让抢发**只对第一段生效**整整一版，测试还是全绿
+  （2026-09-28 发现；补了 `test_production_emit_contract.py` 走生产路径）。
 
 所以现在的规矩是：**打补丁类改动，必须把框架真实调用方跑一遍**；
-**前端改动，必须让真脚本真跑一次**。
+**前端改动，必须让真脚本真跑一次**；
+**改生产回调/工厂，必须从真实的构造入口进（别自己写替代品）**。
 
 ## 反向验证
 

@@ -128,8 +128,12 @@ check("★★★ 台账键 = (sid,轮次) 复合键：重叠轮次天然隔离�
       "_ckey" in _MAIN_CODE and "x00ev" not in _MAIN_CODE)
 check("★★★ _reset_turn_ledger 必须只清**本轮**（旧版清整个会话 ⇒ 清掉正在跑的另一轮）",
       re.search(r"_reset_turn_ledger\(self, sid: str, event_id=None\)", _MAIN_CODE) is not None)
-check("★★ 清理按复合键（含前缀清理，兼容旧键）",
-      "_pre = sid + " in MAIN)
+# ★★★ 2026-09-28（审计 P1）：旧契约"按 sid 前缀全清"**确认会造成真实重复发送**
+#   （第 2 轮的轮结束清掉仍在跑的第 1 轮台账）⇒ 已改为**只清本轮**。
+#   这里断言新契约，并锁死"不得回退"。
+check("★★★ 清理只清本轮（复合键）—— 不得再按 sid 前缀全清",
+      "def _clear_round_state(self, sid, event_id=None)" in MAIN
+      and "startswith(_pre)" not in re.sub(r"(?m)^\s*#.*$", "", MAIN))
 check("★★ 不再有 _ledger_consumed 参与任何剥离决策",
       "_ledger_consumed.get(" not in MAIN and "self._ledger_consumed" not in MAIN)
 
