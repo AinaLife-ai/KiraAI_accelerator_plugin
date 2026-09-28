@@ -1290,9 +1290,12 @@ check("★★ 燃纸收尾：撤遮罩前必须已**整层藏**旧层（含 stag
 #       ⇒ 保险必然重复收尾 ⇒ 约 50% 概率"旧图变亮再硬切"
 #   现在：正常收尾**第一行就置位 stopped** ⇒ 保险看到后零动作；掉帧时保险补帧，
 #   收尾仍然只发生一次、且只走同一条路径 ⇒ 竞速与重复收尾在结构上不可能。
-check("★★★ 燃纸收尾保险必须驱动同一条收尾路径（推帧到 END），不得自己摘遮罩",
+check("★★★ 保险必须先推帧走同一条收尾；只有推帧失败后才允许自己收尾",
       re.search(r"_burnHide = setTimeout[\s\S]{0,900}?step\(\(t0 === null", MAIN) is not None
-      and re.search(r"_burnHide = setTimeout[\s\S]{0,900}?applyMask\(\"none\"\)", MAIN) is None)
+      # 自己收尾（wpHideLayer）必须出现在 `if (stopped) return;` 之后 —— 即"推帧已失败"才轮到它，
+      # 避免历史上"保险与帧循环竞速 ⇒ 约 50% 概率旧图变亮再硬切"的老毛病。
+      and re.search(r"step\(\(t0 === null[\s\S]{0,400}?if \(stopped\) return;[\s\S]{0,600}?wpHideLayer\(fromId\)",
+                    MAIN) is not None)
 check("★★★ 帧循环正常收尾必须置位 stopped（否则保险必然重复收尾 ⇒ 竞速）",
       re.search(r"stopped = true;\s*\n\s*wpHideLayer\(fromId\);", _burn) is not None)
 # ★★★ 旧层的不透明度**只能由一条动画驱动**：两条同属性 fill:forwards 动画谁生效
@@ -1309,15 +1312,19 @@ check("★★★ 禁止「保持不透明」的竞争动画（与淡出同属性
 #   而拖到 .98（dur 的 98%）意味着"烧完之后旧层还带着受热变亮滤镜亮着"
 #   —— 用户实测："结尾概率是变亮的旧图停留至少 1 秒以上，然后新图硬切"。
 #   实测数字：旧层隐藏与新图到位都在 4360ms，而烧穿在 3280ms ⇒ 差了 1.08 秒。
-# ★★★★ 燃纸一开始就必须把旧层移出 `.on`：
-#   CSS `.wp-stage.on .wp-img{opacity:1}` 的优先级**高于动画的 fill:forwards**
-#   ⇒ 只要旧层还带 .on，它的"不透明"就压不住 ⇒ 一旦遮罩被提前清掉
-#   （帧循环抛错/并发 wpLoad/动画被取消），旧层就带着受热变亮滤镜整屏露出
-#   ⇒ 用户实测："还是概率旧图变亮，1 秒以上然后硬切"。
-#   移出 .on 后：CSS 保证不可见，显式可见只剩"遮罩 + inline 动画"一条路 ⇒
-#   任何异常都只会让它回到不可见，不会冻在"可见 + 变亮"。
-check("★★★ 燃纸开始必须让旧层退出 .on（否则 CSS 会顶住淡出 ⇒ 变亮停留）",
-      re.search(r'if \(stFrom\) stFrom\.classList\.remove\("on"\)', _burn) is not None)
+# ★★★★ 燃纸期间**绝不能**摘掉旧层的 `.on`（1.0.71 犯过这个错）：
+#   `.wp-stage.on` 控制的是**整个 stage 的可见性**；旧层承载"被烧的那张纸"，
+#   摘掉 .on ⇒ 旧层整层不可见 ⇒ 燃烧时"还没烧到的纸"区域露出**空底板**
+#   （用户实测："切换后出现空底板的恶心情况"）✗✗
+#   ⇒ 旧层必须保持 .on，退场交给收尾（帧循环 / 兜底 / settle）。
+check("★★★ 燃纸期间不得摘掉旧层的 .on（否则未烧到的区域露出空底板）",
+      re.search(r'stFrom\.classList\.remove\("on"\)', _burn) is None)
+# ★★★ 兜底必须是"最后手段"：推帧收尾失败（step 抛错）时**直接藏掉旧层**，
+#   宁可早切，也绝不留下"变亮的旧图停在那里直到 settle 硬切"。
+check("★★★ 兜底必须有最后手段（推帧失败 ⇒ 直接藏旧层 + 熄火光）",
+      # 允许中间夹注释/空白；关键是：推帧之后、若仍未 stopped，就直接藏旧层
+      re.search(r"if \(stopped\) return;[\s\S]{0,200}?stopped = true;[\s\S]{0,200}?wpHideLayer\(fromId\);",
+                _burn) is not None)
 check("★★★ 旧层淡出必须在烧穿时刻(.82)归零（否则烧完后还亮着 ≈1 秒）",
       re.search(r"anim\(from, \[\{opacity:1, offset:0\},\{opacity:1, offset:\.79\},\{opacity:0, offset:\.82\}\]",
                 _burn) is not None)
