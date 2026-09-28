@@ -108,7 +108,8 @@ async def main():
     mp = FakeMP("test:gm:1", plugin)
 
     print("\n2) 模拟：前 3 段已抢先发出，框架只发剩下 2 段")
-    plugin._early_results["test:gm:1"] = [Result("E1"), Result("E2"), Result("E3")]
+    # ★★★ 2026-09-28（审计 P2）：`_early_results` 现在是**复合键**（与台账/响应一致）
+    plugin._early_results[plugin._ckey("test:gm:1", "e1")] = [Result("E1"), Result("E2"), Result("E3")]
     class Resp:
         pass
     resp = Resp()

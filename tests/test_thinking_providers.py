@@ -174,11 +174,17 @@ check("没配时返回 None", _at.provider_effort(SimpleNamespace(model_config={
 
 ours = {"reasoning_effort": "low", "thinking": {"type": "enabled"}}
 kept = _at.follow_provider_effort(ours, "max")
-check("★ 开关打开：不发 effort（强度的唯一来源是提供商）",
-      "reasoning_effort" not in kept, str(kept))
+# ★★★ 2026-09-28 契约更正（用户："是否能由我们来成功控制"）：
+#   旧契约是"把我们的 effort **去掉**，让提供商那份生效"。但那**名不副实**——
+#   框架对 DeepSeek 只在 `thinking_enabled=True` 时才写 reasoning_effort
+#   （core/provider/src/deepseek/model_clients.py），提供商"关着思考但配了 max"时
+#   框架**根本不发**那个强度 ⇒ 我们把思考打开后，用户的 max 就丢了。
+#   ⇒ 新契约：把提供商的强度**替进**我们的参数（谁该发由我们保证发出去）。
+check("★★ 开关打开：effort **替成提供商的** max（不是删掉、也不再是 low）",
+      kept.get("reasoning_effort") == "max", str(kept))
 check("开关打开：仍然发「开思考」", "thinking" in kept, str(kept))
 check("开关打开但提供商没配强度 ⇒ 用我们的（否则就没强度了）",
-      "reasoning_effort" in _at.follow_provider_effort(ours, None),
+      _at.follow_provider_effort(ours, None).get("reasoning_effort") == "low",
       str(_at.follow_provider_effort(ours, None)))
 
 src_main = (_env.ROOT / "main.py").read_text(encoding="utf-8")

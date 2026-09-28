@@ -70,6 +70,11 @@ run "★壁纸切换特效（防硬切/燃纸）" tests/test_wallpaper_fx.py
 run "★日志行为（不误导/不误报）" tests/test_log_behaviour.py
 run "★媒体描述不计入评分"     tests/test_thinking_media.py
 run "★台账生命周期（防误告警）" tests/test_ledger_lifecycle.py
+run "★★跨轮清理安全（防重叠误清）" tests/test_cross_turn_clear_safety.py
+run "★★生产抢发契约（emit必返回）" tests/test_production_emit_contract.py
+run "★★不可解析段安静交回"     tests/test_unparsable_handback.py
+run "★★跨会话路由（并发/漂移）" tests/test_cross_session_routing.py
+run "★★故障转移不重复（failover）" tests/test_failover_no_dup.py
 
 
 run "前端URL前缀守卫"         tests/test_frontend_api.py
@@ -78,6 +83,7 @@ run "★代理类型透传"           tests/test_proxy_isinstance.py
 run "★真流式端到端"           tests/test_stream_real.py
 run "★壁纸轮换真逻辑"         tests/test_rotation_live.py
 run "★思考注入覆盖面"         tests/test_thinking_providers.py
+run "★★思考控制权（压住/打开）" tests/test_thinking_conflict.py
 
 # ★ 守卫：tests/ 里每个测试文件都必须被上面跑到。
 #   之前就吃过亏 —— 脚本引用了 16 个文件，仓库里只提交了 8 个，

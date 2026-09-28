@@ -230,13 +230,14 @@
         "locales": {
           "zh": {
             "name": "开思考时跟随提供商的强度",
-            "hint": "关（默认）：判定要思考时，插件按自己算出的档位发强度，可能比你提供商里设的低。开：判定要思考时插件只负责「开」，强度完全用你提供商里配的那个值（设的 max 就用 max，不会改成别的）。两种情况下，「关思考」都照常生效。"
+            "hint": "关（默认）：判定要思考时，插件按自己算出的档位发强度，可能比你提供商里设的低。开：判定要思考时插件只负责「开」，强度用你提供商里配的那个值（设的 max 就一定发 max；即使提供商那边关着思考，插件也会把这个强度带出来）。两种情况下，「关思考」都照常生效。"
           },
           "en": {
             "name": "Use the provider's thinking strength",
             "hint": "Off (default): when we decide to think, the plugin sends the effort it computed, which may be lower than the one set in your provider settings. On: when we decide to think, the plugin only turns thinking on and leaves the strength exactly as your provider configured it (max stays max). Turning thinking off still works either way."
           }
-        }
+        },
+        "hint": "Off (default): when thinking is on, the plugin sends the effort it computed, which may be lower than the provider's. On: the plugin only turns thinking on and uses the effort configured on the provider (max stays max, even if the provider has thinking off - the plugin carries the value through). Turning thinking off still works either way."
       },
       "context_ratio_on": {
         "type": "float",

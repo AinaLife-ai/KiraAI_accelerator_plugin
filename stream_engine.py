@@ -126,13 +126,43 @@ class StreamEngine:
             # 注意：只在**当前 task 的调用栈**里判重，并发的其它子任务不受影响。
             raise _RecursionGuard()
 
+        # ★★★ 2026-09-28（重复发送加固 —— 从框架 failover 读出来的**真实**路径）：
+        #   框架的模型组会对**同一个 request 对象**逐个模型重试
+        #   （core/agent/agent_executor.py: `for model_idx, model in enumerate(model_group):`
+        #    里 `await model.chat(request)`；失败则 `continue` 换下一个模型）。
+        #   而每个模型都是我们包装过的 proxy ⇒ 每次重试都会再跑一遍引擎。
+        #   若上一次尝试**流到一半才失败**（网络断开 / 上游 5xx），
+        #   我们可能已经抢发出了几段（不可撤销）；重试再抢发一遍
+        #   ⇒ **同一段在聊天里出现两次**（本仓库实测复现：前两段各两遍）。
+        #   ⇒ `_run_streaming` 在"半途失败且已抢发"时往 request 上打标记，
+        #     本函数见到标记 ⇒ **本次不再抢发**。
+        #     内容不会丢：重试的完整文本仍会返回，发送层按台账剥离后
+        #     框架只补发"尚未发出"的部分（不重不漏）。
+        #   ⚠️ 与"多步 loop"的区别（不能一刀切地"失败过就不再抢发"）：
+        #     多步 loop 里上一步是**成功返回**的（不设标记）⇒ 照常抢发，
+        #     那是设计意图（每一步的文本都是新的）。
+        suppressed = False
+        try:
+            suppressed = bool(request.__dict__.get("_accel_partial_sent"))
+        except Exception:  # noqa: BLE001
+            suppressed = False
+
         token = _IN_FLIGHT.set(stack + (id(client),))
         try:
-            return await self._run_streaming(client, request, **kwargs)
+            resp = await self._run_streaming(
+                client, request, _suppress_emit=suppressed, **kwargs)
         finally:
             _IN_FLIGHT.reset(token)
+        # 本次**成功**返回 ⇒ 清掉"半途失败"标记（下一步/下一轮恢复抢发）
+        if suppressed:
+            try:
+                request.__dict__.pop("_accel_partial_sent", None)
+            except Exception:  # noqa: BLE001
+                pass
+        return resp
 
-    async def _run_streaming(self, client: Any, request: LLMRequest, **kwargs) -> LLMResponse:
+    async def _run_streaming(self, client: Any, request: LLMRequest,
+                             _suppress_emit: bool = False, **kwargs) -> LLMResponse:
         # 优先用"原生 chat_stream"（有真实流式实现），否则才用 chat_stream 兜底
         stream_fn = getattr(client, "chat_stream", None)
         if stream_fn is None:
@@ -146,13 +176,35 @@ class StreamEngine:
         usage: dict | None = None
         saw_tool_call = False
 
-        emitter = SegmentEmitter() if self.emit is not None else None
+        emitter = SegmentEmitter() if (self.emit is not None and not _suppress_emit) else None
+        if _suppress_emit:
+            logger.info(
+                "[accel] 本请求之前半途失败过（框架正在故障转移重试）⇒ "
+                "本次不抢先发送，整段由框架发送（避免同一段重复）")
+
+        async def _guarded(source):
+            """★ 半途失败时把"已抢发"的事实钉在 request 上，供故障转移抑制（见 run）。"""
+            try:
+                async for _c in source:
+                    yield _c
+            except BaseException:
+                if emitter is not None and emitter.emitted:
+                    try:
+                        request.__dict__["_accel_partial_sent"] = True
+                        logger.warning(
+                            "[accel] 流式调用半途失败，且已抢先发送 %d 段（不可撤销）"
+                            " ⇒ 已标记本请求，重试将不再抢发（避免同一段重复）",
+                            len(emitter.emitted))
+                    except Exception:  # noqa: BLE001
+                        pass
+                raise
+
 
         started = time.perf_counter()
         first_seg_at: Optional[float] = None
         chunks = 0
 
-        async for chunk in stream_fn(request, **kwargs):
+        async for chunk in _guarded(stream_fn(request, **kwargs)):
             chunks += 1
             _absorb(chunk, text_parts, reasoning_parts, tool_acc)
             if chunk.tool_calls_delta:
@@ -178,6 +230,19 @@ class StreamEngine:
                     except Exception:                 # noqa: BLE001
                         ok = False
                         logger.exception("[accel] 抢先发送回调异常，本段交回框架")
+                    if ok is None:
+                        # ★★★ 2026-09-28（审计 P0 的**防复发**）：
+                        #   `None` 几乎只有一个来路 —— 回调**忘了 return**。
+                        #   （历史事故：`_make_engine` 的 `_emit` 写成了
+                        #    `await self._emit_segment(...)` 却没 return ⇒
+                        #    每次抢发都被判"没投递" ⇒ 整轮只剩首段 + 响应标记全空，
+                        #    而 `None` 既不抛异常、又与"真没投递"无法区分 ⇒ 完全静默。）
+                        #   行为保持不变（保守当"没投递"），但**留下线索**，
+                        #   让同类断链下次能一眼看见 —— 不再有无声的灾难。
+                        #   守卫：tests/test_production_emit_contract.py
+                        logger.warning(
+                            "[accel] 抢发回调返回 None（疑似忘了 return 投递结果）"
+                            " —— 本段按未投递处理，请检查 emit 回调实现")
                     if ok is False or ok is None:
                         # ★ 没投递 ⇒ 这一段**以及后面还没处理的**全部放回缓冲，
                         #   稍后由 remaining() 交回框架发送。

@@ -76,43 +76,149 @@ def _top_level_msgs(text: str) -> list[tuple[int, int]]:
     return out
 
 
-def strip_by_content(text: str, segments: list[str]) -> str | None:
-    """按**内容**剥掉已发出的段。成功返回剩余文本；无法匹配返回 None。
+def _block_has_content(text: str, span) -> bool:
+    """块内（去掉 <msg> 开/闭标签后）是否还有东西。
 
-    判据：从头往下逐块累加规范化文本，只要"累加结果仍是已发内容的前缀"就吃掉这一块。
-    这样对"一条被拆成多条"和"多条被并成一条"都成立。
+    用来区分两种"规范化文本为空"的块：
+      · `<msg/>` / `<msg></msg>`          ⇒ 纯占位，没有内容
+      · `<msg><sticker id="7"/></msg>` 等 ⇒ **媒体段**（贴纸/图片/语音/转发…）
+
+    ★★★ 2026-09-28（自查发现的回归）：锚点搜索原来只按"可见文字"匹配，
+      而**媒体段没有文字**（`_norm_seg` 去标签后为空）⇒ 匹配不到 ⇒ 保守不剥
+      ⇒ **框架把贴纸/图片再发一遍**（本仓库实测：6 个媒体用例全部残留）。
+      修法：把"媒体段"作为**第二类可匹配对象**，与文字流并行按序消费。
+    """
+    s, e = span
+    seg = text[s:e]
+    seg = re.sub(r"^<msg(?:\s[^>]*)?/?>", "", seg)      # 开标签（含自闭合 <msg/>）
+    seg = re.sub(r"</msg>$", "", seg)                    # 闭标签
+    return bool(seg.strip())
+
+
+def _seg_sig(seg: str) -> str:
+    """媒体段的"身份签名"：块内**标签本身**（标签名 + 全部属性），去掉空白。
+
+    ★★★ 2026-09-28（自查发现的回归，两次）：
+      锚点搜索原来只按"可见文字"匹配 ⇒ 媒体段（没有文字）匹配不到：
+        ① 先修成"按序消费媒体段"—— 但那在"文本里有个*别的*媒体在前"时会**误吃**
+           （实测：已发 sticker7、文本是 `sticker9 + sticker7 + 甲 + 尾`
+            ⇒ 按序吃掉了 sticker9、留下 sticker7 ⇒ 9 丢 + 7 重复）；
+        ② 最终改成**按签名匹配**：`<sticker id="7"/>` 只与**同签名**的块配对，
+           位置无关 ⇒ 上面那例正确保留 9、剥掉 7 和甲。
+      这样对"同一条媒体"（属性一致）稳，对"另一条媒体"（属性不同）不会误吃。
+    """
+    if not seg:
+        return ""
+    inner = re.sub(r"^<msg(?:\s[^>]*)?/?>", "", seg)
+    inner = re.sub(r"</msg>$", "", inner)
+    return re.sub(r"\s+", "", inner)
+
+
+def _find_anchor_run(text: str, blocks: list, emitted_full: str,
+                     media_sigs: list, media_total: int):
+    """扫描出"匹配最完整"的一段连续块 —— 它们合起来正是**已发内容**。
+
+    与"必须从第一块开始累加"不同（那是审计 P3 之前的实现，**确认会丢内容 + 重复**），
+    这里对**每个可能起点**各扫一遍，取"消费内容最多"的那组：
+
+      · 已发段**前面**有新增块（xml_tag_fixer 把裸文本包成 `<msg>` 是常规行为）
+        ⇒ 那些块不参与匹配、被**原样保留**；
+      · 已发段**之间**夹着别的块 ⇒ 同样保留；
+      · 允许一条被拆成多条 / 多条被并成一条（匹配的是**规范化文本**，
+        "块的文字是待消费内容的**前缀**"这一条对拆分/合并都成立）；
+      · ★ 万一**前导的无关块**恰好也是已发内容的某个前缀（罕见但可能），
+        从它开始扫只会消费一点点；从正确的块开始扫能消费满 ⇒ 取满的那组，
+        不会因为"前面撞了一下"就剥错位置；
+      · ★★★ **媒体段**（没有可见文字）：按**签名**配对（见 `_seg_sig`），
+        位置无关 ⇒ 既不会漏剥（重复），也不会误吃别的媒体（丢内容）。
+
+    返回 `(consumed_len, consumed_indices, media_used)`；一段都没消费到则返回 None。
+    """
+    n = len(blocks)
+    norm = [_norm_seg(text[s:e]) for (s, e) in blocks]
+    sig = [_seg_sig(text[s:e]) for (s, e) in blocks]
+    best = None
+    for start in range(n):
+        pos = 0
+        media_left = list(media_sigs)
+        consumed = []
+        for i in range(start, n):
+            piece = norm[i]
+            if not piece:
+                # 没文字的块：与"已发媒体"里**同签名**的配对消费（各匹配一次）
+                s_i = sig[i]
+                if s_i and s_i in media_left:
+                    media_left.remove(s_i)
+                    consumed.append(i)
+                continue
+            # ★ 用 startswith(piece, pos) 而不是 emitted_full[pos:] 切片 ——
+            #   切片在段数多时是多余的字符串拷贝。语义完全一致。
+            if emitted_full.startswith(piece, pos):
+                consumed.append(i)
+                pos += len(piece)
+        media_used = media_total - len(media_left)
+        if consumed and (best is None or (pos, media_used) > (best[0], best[2])):
+            best = (pos, consumed, media_used)
+            # ★★ 强早退（证明正确）：已把**全部**已发内容消费掉 ⇒ 任何其它起点
+            #   最多也只能消费同样多（不可能更多）⇒ 再扫也不会更优，直接停。
+            #   这正好覆盖最常见的形态（前面有新增块、我们的段连续），
+            #   把这种 O(n²) 降到实际 O(n)。
+            if pos >= len(emitted_full) and media_used >= media_total:
+                break
+    return best
+
+
+def strip_by_content(text: str, segments: list[str]) -> str | None:
+    """按**内容**剥掉已发出的段（贪心锚点版，2026-09-28 审计 P3 重构）。成功返回剩余文本；无法匹配返回 None。
+
+    ★★★ 与旧版的差别（旧版**确认**会"同时丢内容 + 重复发送"）：
+      旧版要求"从**第一块**开始累加 == 已发内容的前缀" —— 一旦下游插件
+      在已发段**之前**插入新块（xml_tag_fixer 会把散落裸文本包成 `<msg>`），
+      第一块就匹配不上 ⇒ 整段匹配失败 ⇒ 退回按序号剥离（切前 N 块）
+      ⇒ **新增块与第一个已发段被删掉（丢内容），第二个已发段却留下（重复）** ✗✗
+      实测（审计脚本）：`X + E1 + E2 + T3` ⇒ 按序号切 2 块 ⇒ 剩 `E2 + T3`
+      ⇒ X 丢、E2 重复。
+    现在：**保留一切未被匹配的块**，只删掉"匹配上已发内容"的那些块（连同
+    它们**之间**的空块），前后新增的块一律原样保留。上面那个例子得到 `X + T3` ✓
+    （X 保住、E1+E2 剥掉、T3 留下）。
     """
     if not text or not segments:
         return None
     emitted_full = "".join(_norm_seg(s) for s in segments)
+    # 已发段里的"媒体签名"清单（有内容但没文字的段 = 媒体段）
+    media_sigs = [sig for s in segments
+                  if (sig := _seg_sig(s)) and _norm_seg(s) == ""]
+    if not emitted_full and not media_sigs:
+        return None                     # 只发过空占位（<msg/>）：没有可锚定的东西
     blocks = _top_level_msgs(text)
     if not blocks:
         return None
 
-    acc = ""
-    consumed_end = 0
-    consumed = 0
-    for (s, e) in blocks:
-        piece = _norm_seg(text[s:e])
-        if piece == "":
-            # 没有文字的块（<msg/>、只含媒体）：既然我们发过同等数量的空段，
-            # 就一并吃掉；否则停下来。
-            if consumed < len(segments):
-                consumed += 1
-                consumed_end = e
-                continue
-            break
-        cand = acc + piece
-        if cand and emitted_full.startswith(cand):
-            acc = cand
-            consumed += 1
-            consumed_end = e
-        else:
-            break
-
-    if consumed_end == 0:
+    anchor = _find_anchor_run(text, blocks, emitted_full, media_sigs, len(media_sigs))
+    if anchor is None:
         return None
-    rest = text[consumed_end:]
+
+    # 逐块重建：把"匹配上已发内容"的块删掉，其余（新增 / 未发的块、以及
+    # <msg> 之外的散段文本）**原样保留**。
+    # 空块（`<msg/>` 占位）若夹在已消费块之间 ⇒ 一并删（属于同一段已发内容的间隔）；
+    # 落在消费区之外的 ⇒ 保留（可能是别的插件新增的占位）。
+    _consumed_len, consumed_idxs, _media_used = anchor
+    drop = set(consumed_idxs)
+    norm_all = [_norm_seg(text[s:e]) for (s, e) in blocks]
+    first_idx, last_idx = consumed_idxs[0], consumed_idxs[-1]
+    for i in range(first_idx, last_idx + 1):
+        # 纯占位 <msg/>：夹在中间，一并删（我们从不抢发这种段）
+        if not norm_all[i] and not _block_has_content(text, blocks[i]):
+            drop.add(i)
+
+    out = []
+    cursor = 0
+    for i, (s, e) in enumerate(blocks):
+        if i in drop:
+            out.append(text[cursor:s])
+            cursor = e
+    out.append(text[cursor:])
+    rest = "".join(out)
     return rest if rest.strip() else "<msg/>"
 
 
@@ -154,7 +260,7 @@ def early_sent_count(resp) -> int:
 
 
 def strip_early_sent_smart(text: str, count: int, segments: list | None = None) -> str:
-    """剥离的**推荐入口**：优先按内容匹配，匹配不上才退回按序号。
+    """剥离的**推荐入口**：优先按内容匹配（锚点搜索）；匹配不上时**保守处理**。
 
     为什么要按内容：`count` 是流式期间按**原始**文本数出来的，
     而别的插件可能在发送前改写 `text_response`（补 `<msg>`、拆分消息块、
@@ -162,6 +268,18 @@ def strip_early_sent_smart(text: str, count: int, segments: list | None = None) 
       · count 偏小 ⇒ 少切 ⇒ 重复发送
       · count 偏大 ⇒ 多切 ⇒ 丢内容
     按内容匹配对这两种改写都成立。
+
+    ★★★ 2026-09-28（审计 P3）：**匹配不上时不再退回"按序号剥离"**。
+      旧行为（切前 count 块）在"下游插件在已发段**之前**新增了块"时会
+      **同时丢内容 + 重复发送**：
+        SENT=[E1,E2]，改写后文本 = X + E1 + E2 + T3（X 是新增块、从未发过）
+        按序号切 2 块 ⇒ 删掉 X 与 E1 ⇒ X 丢了，而 E2 还留着 ⇒ 框架再发一次 ✗✗
+      现在有两道保险：
+        ① 锚点搜索：`strip_by_content` 能在**任意位置**找到"连续块 = 已发内容
+           前缀"的那一段（上例会精确剥掉 E1+E2、原样留下 X 与 T3）✓
+        ② 万一连锚点都找不到（文本被改得面目全非）⇒ **不剥**、交回框架原文，
+           并打 error —— 代价最多是"多一条重复"，**绝不删掉从未发出的内容**。
+          这与本插件一贯的取舍一致："宁可重复，不可丢内容"。
     """
     if count <= 0 or not text:
         return text
@@ -170,15 +288,21 @@ def strip_early_sent_smart(text: str, count: int, segments: list | None = None) 
             got = strip_by_content(text, segments)
             if got is not None:
                 return got
-            # 内容对不上：退回按序号（旧行为），但要留下线索
+            # 找不到锚点 ⇒ 保守：不剥（原样交回），但**必须留线索**（不是静默失效）
             import logging
-            logging.getLogger("kira_accelerator").warning(
-                "[accel] 按内容剥离没匹配上（文本可能被其它插件改写过），"
-                "退回按序号剥离 %d 段", count)
+            logging.getLogger("kira_accelerator").error(
+                "[accel] 剥离：在文本里找不到已发段的内容锚点（文本可能被其它插件"
+                "严重改写）。为避免误删未发内容，本次**不剥离**，整段交回框架 —— "
+                "最坏情况是多发一条重复，绝不会丢内容。已发 %d 段 / 文本 %d 字符",
+                len(segments), len(text))
+            return text
         except Exception:  # noqa: BLE001
             import logging
             logging.getLogger("kira_accelerator").exception(
-                "[accel] 按内容剥离出错，退回按序号剥离")
+                "[accel] 剥离：按内容匹配出错 ⇒ 保守地不剥离（不丢内容优先）")
+            return text
+    # 没有段原文可锚定（极罕见：标记在但原文丢失）⇒ 只能按序号切，
+    # 这是唯一可用的启发式；调用方已就该路径单独记一条 warning。
     return strip_early_sent(text, count)
 
 

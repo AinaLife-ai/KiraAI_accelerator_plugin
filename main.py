@@ -356,29 +356,42 @@ class AcceleratorPlugin(BasePlugin):
         except Exception:  # noqa: BLE001
             logger.exception("[accel] 观测失败")
 
-    def _clear_round_state(self, sid):
-        """一轮真正结束时清理"本轮状态"（台账 / 响应缓存）。
+    def _clear_round_state(self, sid, event_id=None):
+        """一轮真正结束时清理"本轮状态"（台账 / 响应缓存 / 抢发结果）。
 
         ⚠️ 这里**不是**剥离能否生效的前提 —— 台账在每次 `send_xml_messages`
         返回时就已经按步消费掉了（见 `_install_early_sent_strip` 的 finally）。
         本函数是**兜底**：一轮里若"抢发了却没走到发送"（事件被 stop），
         残留会留到下一轮，靠这里 + 轮次键一起清掉。
 
-        （历史误区，留个记号免得再踩：曾以为"每次调用后就清台账 ⇒ 第二步
-          剥离不了 ⇒ 整批重复"，并据此把台账改成"留到轮结束才清"。
-          那个推断是错的 —— 第二步的台账是**第二步自己抢发时建的**，
-          不会因为这里清了就变空。真正造成重复的是随后据此加上的
-          "已消费 ⇒ 跳过剥离"，现已删除。）
+        ★★★ 2026-09-28（审计 P1 —— **确认会造成真实重复发送**）：
+          这里原来是"按 sid 前缀清掉该会话**所有轮次**"。而框架会**重叠处理同一会话**
+          （作者自己在 `_ckey` 注释里引用的线上日志就是：第 2 轮的 llm_request 先到、
+          第 1 轮 4 秒后才结束），于是：
+              第 1 轮抢发 A ⇒ 台账[(sid,turn-1)] = [A]
+              第 2 轮（短回复）先跑完 ⇒ observe_final ⇒ 把**第 1 轮**的台账一起清掉
+              第 1 轮这才走到 send_xml_messages ⇒ n=0 ⇒ 不剥离 ⇒ **框架把 A 再发一次** ✗
+          ⇒ 现在**只清本轮**（`(sid, 本轮轮次)` 复合键），与 `_reset_turn_ledger` 对齐。
+          "残留到下一轮"的风险由两处覆盖，不需要"按会话全清"这个更粗的动作：
+            · 每轮开始前 `_reset_turn_ledger`（只清本轮）
+            · `_clear_stale_round_state`（>600s 未活动的键）
+          event_id 缺省（None）时退化为**只清无轮次的旧键**，绝不波及带轮次的其它轮。
+        守卫：tests/test_cross_turn_clear_safety.py
         """
         try:
-            if sid:
-                # ★ 现在是复合键 (sid, 轮次) ⇒ 按**前缀**清掉该会话的所有轮次。
-                #   兼容旧的无复合键形式（`k == sid`）。
-                _pre = sid + "\x00"
-                for _d in (self._sent_ledger, self._resp_by_sid):
-                    for _x in [_y for _y in list(_d.keys())
-                               if _y == sid or _y.startswith(_pre)]:
-                        _d.pop(_x, None)
+            if not sid:
+                return
+            if event_id:
+                # ★ 只清"本轮"这一份（复合键）
+                _k = self._ckey(sid, event_id)
+                for _d in (self._sent_ledger, self._resp_by_sid, self._early_results):
+                    _d.pop(_k, None)
+                return
+            # 拿不到轮次 id（理论上不该发生）⇒ **保守**：只清"不带轮次"的旧键。
+            # 带轮次的其它键一律不动 —— 宁可让 `_clear_stale_round_state`
+            # 稍后按 600s 窗口回收，也绝不误清仍在跑的另一轮（那会造成重复发送）。
+            for _d in (self._sent_ledger, self._resp_by_sid, self._early_results):
+                _d.pop(sid, None)
         except Exception:  # noqa: BLE001
             logger.exception("[accel] 清理本轮发送状态失败（不影响发送）")
 
@@ -386,7 +399,11 @@ class AcceleratorPlugin(BasePlugin):
     async def observe_final(self, event: KiraMessageBatchEvent, final_result, *_):
         # ★ 无论观测是否开启，**都要**清理本轮发送状态（否则台账会残留到下一轮，
         #   下一轮若文本恰好相同就会被误剥离 = 丢内容）。
-        self._clear_round_state(getattr(event, "sid", None))
+        # ★★★ 2026-09-28：必须把 event_id 一起传（只清本轮）。
+        #   按 sid 前缀全清会把**仍在跑的另一轮**的台账清掉 ⇒ 那一轮剥离失败
+        #   ⇒ 框架重发 ⇒ 用户看到重复（审计 P1 实测复现）。
+        self._clear_round_state(getattr(event, "sid", None),
+                                getattr(event, "event_id", None))
         if not self.observe_enabled:
             return
         try:
@@ -455,18 +472,23 @@ class AcceleratorPlugin(BasePlugin):
             #    否则某些键（比如只出现在 _resp_by_sid 里的）永远清不掉 ⇒
             #    多群聊场景下这几个字典会**随会话数缓慢增长**（内存泄漏）。
             keys = set()
-            for d in (self._ledger_ts, self._sent_ledger, self._resp_by_sid):
+            for d in (self._ledger_ts, self._sent_ledger, self._resp_by_sid, self._early_results):
                 if isinstance(d, dict):
                     keys |= set(d.keys())
             for k in keys:
                 # ★ 现在是复合键 (sid\x00轮次)，**每个键都有自己的时间戳**
-                #   （`_emit_segment` 写的）⇒ 直接查即可，不再需要
-                #   "轮次键跟随所属 sid 时间戳"那套特例。
+                #   （`_emit_segment` / `_remember` 写的）⇒ 直接查即可。
                 ts = float(self._ledger_ts.get(k, 0) or 0) if isinstance(self._ledger_ts, dict) else 0
+                # ★★★ 2026-09-28（慢轮次加固）：窗口从 600s 放宽到 **1800s**。
+                #   600s（10 分钟）对"工具多、模型慢"的轮次偏紧：一轮里连着几个
+                #   大工具 + 本地模型推理，超过 10 分钟完全可能；那时下一轮的清理
+                #   会把**仍在跑的那一轮**台账清掉 ⇒ 它走到发送层 n=0 ⇒ 框架重发。
+                #   放宽的代价只是"残留多留 20 分钟"，而残留本身有上限、且
+                #   正确性由轮次键保证（不会误用）⇒ 划算。
                 # 没有时间戳的（陈旧遗留）按「更早」处理 ⇒ 一并清掉
-                if ts and (now - ts) <= 600:
+                if ts and (now - ts) <= 1800:
                     continue
-                for _d in (self._ledger_ts, self._sent_ledger, self._resp_by_sid):
+                for _d in (self._ledger_ts, self._sent_ledger, self._resp_by_sid, self._early_results):
                     _d.pop(k, None)
         except Exception:  # noqa: BLE001
             logger.exception("[accel] 陈旧状态清理失败（不影响请求）")
@@ -653,8 +675,18 @@ class AcceleratorPlugin(BasePlugin):
         ctx = ctx_of(request) if request is not None else None
         emit = None
         if self.early_send:
-            async def _emit(seg: str) -> None:
-                await self._emit_segment(seg, ctx)
+            # ★★★ 必须 `return` 投递结果（2026-09-28，审计 P0 —— 一处静默的断链）：
+            #   `StreamEngine` 是**按返回值**判断"这一段到底发出去没有"的
+            #   （stream_engine.py: `ok = await self.emit(seg)`，`False/None` = 没投递），
+            #   而 `_emit_segment` 的契约本来就是 `-> bool`。
+            #   少了这个 return ⇒ 返回值恒为 None ⇒ 引擎一律判"没投递" ⇒
+            #     · 抢先发送退化成"只有第一段"（整轮提速几乎归零）
+            #     · 响应私有标记（_accel_early_sent_count / _segments）恒为空
+            #       ⇒ 剥离只能走台账兜底；工具轮防护（写 _accel_tool_turn_early）也不再触发
+            #   而这一切**完全静默**（None 既不是异常也不是 False）。
+            #   守卫：tests/test_production_emit_contract.py（走真 _make_engine）
+            async def _emit(seg: str) -> bool:
+                return await self._emit_segment(seg, ctx)
             emit = _emit
 
         def _remember(resp):
@@ -666,6 +698,18 @@ class AcceleratorPlugin(BasePlugin):
                 #   ⇒ 要么重复发送、要么把内容丢掉（见 _ckey 的说明）。
                 _k = self._ckey(ctx.sid, getattr(ctx.event, "event_id", None))
                 self._resp_by_sid[_k] = resp
+                # ★★★ 2026-09-28（慢轮次加固）：**同时写活动时间戳**。
+                #   以前只有 `_emit_segment`（真抢发过）才写 `_ledger_ts`；
+                #   而"响应已记录、但还没走到发送层"的键**没有时间戳** ⇒
+                #   下一轮的陈旧清理把它按"更早"处理、直接清掉 ⇒
+                #   那一轮走到发送层时拿不到响应与台账 ⇒ 剥离失败 ⇒ 框架重发。
+                #   写时间戳后，这类键会被正确地按活动时间保护。
+                try:
+                    if not isinstance(getattr(self, "_ledger_ts", None), dict):
+                        self._ledger_ts = {}
+                    self._ledger_ts[_k] = time.time()
+                except Exception:  # noqa: BLE001
+                    pass
                 if len(self._resp_by_sid) > 32:          # 防泄漏
                     self._resp_by_sid.clear()
                     self._resp_by_sid[_k] = resp
@@ -810,11 +854,61 @@ class AcceleratorPlugin(BasePlugin):
             logger.error("[accel] 抢先发送上下文不完整，本段交回框架发送")
             return False
 
-        # 解析失败 ⇒ 没投递过任何东西，交回框架（由它统一报错/处理）
+        # ★★★ 2026-09-28（串会话加固 —— 用户："消息发送到错误会话，比如使用了跨会话功能后"）：
+        #   **发送目标必须与"框架最终会用的那个 sid"一致**，否则同一条回复会被劈到两个会话：
+        #     · 我们：用请求时捕获的 `ctx.sid`
+        #     · 框架：`send_xml_messages(event, ...)` 里取 **事件当前** 的 `event.sid`
+        #   两者在正常轮次里恒等；但只要**有插件在轮次中途更换了事件的会话**
+        #   （生态里确实存在这种形状：主动消息 / 定时任务先构造事件、再 `event.session = ...`
+        #    覆盖成真实会话；任何在钩子里改写事件的插件同理），二者就会分叉 ——
+        #   那一刻我们若继续"按旧 sid 抢发"，这一句就会进**旧会话**，
+        #   而框架随后把同一段再发进**新会话** ⇒ 用户看到"消息发错会话"。
+        #   ⇒ 这里做一次显式核对：**分叉就拒绝抢发、整段交回框架**
+        #     （由它按当前会话统一发送）。宁可少抢发一段（只影响首字速度），
+        #     也绝不把内容送进错误的会话。
+        #   为什么用"当前事件"而不是实例缓存：`ctx.event` 是**本次请求**的事件对象，
+        #   它被改写时我们看到的就是改写后的值 —— 正是要与框架保持一致的那个值。
+        try:
+            _ev_now = getattr(ctx, "event", None)
+            _sid_now = getattr(_ev_now, "sid", None) if _ev_now is not None else None
+            _sess = getattr(_ev_now, "session", None)
+            if _sid_now is None and _sess is not None:
+                _sid_now = getattr(_sess, "sid", None)
+            if _sid_now and _sid_now != ctx.sid:
+                logger.warning(
+                    "[accel] 会话在轮次中途被更换（%s → %s）⇒ 本段不再抢发，"
+                    "交回框架按当前会话发送（防串会话）", ctx.sid, _sid_now)
+                return False
+        except Exception:  # noqa: BLE001
+            logger.exception("[accel] 会话一致性核对失败（按原 sid 继续）")
+
+        # 本段在"抢发结果 / 台账"里共用的键：`(sid, 轮次)` 复合键（见 `_ckey`）。
+        # ★ 一次算好、处处用同一个 —— 之前 `_early_results` 用裸 sid、其它两处用
+        #   复合键，导致两轮之间串账（审计 P2，见下方记账处的说明）。
+        _k = self._ckey(ctx.sid, getattr(getattr(ctx, "event", None), "event_id", None))
+
+        # 解析失败 ⇒ 没投递过任何东西，交回框架（由它统一报错/处理）。
+        #
+        # ★★★ 2026-09-28（用户："根据 KiraAI 最新规范，修复这一报错"）：
+        #   模型写出未转义的 `&` / `<` 时，这一段 XML 就不可解析 ——
+        #   这是**常见且可预期**的情形，不是插件故障：
+        #     · 框架自己解析失败时也只打一行 error、不给堆栈
+        #       （core/plugin/builtin_plugins/kira-ai/main.py: `except ET.ParseError`）；
+        #     · 生态的约定是"先修再发"，而修复发生在 ON_LLM_RESPONSE 阶段
+        #       （xml_tag_fixer 在 ON_LLM_RESPONSE 里转义；内置 kira-ai 则调另一个
+        #        模型去修）—— **都在我们之后**；
+        #     · 我们在**流式中途**，按规范不得自行转义/改写 XML：
+        #       局部修复会与下游修复产生分歧 ⇒ 重复发送或内容对不上。
+        #   ⇒ 正确姿势是"安静地交回去"：一行 warning、不带堆栈
+        #     （细节降级到 debug）。行为完全不变，只是日志不再像故障。
+        #   守卫：tests/test_unparsable_handback.py
         try:
             actions = await mp._parse_xml_msg(seg, ctx.tag_set)
-        except Exception:  # noqa: BLE001
-            logger.exception("[accel] 抢先发送：解析失败，本段交回框架")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "[accel] 抢先发送：本段暂不可解析（多为模型写了未转义的 & 或 <），"
+                "已交回框架按原流程处理")
+            logger.debug("[accel] 解析失败详情（%s）: %s", type(e).__name__, e)
             return False
 
         # ★★ 必须广播 AFTER_XML_PARSE —— 否则「表情独立成行」这类功能会失效。
@@ -867,7 +961,13 @@ class AcceleratorPlugin(BasePlugin):
                 #   而框架的 _add_message_ids 是**按位置**把 message_results 贴到 <msg> 上的。
                 #   只还回"剩余段"的结果 ⇒ 位置全错 ⇒ 模型在自己历史里读到**错位的
                 #   message_id**（提示词明确说这个 ID 由系统添加，模型会用它引用消息）。
-                self._early_results.setdefault(ctx.sid, []).append(result)
+                # ★★★ 2026-09-28（审计 P2）：键必须是**复合键**（与台账 / 响应缓存一致）。
+                #   原来这里用 `ctx.sid` 裸会话键、且**从不清** ⇒ 一轮"抢发了却没走到发送"
+                #   （事件被 stop / 并发另一轮抢先走到发送）时，残留结果会被**下一轮**
+                #   `pop(sid)` 取走 ⇒ 返回序列里混进上一轮的结果 ⇒ id 全部错位，
+                #   甚至"本轮没抢发也被判定 early"。现已与 `_sent_ledger` 完全对齐：
+                #   同键写、同键读、同键清（见 `_install_early_sent_strip`）。
+                self._early_results.setdefault(_k, []).append(result)
             except Exception:  # noqa: BLE001
                 logger.exception("[accel] 记录抢发结果失败（不影响已投递的事实）")
 
@@ -900,7 +1000,7 @@ class AcceleratorPlugin(BasePlugin):
             try:
                 # ★★★ 按 (sid, 轮次) **复合键**记账 —— 这是修掉"重叠轮次互相清账"
                 #   的关键：两轮各用各的键，谁也不会清掉谁（详见 `_ckey`）。
-                _k = self._ckey(ctx.sid, getattr(getattr(ctx, "event", None), "event_id", None))
+                #   `_k` 在函数开头已算好（`_early_results` 用的是同一个键）。
                 self._sent_ledger.setdefault(_k, []).append(seg)
                 # 记"最后一次活动时间"，供 `_clear_stale_round_state` 判断陈旧
                 if not isinstance(getattr(self, "_ledger_ts", None), dict):
@@ -1019,7 +1119,21 @@ class AcceleratorPlugin(BasePlugin):
             params = build_nothinking_extra_body(style)
         else:
             return kwargs
-        return apply_thinking_params(kwargs, params, client_kind)
+        # ★★★ 2026-09-28（用户："是否能由我们来成功控制"）：
+        #   注入时**清掉提供商那份同维度的思考键**，让"思不思考"在请求体里
+        #   只剩一个声音（否则两把不同拼写的钥匙同时到达网关，谁生效是轮盘赌——
+        #   实测提供商配 `thinking:{enabled/disabled}` 时我们**压不住也打不开**）。
+        #   清场范围 = 我们实际表达的维度：
+        #     · 我们仍在发强度（或压根没开「跟随」）⇒ 强度维度也归我们 ⇒ 清
+        #     · 「跟随提供商强度」开着、且我们没发强度 ⇒ 强度归它 ⇒ **不清**
+        #     · 我们本轮在**关思考** ⇒ 强度没有意义 ⇒ 清掉（免得网关看到
+        #       disabled + max 这种混合体）
+        _has_our_effort = any(("effort" in str(k).lower() or "budget" in str(k).lower())
+                              for k in params)
+        _clear_effort = ((not decision.enabled) or (not self.thinking_follow_provider)
+                         or _has_our_effort)
+        return apply_thinking_params(kwargs, params, client_kind,
+                                     clear_effort=_clear_effort)
 
 
     def _install_parallel_tools(self) -> None:
@@ -1349,7 +1463,11 @@ class AcceleratorPlugin(BasePlugin):
                 #   现在改成**按内容核对**（剥离之后那段）：只有"剥离完仍然整段
                 #   包含已抢发内容"才是真的会重复。
 
-                early = plugin._early_results.pop(sid_now, []) if sid_now else []
+                # ★★★ 2026-09-28（审计 P2）：`_early_results` 也改用**同一个复合键**
+                #   （原来按裸 sid 存取且从不清 ⇒ 上一轮残留会混进本轮的返回序列
+                #   ⇒ 框架按位置贴 message_id 时全部错位；详见 `_emit_segment` 处说明）。
+                #   键 `_k` 与 `_sent_ledger` / `_resp_by_sid` 完全一致 ⇒ 同键写、同键读、同键清。
+                early = plugin._early_results.pop(_k, []) if _k else []
                 if n > 0:
                     # ★ 用"按内容剥离"：count 是按**原始**文本数的，
                     #   而 xml_tag_fixer 这类插件可能已改写 text_response
