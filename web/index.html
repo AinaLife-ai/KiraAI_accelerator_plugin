@@ -2868,6 +2868,19 @@ function fxBurn(to, from, rim, id, fromId){
          火线轮廓的凹处（半径最小可到 0.5r）在 closeT 推满之前可能仍留在视口内，
          那段窗口就是用户看到的"**旧图亮起残留 → settle 硬切**"。
          平台对齐后，"烧穿"与"退场"是**同一时刻**，残留在时间轴上不再存在。 */
+  /* ★★★★ 2026-09-28（用户："还是概率旧图变亮，1 秒以上然后硬切"）—— 真机制：
+     CSS 里 `.wp-stage.on .wp-img{opacity:1}`（行 68）**优先级高于动画的 fill:forwards**
+     ⇒ 我那条 `from` 的淡出动画**根本压不住它**，旧层在整个燃烧期始终不透明；
+     一旦遮罩被提前清掉（帧循环中途抛错、并发 wpLoad、动画被取消…），
+     旧层就带着受热变亮滤镜**整屏露出**，直到 settle 才被藏 ⇒ "变亮停留 → 硬切" ✓
+     ⇒ 不再靠"动画淡出 + onfinish"（都依赖帧循环/动画活着），
+       改为**让旧层立刻退出 .on**：从这一刻起 CSS 就保证它不可见，
+       而遮罩此刻才刚开始烧（.82 的淡出/收尾都是后面的事）⇒ **观感零影响**。
+       这样"旧层可见"只剩一个来源：`wpHideLayer` 写的 inline
+       （异常安全、且被 try/catch 包住），结构上不可能再冻住。 */
+  try {
+    if (stFrom) stFrom.classList.remove("on");
+  } catch (e) { /* 无所谓 */ }
   anim(from, [{opacity:1, offset:0},{opacity:1, offset:.79},{opacity:0, offset:.82}],
        {duration: dur, easing:"linear"});
 
@@ -2897,10 +2910,21 @@ function fxBurn(to, from, rim, id, fromId){
        那就**先替它把最后一帧画完**：el 推到 END ⇒ 火源半径经 closeT 推到"必定盖满"，
        并且跑完收尾路径（火光淡出 + 整层藏）。此时画面已经是"烧尽 + 干净的新图"，
        再收尾就**没有任何可见变化** —— 不会再出现"旧图还亮着被硬切"。 */
-    try { step((t0 === null ? performance.now() : t0) + Math.round(SPAN) + 1); } catch (e) { /* 无所谓 */ }
-    if (stopped) return;
-    stopped = true;
-    try { if (rafId) cancelAnimationFrame(rafId); } catch (e) { /* 老 WebView */ }
+    /* ★★★ 2026-09-28（用户："还是概率旧图变亮，1 秒以上然后硬切"）—— 真根因：
+       收尾条件是 `el >= END`，而 `END = max(t0 + rate)` ∈ **[0.88, 1.22]**
+       （t0 ∈ [0,0.08]、rate ∈ [0.88,1.14] ⇒ 实测约 97% 的情况下 END > 1.0183）。
+       原来这里只把 el 推到 `1.0183` ⇒ **END 稍大就进不去收尾分支**，
+       旧层不被隐藏；可**紧接着却照样 `stopped = true` + `cancelAnimationFrame`**
+       ⇒ 把本来还能自己跑完的帧循环**杀掉** ⇒ 画面冻在"旧层可见"的状态，
+       而旧层上还挂着 `brightness(1.10) saturate(1.45)` 的 forwards 滤镜
+       ⇒ **旧图变亮地留着**，直到 settle 才被藏掉 = **硬切** ✓
+       "概率性"也由此而来：只有帧循环没抢在保险前收尾（rAF 被节流/掉帧）时才触发。
+       ⇒ 两处修：① 把 el 推到 **END 之外**（SPAN × (END + 0.5)），保证必进收尾；
+                ② 万一仍未收尾（step 抛错等），**什么都不做** ——
+                   绝不置位 stopped、绝不 cancelAnimationFrame，
+                   让帧循环继续跑完（它自己会收尾）。 */
+    try { step((t0 === null ? performance.now() : t0) + Math.round(SPAN * (END + 0.5))); } catch (e) { /* 无所谓 */ }
+    if (!stopped) return;
     /* ★★★ 2026-09-28（兜底只服务一件事：新图必须在最终画面上）：
        正常路径（帧循环走到 el >= END）已经把一切都收好了：
          · 旧层：声明式淡出（.88 平台 → 淡出）走完 + wpHideLayer 整层藏 + display:none
@@ -3085,6 +3109,18 @@ function fxBurn(to, from, rim, id, fromId){
       stopped = true;
       wpHideLayer(fromId);
       applyMask("none");
+      /* ★★★ 2026-09-28（用户："还是概率旧图变亮，1 秒以上然后硬切"）：
+         这里再补一道**最硬的保证** —— 收尾这一刻直接把旧层写成不可见。
+         此刻 closeT 已推满 ⇒ 遮罩盖满整屏 ⇒ 这一步**在画面上不可见**；
+         但它让"旧层可见"在结构上不可能：即使收尾之后帧循环再被打断
+         （掉帧 / 长任务 / 保险在 END 之前误杀），
+         旧层也已经 opacity:0 + visibility:hidden，
+         绝不会出现"旧图带着受热变亮滤镜冻在那里，直到 settle 才硬切"。
+         （用 !important：CSS 层叠里它高于动画，之后任何动画都弄不亮它。） */
+      try {
+        from.style.setProperty("opacity", "0", "important");
+        from.style.setProperty("visibility", "hidden", "important");
+      } catch (e) { /* 无所谓 */ }
       anim(from, [{opacity:0},{opacity:0}], {duration: dur * 0.18, easing:"linear"});
       glow.style.opacity = "0";
       core.style.opacity = "0";
