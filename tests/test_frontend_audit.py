@@ -61,7 +61,9 @@ print(f"     墨渗偏置（从代码读到）: BIAS0={B0}  BIAS1={B1}")
 img_opacity_writes = re.findall(r"\bim\.style\.opacity\s*=", js)
 check("★★ 藏旧层必须集中在一处（wpHideLayer / wpHideEl），stage 与 img 一起藏",
       "function wpHideEl" in js and "function wpHideLayer" in js
-      and "st.style.visibility = \"hidden\";" in js)
+      # 2026-09-28：改用 !important（普通 inline 会被后续写入顶掉 —— 开屏钉层那次就是）
+      and 'st.style.setProperty("visibility", "hidden", "important")' in js
+      and 'im.style.setProperty("opacity", "0", "important")' in js)
 check("★★★ 燃纸的描边挂在 stage 上 ⇒ 只藏 .wp-img 不够，必须整层藏",
       "wpHideLayer(fromId)" in js and "wpHideEl(from, from.parentElement)" in js)
 
@@ -466,7 +468,9 @@ print("═══ 13) ★★ 开屏收尾必须用显式 Web Animation（CSS 同�
 check("★ finishSplash 用 sp.animate([...]) 做收尾",
       re.search(r"sp\.animate\(\[", js) is not None)
 check("★ 收尾动画覆盖 opacity + transform + filter（化开而非单纯透明）",
-      "scale(1.045)" in js and "blur(12px)" in js and "opacity:0" in js[js.index("const OUT_MS"):js.index("const OUT_MS") + 400])
+      "scale(1.045)" in js and "blur(12px)" in js
+      # 窗口要够大：OUT_MS 与 sp.animate 之间还夹着"开屏钉层"那一段（含 wpBusy 守卫）
+      and "opacity:0" in js[js.index("const OUT_MS"):js.index("const OUT_MS") + 1600])
 check("★ 隐藏等待按 OUT_MS 计算（不再硬编码 1200）",
       "OUT_MS + 180" in js or "OUT_MS +" in js)
 check("CSS 里仍保留 .splash.out 作为极老环境的后备",
@@ -1317,6 +1321,18 @@ check("★★★ 禁止「保持不透明」的竞争动画（与淡出同属性
 #   摘掉 .on ⇒ 旧层整层不可见 ⇒ 燃烧时"还没烧到的纸"区域露出**空底板**
 #   （用户实测："切换后出现空底板的恶心情况"）✗✗
 #   ⇒ 旧层必须保持 .on，退场交给收尾（帧循环 / 兜底 / settle）。
+# ★★★★ 开屏收尾"钉住当前图层"必须**避开切换在飞的时刻**：
+#   它会挑带 .on 的那层写 inline opacity:1，而切换在飞时那正是"正在被烧的旧层"
+#   ⇒ 落在"帧循环收尾之后、settle 之前"的 ~1 秒里就把旧图钉回可见（受热滤镜仍在）
+#   = 用户报的"变亮的旧图停留 1 秒以上，然后新图硬切"（开屏收尾在加载后约 6.2s，随时可能撞上）。
+check("★★★ 开屏收尾不得在切换在飞时钉图层（否则把收尾藏好的旧层钉回来）",
+      re.search(r'if \(!wpBusy\)\{[\s\S]{0,400}?classList\.contains\("on"\)[\s\S]{0,200}?style\.opacity = "1"',
+                js) is not None)
+# ★★★ 隐藏必须写 !important：普通 inline 会被**任何后写的 inline** 覆盖
+#   （开屏钉层就是一处）⇒ "藏好了又被写回来"。
+check("★★★ 图层隐藏必须写 !important（普通 inline 会被后续写入顶掉）",
+      re.search(r'im\.style\.setProperty\("opacity", "0", "important"\)', js) is not None
+      and re.search(r'st\.style\.setProperty\("opacity", "0", "important"\)', js) is not None)
 check("★★★ 燃纸期间不得摘掉旧层的 .on（否则未烧到的区域露出空底板）",
       re.search(r'stFrom\.classList\.remove\("on"\)', _burn) is None)
 # ★★★ 兜底必须是"最后手段"：推帧收尾失败（step 抛错）时**直接藏掉旧层**，
