@@ -69,7 +69,7 @@ body{
 /* 条带特效的每一片（全尺寸 + 各自 clip-path 拼成整图） */
 .s-strip{position:absolute;inset:0;background-size:cover;background-position:center}
 /* 揭示边缘的光环：让"边界"看得见 —— 纯柔边遮罩看起来就只是淡入 */
-.wp-rim{position:absolute;inset:0;z-index:3;pointer-events:none;opacity:0}
+.wp-rim{position:absolute;inset:0;z-index:4;pointer-events:none;opacity:0}
 /* 待验证功能：置灰 + 徽标 */
 .sw.locked{opacity:.45;cursor:not-allowed;filter:grayscale(1)}
 .sw.locked input{cursor:not-allowed}
@@ -1307,8 +1307,16 @@ html.jsfx .sp-rim{animation:none!important}
      SVG 若是 0×0，image 也就是 0×0 ⇒ **什么都画不出来** ⇒ 墨渗的"新图"根本不可见
      ⇒ 收尾时画面直接跳出来 = 用户说的"硬切"（这是第三个真 bug）。
      只作载体、不接收指针事件。 -->
-<!-- ★★★ 层叠：墨染载体必须画在**两个壁纸层之上**（z-index:2），
+<!-- ★★★ 层叠（2026-09-29 重新定值）：墨染载体必须画在**两个壁纸层之上**，
      且在 `.wp-rim`（z-index:3，揭示光晕）之下。
+     ⇒ 壁纸层 = **1 / 2**（由 wpSetLayerOrder 显式写入：旧层=1、新层=2）
+       墨染载体 = **3**  ⇒ 恰好高于两层、且不与任何值相等（同值要靠 DOM 顺序
+                          比大小，而 svg 排在两个 .wp-stage **之前** ⇒ 会被压住 ✗）
+       .wp-rim  = **4**
+     改过一次的教训：墨染载体原来是 2、新层也是 2 ⇒ **同值** ⇒ 退回 DOM 顺序比较
+     ⇒ 墨染反而被压在壁纸层下面（"墨渗完全没生效"）。给值**必须错开**。
+     另：fxBurn 的 glow/core/char 是挂在 stage 上的兄弟节点，它们有自己的
+     3/4/5，那是**在 stage 内部**的层级，与这里的 stage 间层级互不干扰。
 
      踩的坑（用户："墨染还是硬切、我怀疑完全没生效"）：
        `.wallpaper` 里所有子元素都是 `position` 定位 + z-index auto/0，
@@ -1354,7 +1362,7 @@ html.jsfx .sp-rim{animation:none!important}
         这里用 vw/vh 写，和 `.wp-stage` 的 `max(72px, 6%)` 数值等价
         （6% 水平＝6vw、垂直＝6vh，因为包含块就是视口大小的 `.wallpaper`），
         而且不像 `width:100%` 那样依赖包含块解析（历史上有过 100% → 0×0 的坑）。 -->
-<svg style="position:absolute;left:calc(-1 * max(72px, 6%));top:calc(-1 * max(72px, 6%));width:calc(100% + 2 * max(72px, 6%));height:calc(100% + 2 * max(72px, 6%));z-index:2;pointer-events:none"
+<svg style="position:absolute;left:calc(-1 * max(72px, 6%));top:calc(-1 * max(72px, 6%));width:calc(100% + 2 * max(72px, 6%));height:calc(100% + 2 * max(72px, 6%));z-index:3;pointer-events:none"
      aria-hidden="true">
   <!-- maskUnits must be userSpaceOnUse: the inner <rect width="100%"> is in
        userSpaceOnUse units, but the mask declared objectBoundingBox (where it
@@ -2598,9 +2606,59 @@ function wpNormalize(id){
      正确做法：`wpNormalize` 只负责"清干净"，可见性交给 settle 里的 `.on`。 */
 }
 
+/* ═══════════════════════════════════════════════════════════════════════
+   ★★★★ 图层顺序的**唯一真相**（2026-09-29，用户报的两个 bug 的共同根因）
+   ═══════════════════════════════════════════════════════════════════════
+   背景：
+     `.wp-stage` 早先被显式设成 `z-index:1`（为了给墨染载体让位）。
+     **一旦 z-index 不是 auto，"按 DOM 顺序绘制"的兜底就永久失效了**，
+     两个图层从此**同 z-index、仍按 DOM 顺序**决定上下 ——
+     而 wp-b 恒排在 wp-a 之后 ⇒ **wp-b 永远在最上层**。
+
+   后果（这就是用户报的两个现象的真正来源）：
+     旧层=wp-a → 新层=wp-b ：恰好蒙对（新层在后）  ⇒ 正常 ✓
+     旧层=wp-b → 新层=wp-a ：**旧图 wp-b 永远盖住新 wp-a**
+                              ⇒ 整个转场过程**一个像素都看不见**，
+                                直到收尾才"啪"地换过去 ✗
+     轮换每轮都换层 ⇒ **这两件事每隔一次必然发生**。
+     随机性只体现在"哪一轮先撞上"，不是玄学。
+
+     · 7 套特效（fade/iris/wipe/blinds/shutter/zoom/ink）**整个都赌在 DOM 顺序上**
+     · 只有 fxBurn 显式写了 z-index（纸=2 / 新图=1）⇒ 它是唯一天然正确的一套
+
+   两处症状都由此派生：
+     A「新图一直被模糊覆盖」：给旧层加的 `filter:blur(11px)` 是 **fill:forwards
+       的永久动画**，而旧层恒在最上且 opacity:1 ⇒ 糊掉的旧图永远盖着新图 ✗
+     B「约 1 秒后旧图闪现」：收尾里"撤载体 / 摘 .on"不是同一帧 ⇒ 中间有一帧
+       旧层被放行、而新图还没人画 ⇒ 旧图带着填满状态的模糊闪一下 ✗
+
+   修法：**在唯一的"图层装配点"（wpLoad）里显式翻转 z-index**，
+   让不变量简单到无法违反 ——
+       · 正在揭示的层（新层）= TO_Z   ⇒ 恒在最上
+       · 另一层（旧层）        = FROM_Z ⇒ 恒在下
+   这样整套视觉模型（旧图保持可见、被后图"吃掉"）**与 DOM 顺序完全解耦**，
+   上面那张表里"看不见"的那一半永远消失。
+
+   ⚠️ 写到 **stage** 上而不是 `.wp-img`：跨 stage 的堆叠顺序由 stage 自己决定，
+      子元素 z-index 管不到外面（fxBurn 的注释里也踩过这个）。
+   ⚠️ 顺序：**先给新层 TO_Z，再把另一层压到 FROM_Z** ⇒ 中间不存在瞬时反转。 */
+const WP_FROM_Z = "1", WP_TO_Z = "2";
+function wpSetLayerOrder(newId){
+  try {
+    const st = wpStage(newId);
+    if (st) st.style.zIndex = WP_TO_Z;              // 新层先抬起来
+    const other = (newId === "wp-a") ? "wp-b" : "wp-a";
+    const so = wpStage(other);
+    if (so) so.style.zIndex = WP_FROM_Z;            // 旧层再压下去
+  } catch (e) { /* 无所谓 */ }
+}
+
 /* 把新图装进目标层（先彻底复位，避免上一轮残留） */
 function wpLoad(id, url){
   const st = wpStage(id);
+  /* ★★★★ 第一件事：确立图层顺序（见上面的长注释）。
+     必须在这里、而且必须在任何可见性操作之前 —— 保证"装好的那一层一定在最上"。 */
+  wpSetLayerOrder(id);
   wpCancelAnimations(st);
   /* ★★★ 必须回收上一次 `wpHideLayer()` 留下的整层隐藏，
      否则这一层轮到上场时会是**不可见**的（那会让画面整个空掉）。 */
@@ -2832,16 +2890,25 @@ function fxBurn(to, from, rim, id, fromId){
   }
 
   /* ★★★ 层级：燃纸的语义是"**上面这张纸**被烧掉、露出下面的新图"。
-     但 DOM 里 wp-b 在 wp-a 之后 ⇒ 新图默认在**上层**，而旧的"纸"在下层
-     ⇒ 我挖的是**下层的 mask**，被新图整个盖住 ⇒ 观感是"燃完了前图还在"。
-     ⚠️ 这里踩了一次：给 `.wp-img` 设 `z-index` **没有用** ——
+     ⚠️ 这里踩过一次：给 `.wp-img` 设 `z-index` **没有用** ——
         from 与 to 分属**两个不同的 `.wp-stage`**，跨 stage 的堆叠顺序由
         **stage 自己**决定，子元素的 z-index 管不到外面。
-     ⇒ 必须把 z-index 设在 **stage** 上。 */
+     ⇒ 必须把 z-index 设在 **stage** 上。
+
+     ★★★★ 2026-09-29（**重要回退**）：这里原来硬写着 `stFrom="2" / stTo="1"`
+     （纸在上、新图在下）。它**恰好**是 7 套特效里唯一"蒙对"的一套
+     （其余全靠 DOM 顺序，而 wp-b 恒在后 ⇒ 只有"新层=wp-b"那一半能看），
+     但它也正是"旧图停在上层、带着 blur 常驻"的写法。
+
+     ⇒ 现在图层顺序**统一由 `wpLoad()` 里的 `wpSetLayerOrder()` 负责**
+       （新层 = WP_TO_Z、旧层 = WP_FROM_Z），这里**不再插手** ——
+       同一份不变量只允许有一个来源，两处各写一份必然打架。
+
+     燃纸"纸在上"的语义**不需要**靠层级来表达：我们挖的是 `from`（旧层）的 mask，
+     而新图恒在它**之上**，火线挖到哪、新图就透到哪 ⇒ 视觉结果与"烧掉上面这张纸"
+     完全一致，而且**两个方向都对**（旧的写法在"新层=wp-a"时反而是旧图被盖住）。 */
   const stFrom = (typeof fromId !== "undefined") ? wpStage(fromId) : null;
   const stTo   = (typeof id     !== "undefined") ? wpStage(id)     : null;
-  if (stFrom) stFrom.style.zIndex = "2";   // 纸在上
-  if (stTo)   stTo.style.zIndex   = "1";   // 新图在下（被烧出来）
 
   /* ③ 两层可见性**显式用动画写**（wpLoad 已 remove("on")，不写就会烧在透明层上）。
      ★★ 2026-09-28：删掉原来那条 `anim(from, [{opacity:1},{opacity:1}], dur*0.9)` 的
@@ -3165,9 +3232,12 @@ function fxBurn(to, from, rim, id, fromId){
     [glow, core, char].forEach(n => { try { n.remove(); } catch (e) { /* 已走 */ } });
     try {
       applyMask("none"); from.style.clipPath = "";
-      /* 还原 stage 层级，别影响下一次切换 */
-      if (stFrom) stFrom.style.zIndex = "";
-      if (stTo)   stTo.style.zIndex   = "";
+      /* ★★★ 2026-09-29：**不要**再动 stage 的 z-index。
+         fxBurn 已经不再自己写层级（统一由 wpSetLayerOrder 负责），
+         这里若还去 `zIndex = ""`，就会把 wpLoad 刚立好的
+         "新层=2 / 旧层=1" 一起抹掉 ⇒ 下一轮切换又退回"靠 DOM 顺序"的轮盘赌 ✗
+         （这正是 1.0.74 里那个 bug 的另一条传播路径：燃纸跑完以后，
+           后一次切换的层级就没人保证了。） */
     } catch (e) { /* 无所谓 */ }
   };
 }
@@ -3327,14 +3397,21 @@ function fxInk(to, from, rim){
   } catch (e) { /* 老 WebView：退回 CSS 值，不影响功能 */ }
   if (!cm || !img) return;                 // 拿不到就退化为普通显示（不崩）
 
-  /* ★ 清掉两个壁纸层上**可能残留**的 inline z-index。
-     fxBurn 会临时写（纸=2 / 新图=1）并在清理函数里还原；万一下一次切换
-     赶在它还原之前开始，残留的 2 就能让那一层跑到墨染（z-index:2）**之上**
-     ⇒ 墨染又被盖住、再次"没生效"。这里先清一遍，保证墨染恒在两层之上。 */
-  [to, from].forEach(function(el){
-    const st = el && el.parentElement;
-    if (st && st.style) st.style.zIndex = "";
-  });
+  /* ★★★★ 2026-09-29（**重要修正**）：这里原来把两个壁纸层的 inline z-index
+     **清成空**（`st.style.zIndex = ""`），本意是"防止 fxBurn 残留的 z-index
+     把墨染盖住"。但那条前提已经不存在了 ——
+
+       · fxBurn 现在**不再自己写层级**（统一交给 wpSetLayerOrder）
+       · 真正的问题恰恰是**清空**：清了之后层级退回 `auto` + DOM 顺序，
+         `wpLoad` 刚立好的"新层=2 / 旧层=1"被抹掉 ⇒ 又变成那个轮盘赌 ✗
+
+     而墨染载体（`<svg>` 的 z-index:2）与壁纸层现在都在 [1,2] 区间里：
+       墨染载体 z-index = 2，新层 = 2  ⇒ **同值 ⇒ 谁在上看 DOM 顺序**，
+       而 svg 在 DOM 里**排在两个 .wp-stage 之前** ⇒ 反而被压在下面 ✗
+     ⇒ 把墨染载体抬到 **z-index:4**（见 HTML 里那个 svg 的 inline style），
+       高于 `.wp-rim`(3)、也高于壁纸层(1/2) ⇒ 语义明确、不依赖同值比较。
+     这里就**什么都不做**了。 */
+  if (false) { /* 保留结构，防止有人再加回"清空 z-index" */ }
 
   if (n1) n1.setAttribute("seed", String(1 + Math.floor(Math.random() * 999)));
   if (n2) n2.setAttribute("seed", String(1 + Math.floor(Math.random() * 999)));
@@ -3611,16 +3688,19 @@ async function _wpTransition(url){
     else if (fx === "shutter") wpCleanup = fxStrips(to, from, rim, true, true);
     else if (fx === "zoom")    fxZoom(to, from);
     else if (fx === "burn"){
-      /* ★★ 2026-09-28：fxBurn 若**中途**抛错（已经写完 stage 的 inline z-index、
-         已经建好 glow/core/char 描边层），此时 `wpCleanup` 还没赋值 ⇒
-         这些副作用没有任何人会回收：
-           · z-index 永久留在两个 stage 上 ⇒ 之后**每一次**切换的层级都被污染
+      /* ★★ 2026-09-28：fxBurn 若**中途**抛错（已经建好 glow/core/char 描边层），
+         此时 `wpCleanup` 还没赋值 ⇒ 这些副作用没有任何人会回收：
            · 描边层挂在旧 stage 上 ⇒ 画面留下灼热光斑
-         ⇒ 在这里就地回收，再 re-throw 让外层 catch 走兜底淡入。 */
+         ⇒ 在这里就地回收，再 re-throw 让外层 catch 走兜底淡入。
+
+         ★★★★ 2026-09-29：这里原来还会把两个 stage 的 z-index **清成空**。
+         那是 bug，不是修复 —— 层级现在由 `wpLoad()` 的 `wpSetLayerOrder()`
+         统一保证，"清空"等于把它抹掉 ⇒ 本次切换与**之后每一次**切换都退回
+         "靠 DOM 顺序"的轮盘赌（正是用户报的"新图一直被模糊覆盖"）。
+         而且 fxBurn 现在**根本不写** stage 层级了，这里也无从"残留"。
+         ⇒ 只清理真正由特效产生的副作用（描边层）。 */
       try { wpCleanup = fxBurn(to, from, rim, id, fromId); }
       catch (e) {
-        try { wpStage(id).style.zIndex = ""; } catch (e2) { /* 无所谓 */ }
-        try { wpStage(fromId).style.zIndex = ""; } catch (e2) { /* 无所谓 */ }
         try { wpStage(fromId).querySelectorAll(".s-strip").forEach(n => n.remove()); } catch (e2) { /* 无所谓 */ }
         throw e;
       }
@@ -3647,30 +3727,35 @@ function wpSettle(id, fromId){
   /* ★★ 清理（移除条带）单独包一层：它一旦抛异常，**绝不能连累后面的状态更新**。
      否则 wpCur 不推进、锁不释放 ⇒ 轮换静默死掉 —— 而失败的只是"移除几个
      已经看不见的条带元素"这种无关紧要的事。状态正确性优先于清理干净。 */
-  /* ★★★★ 2026-09-27（第三次修"收尾闪旧图"）：**必须先把旧层藏掉，再跑 wpCleanup()**。
+  /* ★★★★ 2026-09-27 的关键结论仍成立：**撤载体必须在旧层被放行之前**。
      为什么：`wpCleanup()` 会**撤掉视觉载体** ——
        · 墨染：把承载新图的 SVG `<image>` 设成 display:none
        · 燃纸/条带：移除那些描边/条带元素
-     而墨染的旧层是**设计上全程可见**的（"旧图保持可见，被墨吃掉"），
-     燃纸的旧层在 `applyMask("none")` 之后也会**恢复成完全不透明**。
-     ⇒ 载体一撤、旧层又还在 ⇒ 露出来的就是**旧图**
-       ⇒ 观感"切到新图后旧图又闪一下 / 最后停在旧图，然后硬切到新图"。
-     ⇒ 顺序改成：**先藏旧层**（opacity:0 + visibility:hidden 双保险），
-       **再**撤载体 ⇒ 任何时刻露出来的都只会是**新图**。
-     用 visibility 一起写是防"某个动画用 fill:forwards 把 opacity 顶回去"
-     （Web Animations 的优先级高于行内样式）；两者都会被 wpNormalize 清掉，无副作用。 */
-  try {
-    const _st0 = wpStage(fromId), _im0 = wpImg(fromId);
-    /* ★★★ 2026-09-28（main 的修复，移植回来）：**摘 .on 必须是第一步**。
-       用户："火线明明播到最后一下，却像把旧图带出来了一样；有时对有时错"。
-       收尾这几步存在**先后竞态**：旧层的"不可见"若只靠 inline，后面任何一步都可能
-       把它抹掉（wpNormalize 清 style / wpCleanup 撤载体 / 中途抛异常）——只要发生在
-       "摘 .on"之前，旧图就会**重新整屏可见**，再被下一步切掉。
-       ⇒ 先摘 .on：从这一瞬起 **CSS 就保证旧层不可见**。 */
-    if (_st0){ _st0.classList.remove("on"); }
-    wpHideLayer(fromId);                       // ★ 整层藏（含 stage 上的描边）
-    if (_im0){ _im0.style.opacity = "0"; _im0.style.visibility = "hidden"; }
-  } catch (e) { /* 无所谓 */ }
+     而墨染的旧层是**设计上全程可见**的、燃纸的旧层在 `applyMask("none")` 之后
+     也会恢复成完全不透明 ⇒ **载体一撤、旧层还在** ⇒ 露出来的就是**旧图**。
+     （2026-09-29 的修正：原文写的是"先藏旧层再撤载体"，但**代码实现是反的**。
+       现在按正确的顺序落地：先撤载体，再摘 .on / 归一化，且两步在同一帧完成。） */
+  /* ★★★★ 2026-09-29（用户："切到新图后约 1 秒，旧图又闪现一次"）——
+     这一段原来是**"先改 CSS 状态、最后才撤载体"**，中间存在一个空窗：
+
+       ① `st.classList.remove("on")` / inline 隐藏  ⇒ CSS **立刻放行**旧层
+       ② `wpNormalize(fromId)`                      ⇒ 清掉特效残留
+       ③ `wpCleanup()`  ← 墨染/燃纸在这里才撤掉**承载新图的载体**
+
+     ①②③ 之间只要有一帧被画出，画面就是"旧图（也许还带着填满状态的
+     `filter:blur(11px)` / 受热滤镜）**没人盖着**" ⇒ **旧图闪现** ✗
+
+     为什么它是概率性的：收尾由 `await sleep(wpLastDur + 260)` 触发，
+     而 sleep 走的是**定时器**，渲染走的是**帧**；`wpCleanup` 里的
+     `setTimeout`/rAF 各自独立 ⇒ 谁先到不确定。而且只要插入层的 z-index
+     恰好把旧层抬到最上（见 wpLoad 的注释），闪的就一定是"完整可见"的旧图。
+
+     ⇒ 正确顺序只有一种：**先撤载体，再改 CSS**，而且两步都发生在**同一帧**里
+       （同步执行，不给渲染器插进来的机会）。
+         · 撤载体时旧层还被 CSS 的 `.on` 挡着 ⇒ 撤掉什么都不会露出来 ✓
+         · 紧接着摘 .on + 归一化 ⇒ 此时新图已由 `wpLoad` 的显式 z-index
+           保证在旧层**之上**，所以露出来的只可能是新图 ✓
+     顺带：因为层级不再依赖 DOM 顺序，"新层恰好在下"这种位置也永远不会再出现。 */
   try {
     if (wpCleanup){ wpCleanup(); }
   } catch (e) {
@@ -3678,19 +3763,21 @@ function wpSettle(id, fromId){
   } finally {
     wpCleanup = null;
   }
-  /* ★★★ 顺序很关键：**先摘掉旧层的 .on，再归一化旧层**。
-     踩过的坑（用户："燃纸燃完会出现旧图帧，而不是变成新图"）：
-       原来先 `wpNormalize(fromId)`、后 `remove("on")`。
-       而 wpNormalize 会 `im.style.cssText = ""` ⇒ **清掉特效写的 inline opacity**
-       ⇒ 在"清空"到"摘 .on"之间，CSS `.wp-stage.on .wp-img{opacity:1}` 仍然生效
-       ⇒ **旧图重新变可见**（一帧闪现），然后才被摘掉。观感就是"燃完闪一下旧图"。
-     ⇒ 正确顺序：**先摘 .on**（旧层立即不可见），**再归一化**（清残留不会让它复现）。 */
-  /* ★★★ 收尾第一件事：**直接把旧层设为不可见**（inline 最确定），
-     然后再做清理与切换。这样无论后面哪一步抛异常、或动画的 fill 状态有什么意外，
-     旧图都不可能再出现在画面上（用户："切换后还是会存在旧图闪现"）。
-     只对**旧层**写 opacity:0 是安全的：
-       紧接着 `wpNormalize(fromId)` 会清掉这行 inline，
-       而那时 `.on` 已摘掉 ⇒ CSS 本来就是 opacity:0 ⇒ 不会像"写成 1"那样永久可见。 */
+  /* 下面才是"放行旧层"——必须在载体撤掉之后。 */
+  try {
+    const _st0 = wpStage(fromId), _im0 = wpImg(fromId);
+    /* ★★★ 2026-09-28（main 的修复，移植回来）：**摘 .on 必须是第一步**。
+       用户："火线明明播到最后一下，却像把旧图带出来了一样；有时对有时错"。
+       收尾这几步存在**先后竞态**：旧层的"不可见"若只靠 inline，后面任何一步都可能
+       把它抹掉（wpNormalize 清 style / 中途抛异常）——只要发生在"摘 .on"之前，
+       旧图就会**重新整屏可见**，再被下一步切掉。
+       ⇒ 摘 .on 要抢在前面：从这一瞬起 **CSS 就保证旧层不可见**。
+     下面 `wpHideLayer` 写的是 !important 的 opacity/visibility 双保险，
+     防"某个动画用 fill:forwards 把 opacity 顶回去"（动画优先级高于普通行内样式）。 */
+    if (_st0){ _st0.classList.remove("on"); }
+    wpHideLayer(fromId);                       // ★ 整层藏（含 stage 上的描边）
+    if (_im0){ _im0.style.opacity = "0"; _im0.style.visibility = "hidden"; }
+  } catch (e) { /* 无所谓 */ }
   wpStage(fromId).classList.remove("on");
   try { wpNormalize(fromId);
   /* ★★★ 2026-09-28（main 的修复，移植回来）：**归一化之后必须再藏一次旧层**。
@@ -3700,7 +3787,10 @@ function wpSettle(id, fromId){
      而此时旧层上可能还挂着动画（fill:forwards），动画一露头旧图就在收尾这一瞬重新可见。
      ⇒ 归一化后再藏一次，并把旧层上所有动画取消，确保彻底退场。 */
   try { wpCancelAnimations(fromId); } catch (e) { /* 无所谓 */ }
-  try { wpHideLayer(fromId); } catch (e) { /* 无所谓 */ } } catch (e) { console.warn("[accel] 归一化旧层失败", e); }
+  try { wpHideLayer(fromId); } catch (e) { /* 无所谓 */ }
+  wpStage(fromId).classList.remove("on");   // ★ 兜底：归一化清掉 inline 后再摘一次 .on
+  try { wpHideLayer(fromId); } catch (e) { /* 无所谓 */ }
+  } catch (e) { console.warn("[accel] 归一化旧层失败", e); }
   /* ★ 新层同理：**先加 .on** 再归一化，避免"清掉 opacity 但 .on 还没加"
      的瞬间（那会让新图闪一下或在墨染这类"本体被隐藏、由 SVG 承载"的特效上
      表现为突然出现 = 硬切）。 */

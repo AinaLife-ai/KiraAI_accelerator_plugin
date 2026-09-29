@@ -108,12 +108,24 @@ _sx = [x for x in _sc["section_appearance"]["fields"]["wallpaper_effect"]["optio
 check("★ JS 与 schema 的特效清单一致", sorted(_js) == sorted(_sx), f"{_js} vs {_sx}")
 
 print()
-print("═══ 燃纸层级（纸必须在**上层**才看得到被烧）═══")
+print("═══ 燃纸层级（**统一由 wpSetLayerOrder 负责**，特效不得自己写）═══")
 # ⚠️ 踩过：给 .wp-img 设 z-index **没用** —— from/to 分属两个 .wp-stage，
-#    跨 stage 的堆叠顺序由 stage 自己决定。判据因此直接查 stage 上的赋值。
-check("★ z-index 设在 **stage** 上（不是 .wp-img）",
-      "stFrom.style.zIndex" in _b and "from.style.zIndex" not in _b)
-check("★ 收尾还原 stage 层级", 'stFrom.style.zIndex = ""' in _b)
+#    跨 stage 的堆叠顺序由 stage 自己决定。
+#
+# ★★★★ 2026-09-29（**契约反转**）：这里原来断言"燃纸自己把 stFrom 设成 2、
+#   收尾再还原成空"。那条契约**就是 bug 本身**：
+#     · `stFrom=2 / stTo=1` 是"旧层在上"的写法 ⇒ 旧图盖住新图、还带着 blur 常驻 ✗
+#     · 收尾 `zIndex = ""` 会把 wpLoad 刚立好的层级**抹掉** ⇒ 下一轮又退回
+#       "靠 DOM 顺序"的轮盘赌 ⇒ 这就是用户报的"新图一直被模糊覆盖"和
+#       "旧图约 1 秒后闪现"的另一条传播路径。
+#   ⇒ 新契约：图层顺序**只允许有一个来源**（wpLoad → wpSetLayerOrder）。
+#     特效（含燃纸）**一律不许**碰 stage 的 z-index，也不能在收尾把它清空。
+check("★★★ fxBurn **不再自己写** stage 的 z-index（统一交给 wpSetLayerOrder）",
+      "style.zIndex" not in _b)
+check("★★★ fxBurn 收尾**不得清空** stage 的 z-index（清空 = 抹掉层级保证）",
+      'style.zIndex = ""' not in _b)
+check("★★★ 层级保证的唯一来源是 wpLoad → wpSetLayerOrder",
+      "wpSetLayerOrder(id)" in HTML and "WP_TO_Z" in HTML and "WP_FROM_Z" in HTML)
 check("★ 收尾显式隐藏纸（不只靠动画 fill）", 'from.style.opacity = "0"' in _b)
 
 

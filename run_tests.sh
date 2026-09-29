@@ -19,8 +19,14 @@ run() {
   file="$1"
   RAN="$RAN $(basename "$file")"
   printf '\n──── %s ────\n' "$name"
+  # ★ 按扩展名选解释器：前端那条"真引擎跑转场"的测试是 Node 写的
+  #   （它要在最小 DOM/WAAPI 桩里**真的执行**壁纸引擎，python 做不到）。
+  case "$file" in
+    *.js) RUNTIME="node" ;;
+    *)    RUNTIME="python3" ;;
+  esac
   # ★ 硬超时：几个集成测试会起真服务器，卡住不能让整套挂死
-  if ! timeout -k 5 240 python3 "$@" > /tmp/_accel_out 2>&1; then
+  if ! timeout -k 5 240 $RUNTIME "$@" > /tmp/_accel_out 2>&1; then
     fail=$((fail+1)); echo "❌ $name 失败"
     # ★ 只输出"失败项"与逐条 ✗，而不是尾部 40 行 ——
     #   否则偶发失败时看不到究竟是哪条断言（之前吃过这个亏）
@@ -67,6 +73,8 @@ run "★计数保留期（30天/永久）" tests/test_stats_retention.py
 run "★计数清理安全性（不误伤）" tests/test_stats_safety.py
 run "★v1.0.2 新功能（多选/扫光/外链）" tests/test_v102_features.py
 run "★壁纸切换特效（防硬切/燃纸）" tests/test_wallpaper_fx.py
+run "★★★壁纸图层顺序（两方向）" tests/test_wallpaper_layer_order.py
+run "★★★壁纸转场行为（真引擎）" tests/test_wallpaper_transition.js
 run "★日志行为（不误导/不误报）" tests/test_log_behaviour.py
 run "★媒体描述不计入评分"     tests/test_thinking_media.py
 run "★台账生命周期（防误告警）" tests/test_ledger_lifecycle.py
@@ -89,10 +97,17 @@ run "★★思考控制权（压住/打开）" tests/test_thinking_conflict.py
 #   之前就吃过亏 —— 脚本引用了 16 个文件，仓库里只提交了 8 个，
 #   结果别人 clone 下来跑不起来。现在漏加会当场报错。
 MISSING=""
-for f in tests/test_*.py; do
+for f in tests/test_*.py tests/test_*.js; do
+  [ -e "$f" ] || continue
+  b="$(basename "$f")"
+  case "$b" in
+    # 显式豁免：_env 是**公共辅助模块**不是测试（它不叫 test_* 也进不来，
+    # 这里只是把意图写清楚，防止以后有人误加）
+    _env.py) continue ;;
+  esac
   case " $RAN " in
-    *" $(basename "$f") "*) ;;
-    *) MISSING="$MISSING $(basename "$f")" ;;
+    *" $b "*) ;;
+    *) MISSING="$MISSING $b" ;;
   esac
 done
 if [ -n "$MISSING" ]; then
