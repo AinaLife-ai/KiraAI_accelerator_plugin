@@ -221,14 +221,14 @@ if (API) {
   console.log("\n═══ 1) wpLoad() 必须确立『新层在上』的层级");
   for (const [from, to] of [["wp-a", "wp-b"], ["wp-b", "wp-a"]]) {
     /* 先都装上，让层级由最后一次 wpLoad 决定 */
-    API.wpLoad("wp-a", "A.svg");
-    API.wpLoad("wp-b", "B.svg");
+    API.wpLoad("wp-a", "A.svg", {order:true});
+    API.wpLoad("wp-b", "B.svg", {order:true});
     const zB = stageB.style.zIndex, zA = stageA.style.zIndex;
     check(`wpLoad("wp-b") 后：wp-b(${zB}) 高于 wp-a(${zA})`,
       Number(zB) > Number(zA), `a=${zA} b=${zB}`);
   }
   /* 反向再验一次 */
-  API.wpLoad("wp-a", "A2.svg");
+  API.wpLoad("wp-a", "A2.svg", {order:true});
   check("wpLoad(\"wp-a\") 后：wp-a 高于 wp-b（两个方向都成立）",
     Number(stageA.style.zIndex) > Number(stageB.style.zIndex),
     `a=${stageA.style.zIndex} b=${stageB.style.zIndex}`);
@@ -237,10 +237,25 @@ if (API) {
   /* 桩里没有真渲染循环，直接检查 wpLoad 之后的静态不变量：
      —— 这正是这个 bug 的可判定形式：层级必须在**装配时就确定**，
         而不是等到收尾。只要 wpLoad 立好 z-index，整个转场就都对。 */
-  API.wpLoad("wp-b", "B.svg");
+  API.wpLoad("wp-b", "B.svg", {order:true});
   const zTop = Number(stageB.style.zIndex), zBot = Number(stageA.style.zIndex);
   check("转场期间：新层 z-index 严格大于旧层 ⇒ 旧图永远盖不住新图",
     zTop > zBot, `new=${zTop} old=${zBot}`);
+
+  console.log("\n═══ 2b) ★★★ wpLoad **不带 {order:true}** 时不得改动层序（v1.0.76 回归守卫）");
+  /* 这条守的是"新图永久模糊直到下张"的根因：
+     startWallpaperRotation / playSplash 也会调 wpLoad，它们**不知道**谁是新层；
+     若 wpLoad 无条件翻层级，就会把在飞转场的层序倒置 ⇒ 上层留旧图 ⇒ 一直模糊。 */
+  API.wpLoad("wp-b", "B.svg", {order:true});     // 先立好：b 上 a 下
+  const beforeA = stageA.style.zIndex, beforeB = stageB.style.zIndex;
+  API.wpLoad("wp-a", "A.svg");                   // 不带 order ⇒ 只装图，不许动层级
+  check("wpLoad(无 opts) 不改动 wp-a 的 z-index",
+    stageA.style.zIndex === beforeA, `was=${beforeA} now=${stageA.style.zIndex}`);
+  check("wpLoad(无 opts) 不改动 wp-b 的 z-index",
+    stageB.style.zIndex === beforeB, `was=${beforeB} now=${stageB.style.zIndex}`);
+  check("层序仍是 b 在上（未被无 opts 的 wpLoad 倒置）",
+    Number(stageB.style.zIndex) > Number(stageA.style.zIndex),
+    `a=${stageA.style.zIndex} b=${stageB.style.zIndex}`);
 
   console.log("\n═══ 3) 收尾顺序：撤载体必须在放行旧层之前（代码级已静态验，这里验行为）");
   let cleanupAt = null, offAt = null;
