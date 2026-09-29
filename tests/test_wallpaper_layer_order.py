@@ -84,11 +84,34 @@ check("常量定义：TO_Z 必须大于 FROM_Z",
            and (lambda m: int(m.group(2)) > int(m.group(1)))(
                re.search(r'WP_FROM_Z\s*=\s*"(\d+)"\s*,\s*WP_TO_Z\s*=\s*"(\d+)"', JS_NOCOMMENT))))
 
+# ★★★★ 2026-09-29（v1.0.76，**契约反转**）：这条原来断言
+#   "wpLoad 第一件事就是 wpSetLayerOrder(id)"（即**无条件**翻层级）。
+#   那**正是"新图永久模糊直到下张"的根因**：
+#     startWallpaperRotation / playSplash 也会调 wpLoad，它们不知道谁是新层；
+#     无条件翻转就会把在飞转场的层序倒置 ⇒ 上层留旧图 ⇒ 一直糊 ✗
+#   ⇒ 新契约：层级翻转必须**显式 opt-in**（只有 _wpTransition 传 {order:true}）。
 _load = fn_body("wpLoad")
-check("wpLoad() 第一件事就是确立图层顺序（wpSetLayerOrder(id)）",
-      _load is not None and pos(_load, "wpSetLayerOrder(id)") >= 0 and
-      pos(_load, "wpSetLayerOrder(id)") < 200,
-      f"at {pos(_load, 'wpSetLayerOrder(id)')}")
+check("★★★ wpLoad 只在显式 {order:true} 时才翻层级（不得无条件翻）",
+      _load is not None and "opts && opts.order" in _load and
+      "if (opts && opts.order) wpSetLayerOrder(id);" in _load)
+check("★★★ wpLoad 里不得出现无条件的 wpSetLayerOrder(id) 调用",
+      _load is not None and "if (opts && opts.order) wpSetLayerOrder(id);" in _load and
+      len(re.findall(r"(?<!opts && opts\.order\)) wpSetLayerOrder\(id\)", _load)) == 0)
+# 唯一真正知道"谁是新层"的地方必须传这个标志
+_t = fn_body("_wpTransition")
+check("★★★ _wpTransition 传 {order:true}（唯一知道新层的地方）",
+      _t is not None and "{order:true}" in _t)
+
+# 收尾必须"持锁跑完重排再放锁"（否则 deferred restart 会留出并发窗口）
+_settle2 = fn_body("wpSettle")
+_p_core = pos(_settle2, "startWallpaperRotationCore()")
+_p_unlock = pos(_settle2, "wpBusy = false;")
+check("★★★ 收尾先同步跑完重排、再放锁（不留并发窗口）",
+      0 <= _p_core < _p_unlock, f"core@{_p_core} unlock@{_p_unlock}")
+check("★★★ 收尾显式清掉另一层的 .on（有且只有一层 .on 不变量）",
+      _settle2 is not None and 'const other = (id === "wp-a") ? "wp-b" : "wp-a";' in _settle2)
+check("★★★ 重排拆成 Core（外部入口判锁用，不让收尾路径自我循环）",
+      fn_body("startWallpaperRotationCore") is not None)
 
 print("\n═══ 2) ★★★★ 轮换必换层 ⇒ 两个方向都必须工作")
 # wpOther 必须真的换到另一层（否则不会来回切），且 wpCur 在收尾时推进

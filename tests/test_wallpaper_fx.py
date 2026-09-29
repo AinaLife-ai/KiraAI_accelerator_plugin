@@ -95,7 +95,14 @@ check("★ 每处速率不同（否则是同心圆）", "rate:" in _b)
 check("★ 火线为连续曲线（blob，非网格方块）", "blob(" in _b and "Q" in _b)
 check("★ 用 mask 挖洞（evenodd 单路径）", "evenodd" in _b and "maskImage" in _b)
 check("★ 三层边缘：光晕 + 火芯 + 炭化线", "glow" in _b and "core" in _b and "char" in _b)
-check("★ 半径到边缘为止（不会一秒吞屏）", "q.far" in _b)
+# ★★★★ 2026-09-29（v1.0.76，**契约更新**）：半径语义改过两次。
+#   原判据是 `"q.far" in _b`（终点=到最远角的距离）。实测那**仍然会一秒吞屏**：
+#   多火源时每个洞都长到"盖满全屏"，N 个洞叠加 ⇒ 屏幕在 ~2s 就烧穿（总时长 4s）✗
+#   现在终点是 `q.need`（按火源数分摊、只负责自己那一块）+ `g^1.8` 放慢增长，
+#   实测覆盖率 2%→18%→56%→87%→100% 铺满整段时长 ✓
+check("★★★ 半径终点用 q.need（按火源数分摊，不是各洞都盖满全屏）", "q.need" in _b)
+check("★★★ 增长曲线放慢（g^1.8），不是线性/二次（否则一秒吞屏）",
+      "Math.pow(g, 1.8)" in _b or "Math.pow(g,1.8)" in _b)
 check("★ 可取消（收尾清理）", "cancelAnimationFrame" in _b)
 
 print()

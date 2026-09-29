@@ -95,13 +95,20 @@ if settle:
           f"remove@{i_rm} add@{i_add}")
 
 # 首图：必须给两层都 wpLoad（清 .on）后再设 wp-a
-rot = re.search(r"function startWallpaperRotation\(\)\{([\s\S]*?)\n\}", js)
+# ★★★★ 2026-09-29（v1.0.76）：函数拆成了两层 ——
+#   外部入口 startWallpaperRotation（只判锁/记待办）
+#   实际重排 startWallpaperRotationCore（不判锁）
+#   ⇒ 判据改为看 **Core**（"重排实体"在这里）。
+rot = re.search(r"function startWallpaperRotationCore\(\)\{([\s\S]*?)\n\}", js)
 check("startWallpaperRotation 存在", rot is not None)
 if rot:
     b = rot.group(1)
     n_load = len(re.findall(r'wpLoad\("wp-[ab]"', b))
     # ★ 设计已改（用户反馈硬切）：重排时**不再预先装填另一层** ——
     #   那会让"旧图还可见 + 新图已就位"同时存在，随后瞬间交替 = 硬切。
+    # ★★★★ 2026-09-29（v1.0.76）：这条仍然成立，但**理由更硬了** ——
+    #   wpLoad 现在还要小心"不要顺手改层级"（那会造成新图永久模糊）。
+    #   重排路径只允许在"没有任何可见底图"时装填**一次**。
     check("★ 重排不再预先装填目标层（改由 wpTransition 过渡揭示）",
           n_load <= 1 and "hasVisible" in b, f"wpLoad {n_load} 次")
     # ★ 行为升级（用户反馈"背景切换还是硬切"）：首图现在**不再直接摆上去**，
@@ -109,6 +116,13 @@ if rot:
     #   （先给底层、收尾时再归位），关键判据改为"任何时刻都只有一个 .on"。
     check("首图仍保证「任何时刻只有一个 .on」（不会两层同时可见）",
           b.count('classList.add("on")') >= 1 and "wpTransition(" in b)
+    # ★★★★ 2026-09-29（v1.0.76）：新增更硬的保证 —— 收尾必须显式清掉**另一层**的 .on。
+    #   两层同时 .on 时 `.wp-stage.on .wp-img{opacity:1}` 会让"在下那层"也变不透明；
+    #   若它同时残留了转场期的 blur，且层级被倒置过，屏幕上就会一直是那张糊图。
+    _settle_src = js[js.index("function wpSettle"):]
+    check("★★★ 收尾显式清掉另一层的 .on（建立「有且只有一层 .on」不变量）",
+          re.search(r'const other = \(id === "wp-a"\) \? "wp-b" : "wp-a";[\s\S]{0,120}?classList\.remove\("on"\)',
+                    _settle_src) is not None)
 
 print()
 print("═══ 3) ★★ 开屏必须在**第一帧**出现（不能等网络）")
@@ -1238,7 +1252,7 @@ check("★★★ 燃纸收尾必须**先取消动画、再整层藏**（顺序�
 #    但动画原来在 `el >= 1` **无条件收尾** ⇒ 速率 >1 的火源那一刻
 #    k = (1-t0)/rate < 1、半径只到 far*k² ⇒ **纸还剩一大块没烧到就被切掉**。
 #    ⇒ 必须等**所有**火源都烧完（END = max(t0+rate)）才收尾，
-#      并在最后一段把纸**整体淡出**（残余纸 → 平滑交叉过渡，而不是"啪"一下）。
+#      并在最后一段把纸**整体淡出**。
 check("★★★ fxBurn 必须等**所有**火源烧完（END = max(t0+rate)）才收尾",
       re.search(r"const END = P\.reduce\(", _burn) is not None
       and re.search(r"if \(el < END\)", _burn) is not None,
@@ -1247,11 +1261,18 @@ check("★★★ fxBurn 必须等**所有**火源烧完（END = max(t0+rate)）�
 #   最小可到 r·(1 − 1.32·amp)（amp 最大 0.38 ⇒ 只剩 0.5·r）
 #   ⇒ 即使 k=1（r = far）某些凹处仍留在视口内 ⇒ 直接藏旧图会"啪"一下。
 #   ⇒ 正解是把半径平滑推到 far/(1−1.32·amp)（最坏约 2·far），让凹处也越过视口。
-check("★★★ 收尾必须保证烧穿：推到轮廓最小处也越过视口（数值验证）",
-      (2.2 * 2577.0 + 320) * (1 - 1.32 * 0.38) >= 2577.0
-      # ★ 必须查**剥注释后的 js**：用 HTML 会把注释里引用的公式当成代码 ⇒ 假绿
-      #   （反向验证时"把公式改弱"竟不报红，就是这么来的）
-      and ("q.far * 2.2 + 320" in js))
+# ★★★★ 2026-09-29（v1.0.76，**契约反转**）：这条原来断言"推到 2.2*far+320 盖满"。
+#   实测该公式**仍然会一秒吞屏**（多火源时每个洞都长到盖满全屏，N 个叠加）
+#   ⇒ 现在终点改为 `q.need`（按火源数分摊）+ `g^1.8` 放慢，
+#     并要求"铺满发生在时长末段"而不是中段。判据改为查这两个特征。
+# ★★★★ 2026-09-29（v1.0.76，**契约反转**）：终点半径与增长曲线都改过。
+#   ① 终点从"到最远角的 far"改成 `q.need`（按火源数分摊）—— 原来每个洞都长到盖满
+#      全屏，N 个洞叠加 ⇒ 屏幕在 ~2s 就烧穿（总时长 4s）✗
+#   ② 增长曲线从 `k`/`k²` 改成 `g^1.8` —— 进一步把"铺满"推到时长末段。
+check("★★★ 半径终点按火源数分摊（q.need），不是各洞都盖满全屏",
+      "q.need" in _burn)
+check("★★★ 增长曲线放慢到 g^1.8（否则多火源并集一秒吞屏）",
+      ("Math.pow(g, 1.8)" in _burn) or ("Math.pow(g,1.8)" in _burn))
 # ★★★ 反过来：**禁止**用"整体淡出旧图"来兜底 —— 那会让旧图与新图
 #   同时可见地叠在一起，用户实测"切换完有一个淡入淡出、好像混入了别的"。
 #   （1.0.15 就是这么写的，这里把它钉死，防止再犯。）
@@ -1371,8 +1392,12 @@ check("★★★ 兜底必须有最后手段（推帧失败 ⇒ 直接藏旧层 
       # 允许中间夹注释/空白；关键是：推帧之后、若仍未 stopped，就直接藏旧层
       re.search(r"if \(stopped\) return;[\s\S]{0,200}?stopped = true;[\s\S]{0,200}?wpHideLayer\(fromId\);",
                 _burn) is not None)
-check("★★★ 旧层淡出必须在烧穿时刻(.82)归零（否则烧完后还亮着 ≈1 秒）",
-      re.search(r"anim\(from, \[\{opacity:1, offset:0\},\{opacity:1, offset:\.79\},\{opacity:0, offset:\.82\}\]",
+# ★★★★ 2026-09-29（v1.0.76，**契约反转**）：旧层的语义变了。
+#   原设计：旧层是"被烧穿的纸"，所以它要在烧穿时刻淡出。
+#   新设计：旧层是"垫在下面的底图"（新图由火线从它上面揭出来），
+#   ⇒ 旧层必须**全程完全不透明**；一旦淡出，还没揭到的区域就会露黑底（空底板）。
+check("★★★ 旧层全程保持不透明（它是垫底的图，淡出会露黑底）",
+      re.search(r"anim\(from, \[\{opacity:1, offset:0\},\{opacity:1, offset:1\}\]",
                 _burn) is not None)
 # ★★ 且必须挂 onfinish 直接隐藏旧层 ⇒ 不依赖帧循环/定时器（WebView 会节流 rAF）。
 check("★★ 淡出结束必须直接隐藏旧层（不依赖帧循环）",

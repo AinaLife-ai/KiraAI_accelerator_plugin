@@ -2653,12 +2653,42 @@ function wpSetLayerOrder(newId){
   } catch (e) { /* 无所谓 */ }
 }
 
-/* 把新图装进目标层（先彻底复位，避免上一轮残留） */
-function wpLoad(id, url){
+/* ★★★★ 2026-09-29（v1.0.76，用户："依然切换特效大概率导致新图永久模糊直到下张"）——
+   这是 v1.0.75 之后仍然复现的**真正根因**，必须把 `wpLoad` 与"改层级"分开。
+
+   v1.0.75 把 `wpSetLayerOrder(id)` 放进了 `wpLoad()`，理由是"它是唯一的图层装配点"。
+   这个假设**不成立**：还有**两个地方**会调 `wpLoad()`，而它们都**不在**一次转场的
+   语义里，也**不持有**任何"谁是新层"的信息：
+
+     · `startWallpaperRotation()` 的 `!hasVisible` 分支：`wpLoad("wp-a", ...)`
+       （面板保存配置 / 轮换重排 / 开屏都可能走到）
+     · `playSplash()`：`wpLoad("wp-a", ...)`
+
+   于是出现这条**层级倒置**链路（已实机复现，见下）：
+     ① 转场开始：`wpLoad("wp-b")` 立好 wp-b=2 / wp-a=1（这一次是对的）
+     ② 中途面板保存配置 ⇒ `startWallpaperRotation()` 撞上 `wpBusy` ⇒ 置 `wpPendingRestart`
+     ③ 转场收尾 `wpSettle(id=wp-b)`：`wpCur = "wp-b"; wpBusy = false;`
+        紧接着 `setTimeout(startWallpaperRotation, 0)`
+     ④ **deferred restart 立刻跑**：`hasVisible` 为真 ⇒ `wpTransition(...)`
+        读 `wpOther()` = `wp-a` ⇒ `wpLoad("wp-a")` **把 wp-a 抬到 2、wp-b 压到 1** ✓
+        到这里都对……但如果 ④ 与 ⑤ 之间被"面板保存 / 开屏 / 又一次重排"插进来，
+        或 ④ 自己没能走到收尾，就会留下：
+           wp-a=2（在上）装的是**旧图**，wp-b=1（在下）装的是新图
+        ⇒ 屏幕上看到的一直是"在上那层"，而它是旧图/或被留了 blur
+        ⇒ **"新图永久模糊直到下张"** ✓ 与用户描述完全一致。
+
+   ⇒ 修法：`wpSetLayerOrder` 只在**转场内部**（`_wpTransition`）调用，
+     并且**幂等**：只有当 `fromId` 确实是"当前可见层"时才翻转。
+     其余调用方（轮换重排 / 开屏 / 自愈）只负责"把图装上"，不碰层级。
+     `wpLoad` 保留一个可选的 `opts.order`，默认 **false**。 */
+function wpLoad(id, url, opts){
   const st = wpStage(id);
-  /* ★★★★ 第一件事：确立图层顺序（见上面的长注释）。
-     必须在这里、而且必须在任何可见性操作之前 —— 保证"装好的那一层一定在最上"。 */
-  wpSetLayerOrder(id);
+  /* ★★★★ 层级**不再在这里无条件翻转**（v1.0.76 的关键修正，见上面 wpSetLayerOrder 处的长注释）。
+     默认不碰层级：`wpLoad` 也可能被"轮换重排 / 开屏"调用，那些调用方
+     **不知道**谁才是这一次转场的新层，顺手翻转就会把在飞的转场层级倒置
+     ⇒ 上层留旧图 ⇒ "新图永久模糊直到下张"。
+     只有 `_wpTransition` 会显式传 `{order:true}`（它确实知道 id 就是新层）。 */
+  if (opts && opts.order) wpSetLayerOrder(id);
   wpCancelAnimations(st);
   /* ★★★ 必须回收上一次 `wpHideLayer()` 留下的整层隐藏，
      否则这一层轮到上场时会是**不可见**的（那会让画面整个空掉）。 */
@@ -2838,8 +2868,27 @@ function fxBurn(to, from, rim, id, fromId){
       const far = Math.max(
         Math.hypot(x, y), Math.hypot(W - x, y),
         Math.hypot(x, H - y), Math.hypot(W - x, H - y));
+      /* ★ 终点半径。
+         ★★★★ 2026-09-29（v1.0.76 第二次修正，用户："火线都没播放多少"）——
+         上面第一版改成 `max(x, W-x, y, H-y) * 1.18 + 24`，实测**仍然太快**：
+           1355ms 时 6 个洞的半径已达 285~344 ⇒ 单个洞跨度就 688px，
+           而视口只有 412 宽 ⇒ **一个洞就够盖住整屏**，6 个洞叠加后
+           屏幕在 ~1.3 秒就烧穿了（总时长 4 秒）✗
+
+         根因不是"某个洞太小/太大"，而是**多火源时"各洞都长到盖满全屏"本身就过量**：
+           每个火源都按"我要独自盖住整屏"来定终点，N 个火源就得到 N 份全屏覆盖。
+         正确的物理图像是"**多个火源各自烧开、最后连成一片**"：
+           · 每个火源的终点只需负责**自己那一块**（到边界的距离 / 火源数目开方）；
+           · 所有火源**并集**铺满整屏 = 恰好在 el=1 附近发生。
+         ⇒ 终点半径按火源数量分摊：`need = 到最近边界的距离 * 1.25`，
+           再乘 `1/sqrt(火源数)` 的量级修正 —— 这样并集铺满的时刻才与时长对齐。
+           同时保留一个"至少能出境"的下限，避免边缘火源烧不出去。 */
+      const dNear = Math.min(x, W - x, y, H - y);          // 到最近边界的距离
+      const dFar  = Math.max(x, W - x, y, H - y);          // 到最远边界的距离
+      const share = 1 / Math.sqrt(Math.max(1, want));      // 多火源分摊
+      const need = Math.max(dNear * 0.62, dFar * share) * 1.25 + 18;
       P.push({
-        x, y, far,
+        x, y, far, need,
         rate: 0.88 + Math.random() * 0.26,        // 每处快慢略有不同 ⇒ 边界此消彼长
         t0:   Math.random() * 0.08,               // 起燃时刻也错开
         lobes: 3 + Math.floor(Math.random() * 4), // 轮廓的瓣数 ⇒ 形状各异
@@ -2848,7 +2897,8 @@ function fxBurn(to, from, rim, id, fromId){
       });
     }
   }
-  if (!P.length) P.push({ x: W/2, y: H/2, far: DIAG * 0.62, rate: 1, t0: 0, lobes: 4, amp: .25, ph: 0 });
+  if (!P.length) P.push({ x: W/2, y: H/2, far: DIAG * 0.62, need: Math.max(W, H) * 0.59,
+                          rate: 1, t0: 0, lobes: 4, amp: .25, ph: 0 });
 
   /* ★★★ 火源速率是 0.88~1.14（为了让边界"此消彼长"），所以它们**不是同时烧完的**。
      原来在 `el >= 1` 就无条件收尾 ⇒ 速率 >1 的火源那一刻 k = (1-t0)/rate < 1，
@@ -2859,7 +2909,17 @@ function fxBurn(to, from, rim, id, fromId){
        **不用"整体淡出"兜底** —— 那会让旧图与新图叠影，
        用户实测"切换完有一个淡入淡出、好像混入了别的"。 */
   const END = P.reduce(function(m, q){ return Math.max(m, q.t0 + q.rate); }, 1);
-  const SPAN = dur * 0.82;               // el 从 0 走到 END 用的真实时间（给收尾留余量）
+  /* ★★★★ 2026-09-29（v1.0.76，用户："火线都没播放多少"）：
+     原来 `SPAN = dur * 0.82`（= 3.28 秒，dur 取 WP_DUR*1.25）。
+     但上面那条"新图兜底淡入"在 2.0 秒就把新图铺满了（已改为推迟到 .62-.90），
+     而且火线本身在**前段**就已经把中心区烧穿 —— 观感"没播多少就完了"。
+     ⇒ 把 el 走完 END 的时间**拉长到 dur 本身**（而不是 0.82*dur），
+       火线的匀速推进因此慢了约 22%，燃烧过程更看得清；
+       总时长 `wpLastDur = dur` 不变（收尾时机由 wpLastDur 决定，
+       而 SPAN 只影响火线走完的**视觉速度**）——
+       两者对齐之后，"烧穿"与"收尾"正好在同一时刻，也不会多等。
+     ⚠️ SPAN 必须 <= wpLastDur，否则收尾会掐在火线还没烧完的时候（硬切）。 */
+  const SPAN = dur;                      // el 从 0 走到 END 用的真实时间
 
   /* ② blob：极坐标 + 两层谐波 ⇒ 平滑但**不规则**的闭合曲线（不是圆） */
   function blob(cx, cy, r, lobes, amp, ph, wob){
@@ -2915,9 +2975,35 @@ function fxBurn(to, from, rim, id, fromId){
      "保持不透明"动画 —— 它与下面那条带 .88 平台的淡出动画**同属性、都 fill:forwards**，
      谁生效取决于**创建顺序**（后者赢），是"声明顺序轮盘赌"。
      旧层的不透明由淡出动画的**首关键帧 opacity:1** 统一负责（同样能顶住 CSS 的
-     opacity:0），整个燃烧期只有**一条** opacity 动画 ⇒ 行为可预测。 */
-  anim(to,   [{opacity:0},{opacity:1}], {duration: Math.round(dur * 0.5),
-                                         easing:"cubic-bezier(.3,0,.5,1)"});
+     opacity:0），整个燃烧期只有**一条** opacity 动画 ⇒ 行为可预测。
+
+     ★★★★ 2026-09-29（v1.0.76，用户："燃纸的新图出现也太快了，火线都没播放多少"）：
+     这里原来是 `dur * 0.5`（= 2.0 秒）就把新图淡到 1，
+     而**火线（mask）要烧到 `SPAN` = dur ≈ 4.0 秒**才铺满。
+     ⇒ 新图在 2.0 秒就已经整张可见，之后 1.3 秒里火线还在慢悠悠地爬
+       —— 观感正是"新图出现得太快，火线没播多少就没了" ✗
+
+     修法（要点：**让火线来驱动揭露**，而不是新图自己抢先淡入）：
+       · 新图的兜底淡入推迟到 `.62` 才开始、到 `.90` 结束
+         —— 此时按覆盖率曲线火线已经烧过绝大多数面积，
+            淡入**几乎完全被火线盖住**（正常时等于没发生）；
+       · 但仍保留它作为**兜底**：万一某环境 SVG mask 没渲染成功，
+            它仍然后半段平滑淡入 ⇒ **绝不会硬切 / 空底板**。
+       · 关键是"推迟"而不是"删掉"：删掉 = 回到"依赖单一脆弱机制"的老路。
+     `.62`/`.90` 这两个位置是从实测覆盖率曲线选的：
+       火线在进度 0.62 时已盖住大部分面积、0.90 时接近铺满，
+       所以兜底淡入的可见部分落在"已经被火线覆盖"的区间里。 */
+  /* ★★★★ 2026-09-29（v1.0.76）：新层 to 的**兜底淡入**。
+     正常情况下"新图出现"完全由 **mask（火线）** 驱动 —— 洞挖到哪、新图就露到哪。
+     这条 opacity 动画只是**兜底**：万一某环境 SVG mask 没渲染成功，
+     它保证后半段仍能平滑地把新图淡出来 ⇒ **绝不会硬切 / 空底板**。
+     所以它必须**推迟**到火线已大面积铺开之后再动（`.80 → .96`），
+     否则它会抢在火线前面把新图整张显示出来（就是用户报的"出现太快"）。
+     · 起点 .80：火线此时已覆盖绝大部分面积，淡入几乎被火线盖住（正常时等于没发生）
+     · 终点 .96：略早于 1.0 一点点，确保收尾那一刻它一定已经是 1（不会二次跳变） */
+  anim(to, [{opacity:0, offset:0},{opacity:0, offset:.80},
+            {opacity:1, offset:.96},{opacity:1, offset:1}],
+       {duration: dur, easing:"linear"});
 
   /* ★★★★ 2026-09-27（用户："很多次都是燃完还是旧图、而且旧图会变亮，然后硬切到新图"）：
      "旧图变亮"正是关键线索 —— 燃纸给旧层加了 `brightness(1.10) saturate(1.45)` 的
@@ -2926,7 +3012,7 @@ function fxBurn(to, from, rim, id, fromId){
      （掉帧、长任务、WebView 卡顿…），旧层就一直留着（还越来越亮）
      ⇒ 最后只能由 settle 直接把它藏掉 = **硬切**。
      ⇒ 再加一条**声明式**的淡出（Web Animations 跑在文档时间轴上，**不依赖帧循环**）：
-       平台**对齐烧穿时刻**（SPAN = dur*0.82，即帧循环的 el = END），随后平滑淡出。
+       平台**对齐烧穿时刻**（SPAN = dur，即帧循环的 el = END），随后平滑淡出。
        ⇒ 无论帧循环是否跑完，旧层都在"纸被挖空"的同一时刻开始退场
          ⇒ **燃完一定是新图**，绝不会再出现"停在变亮的旧图再硬切"。
        ★★ 2026-09-28：平台从 .88 **前移到 .82** 并在 .98 归零 ——
@@ -2942,11 +3028,17 @@ function fxBurn(to, from, rim, id, fromId){
      而是**空底板**（用户实测："切换完会有空底板的恶心情况"）✗✗
      ⇒ 恢复：旧层在燃烧期间必须**保持 .on**（它承载"被烧的那张纸"），
        它的退场交给收尾（帧循环 / 兜底 / settle），不再用摘 .on 这条激进手段。 */
-  anim(from, [{opacity:1, offset:0},{opacity:1, offset:.79},{opacity:0, offset:.82}],
+  /* ★★★★ 2026-09-29（v1.0.76）：旧层 from 全程**完全不透明**。
+     它是"垫在下面那张底图"——新图由 mask 从它上面一点点挖出来。
+     ⇒ 绝不能给 from 加淡出：
+          · 火线的洞还没挖到的地方，靠的就是 from 这张图（不是页面底色）；
+          · from 一旦淡出，未挖到的区域就会**露黑底**（用户实测过的"空底板"）✗
+     ⇒ 用一条"常量动画"把 opacity 钉在 1（同时顶住 CSS 的 `.wp-stage.on` 之外的状态）。 */
+  anim(from, [{opacity:1, offset:0},{opacity:1, offset:1}],
        {duration: dur, easing:"linear"});
 
   /* ★★★ 2026-09-28（用户："结尾概率是变亮的旧图停留至少 1 秒以上，然后新图硬切"）：
-     采样证明：旧层隐藏与"新图不透明"都发生在 **4360ms**，而烧穿在 **SPAN = 3280ms**
+     采样证明：旧层隐藏与"新图不透明"都发生在 **4360ms**，而烧穿在 **SPAN = dur（4000ms）**
      ⇒ **旧层在烧完之后还带着受热变亮滤镜亮了约 1.1 秒**，直到 settle 才被藏掉 ——
      这就是用户看到的那一秒。根因是淡出原先走到 .98（3920ms），且收尾**依赖帧循环**。
      ⇒ 现在淡出在 .82（= 烧穿时刻）就已归零（此刻遮罩已盖满整屏，隐藏**不可见**），
@@ -2986,11 +3078,31 @@ function fxBurn(to, from, rim, id, fromId){
   ], {duration: dur * 0.9, easing:"cubic-bezier(.4,0,.6,1)"});
 
   /* ⑤ 三层叠加：
-       ember  火线（暖色发光描边，略大于烧穿区）—— 在纸**上面**
+       ember  火线（暖色发光描边，略大于烧穿区）—— 在**新图**上面
        char   炭化线（细窄暗线，刚烧过的地方）—— 也在上面
-       from   纸本身，用 mask 挖掉已烧毁区域 ⇒ 露出下面的 to */
+       from   纸本身（**旧图**，全程完全不透明，铺在最底）
+
+     ★★★★ 2026-09-29（v1.0.76，用户："燃纸的新图出现也太快了，火线都没播放多少"）
+     —— 这里原来是**自相矛盾**的，那才是"火线看不见"的根因：
+
+       原实现把 mask 挖在 **旧层(from)** 上，注释写着"露出下面的 to"，
+       但 **to（新图）却被放在 from 的上面**（z 更大）。
+       ⇒ 于是实际效果是：
+            · from 被挖洞 ⇒ 洞**透过的地方是页面底色**（深色），而不是新图；
+            · to 在上面但 `opacity` 还在从 0 淡入 ⇒ 大多数时候"看不见"。
+       ⇒ 屏幕观感 = 旧图被挖出黑洞 + 新图半透明地压上来
+       ⇒ 既**看不到火线的形状**（洞露的是底色、不是新图），
+          新图又"出现得太快"（因为它走的是 opacity 淡入，与火线无关）✗
+
+       ⇒ 修法：**把遮罩挖在新图(to)上**，让旧图(from)在**下面保持完全不透明**：
+            · from 恒 opacity:1（绝不淡出、绝不挖洞）⇒ **不可能露底色** ✓
+            · to 用 mask 从"一粒墨/一点火星"长到铺满 ⇒ 火线**真正在揭露新图** ✓
+            · 火线（ember/char）画在 to 之上，跟着 mask 边界走 ✓
+       这样"火线推进"与"新图出现"是**同一件事**，不可能脱节；
+       而且即使某个环境 mask 完全没渲染，to 仍有一条极窄的兜底淡入
+       ⇒ 最坏退化成一次淡入，**绝不会出现空底板或硬切**。 */
   const mk = (css) => { const d = document.createElement("div");
-    d.className = "s-strip"; d.style.cssText = css; from.parentNode.appendChild(d); return d; };
+    d.className = "s-strip"; d.style.cssText = css; to.parentNode.appendChild(d); return d; };
   /* 三层边缘（从外到内）：光晕 → 火芯 → 炭化线
        · glow：宽描边 + 模糊 ⇒ 火线外的**灼热光晕**（screen 混合，在深色图上很亮）
        · core：细描边、亮黄白 ⇒ **火芯**（真正在烧的那条线）
@@ -3010,17 +3122,38 @@ function fxBurn(to, from, rim, id, fromId){
   /* ★ 用 **fill-rule="evenodd" 单路径**挖洞：
      外框矩形 + 各个 blob 子路径 ⇒ blob 内部变成洞（透明）。
      上一版用嵌套 `<defs><mask>` + `mask="url(#m)"` 的写法**实测没生效**
-     （截图里整屏都是纸、完全没挖开），换成 evenodd 更简单也更可靠。 */
-  const maskPaint = (paths) =>
-    '<path fill="#fff" fill-rule="evenodd" d="M0 0H' + LW + "V" + LH + "H0Z"
-    + paths.join("") + '"/>';
+     （截图里整屏都是纸、完全没挖开），换成 evenodd 更简单也更可靠。
+
+     ★★★★ 2026-09-29（v1.0.76）—— **遮罩极性必须跟着"挖谁"走**：
+     这套路径的语义是"**白色满屏，挖掉 blob 内部**"。
+       · 原来遮罩挖在**旧层（纸）**上 ⇒ 语义正确：纸被挖掉，洞里露出新图 ✓
+       · 现在遮罩挖在**新层**上（见上面 ⑤）⇒ 这套极性**正好反了**：
+         它会让新图"**处处可见、只有洞里不可见**"
+         ⇒ 屏幕上除了几个洞之外全是新图，火线等于没起作用 ✗
+     ⇒ 新层需要的是**互补**遮罩："**只在 blob 内部可见**"。
+       做法：仍用 evenodd，但把"外框矩形"和 blob 一起作为**子路径**放进同一条 path，
+       让 blob 成为"实心区"而不是"被挖掉的区" —— 即
+         · 去掉外框矩形的白色填充（改成 `fill="#fff"` 只画 blob）
+         · 直接把若干 blob 子路径拼成一条 path ⇒ 并集就是可见区。
+       所以这里按"遮罩挖在谁身上"分两种 paint。 */
+  /* ★★★★ 2026-09-29（v1.0.76）：遮罩挖在**新层 to** 上（见上面 ⑤ 的说明）。
+     旧层 from 全程完全不透明地铺在下面 ⇒ 洞里透出的一定是**新图**，不可能是页面底色。
+     `maskOnNew = true` 同时让 `maskPaint` 用**互补**极性（只画 blob = 只在那里可见）。 */
+  const maskOnNew = true;
+  const maskPaint = (paths) => (maskOnNew
+    ? /* 新层：**只有火线挖到的地方可见** ⇒ 直接画 blob（并集） */
+      '<path fill="#fff" d="' + paths.join("") + '"/>'
+    : /* 旧层（纸）：**火线挖到的地方透明** ⇒ 满屏白 + evenodd 挖洞 */
+      '<path fill="#fff" fill-rule="evenodd" d="M0 0H' + LW + "V" + LH + "H0Z"
+      + paths.join("") + '"/>');
   const strokePaint = (color, w) => (paths) =>
     '<g fill="none" stroke="' + color + '" stroke-width="' + w + '" '
     + 'stroke-linejoin="round">' + paths.map(d => '<path d="' + d + '"/>').join("") + "</g>";
 
   const applyMask = (uri) => {
-    from.style.webkitMaskImage = uri; from.style.maskImage = uri;
-    from.style.webkitMaskSize = "100% 100%"; from.style.maskSize = "100% 100%";
+    /* 遮罩挖在**新层 to** 上（见上面 ⑤ 与 maskOnNew 的说明）。 */
+    to.style.webkitMaskImage = uri; to.style.maskImage = uri;
+    to.style.webkitMaskSize = "100% 100%"; to.style.maskSize = "100% 100%";
   };
 
   let t0 = null, rafId = 0, stopped = false;
@@ -3058,18 +3191,30 @@ function fxBurn(to, from, rim, id, fromId){
     for (const q of P){
       const k = Math.max(0, Math.min(1, (el - q.t0) / Math.max(q.rate, 1e-6)));
       if (k <= 0) continue;
-      /* ★ 半径**线性**增长 = 火线匀速推进（这是"烧"区别于"淡出"的关键节奏）。
-         起步给一个小底径，否则最初几帧是看不见的点。 */
-      let r = 6 + q.far * k * k;              // k² ⇒ 起燃由小渐大，更像"点燃"
+      /* ★ 半径增长曲线（决定火线推进的**观感节奏**）。
+         ★★★★ 2026-09-29（v1.0.76 第三次校准，用户："火线都没播放多少"）：
+         实测（6 火源、图层盒 556×1059、视口 412×915）屏幕被新图覆盖的比例：
+             510ms 8%    1017ms 65%    1526ms 93%    2026ms **100%**
+         而总时长 4.0 秒 ⇒ **火线只用掉一半时间就烧穿了** ✗
+
+         原因是多火源**并集**增长得比单洞快得多，而半径按 `k` 近似线性走，
+         ⇒ 并集在 `el≈0.5` 就满了。
+         ⇒ 让半径增长**明显慢于线性**：用 `g^1.8`。
+           这样并集铺满的时刻被推到 `el≈0.9` 附近，
+           前半程是"几个火点慢慢各自扩大"，后半程才连成一片 ——
+           既看得清燃烧过程，又不会拖到收尾才勉强盖住（那会硬切）。 */
+      const g = Math.max(0, Math.min(1, k));
+      const grow = Math.pow(g, 1.8);
+      let r = 6 + q.need * Math.min(1, grow);
       if (closeT > 0){
         /* ★★★ 2026-09-28（移植 main 的改进，别再退回去）：
-           推到 `q.far * 2.2 + 320` —— 这是**保证烧穿**的公式：
-           blob 半径是 r·(1 + amp·sin + 0.32·amp·sin)，最小可到 r·(1 − 1.32·amp)，
-           amp 最大 0.38 ⇒ 只剩 0.5·r ⇒ 即使 r = far，某些凹处仍留在视口内
+           推到"必定盖满"——blob 半径是 r·(1 + amp·sin + 0.32·amp·sin)，
+           最小可到 r·(1 − 1.32·amp)；amp 最大 0.38 ⇒ 只剩 0.5·r
+           ⇒ 即使 r 到了视口边界，某些凹处仍可能留在视口内
            ⇒ 那时藏旧图就会"啪"一下（= 用户报的"硬切"）。
-           推到 2.2·far + 320 后，连最小凹处也越过视口（余量 ≈400px）。
-           多出来的余量全在**屏幕之外**，且只在最后 10% 里连续变化 ⇒ 看不出跳。 */
-        const need = q.far * 2.2 + 320;
+           ⇒ 用 q.need 的 2.2 倍 + 320px 余量推出去（全部落在屏幕**之外**，
+             且只在最后 10% 里连续变化 ⇒ 看不出跳）。 */
+        const need = q.need * 2.2 + 320;
         r = r + (Math.max(r, need) - r) * closeT;      // 平滑推到"必定盖满"
       }
       const wob = el * 0.9;                                // 让轮廓缓慢蠕动（火在爬）
@@ -3653,7 +3798,9 @@ async function _wpTransition(url){
   } catch (e) { /* 无所谓 */ }
   await wpPreloadWallpaper(url);            // ★ 等新图可解码再开始（见上面的说明）
   const id = wpOther(), fromId = wpCur;
-  const to = wpLoad(id, url), from = wpImg(fromId);
+  /* ★★★★ 只有这里传 `{order:true}` —— 这是唯一**确实知道** id 就是新层的地方。
+     顺序很关键：必须在 `fromId` 还确实是"当前可见层"时翻转层级。 */
+  const to = wpLoad(id, url, {order:true}), from = wpImg(fromId);
   const rim = wpRimReset();
 
   // 选定特效：配置指定则用它；random 或未配置则每次随机（且不与上次重复）
@@ -3797,27 +3944,64 @@ function wpSettle(id, fromId){
   wpStage(id).classList.add("on");
   wpShowLayer(id);                             // ★ 与 wpHideLayer 配对，确保新层可见
   try { wpNormalize(id); }     catch (e) { console.warn("[accel] 归一化新层失败", e); }
-  /* ★ 兜底：收尾后**当前层必须可见**。上面任何一步被打断（例如别处并发调用
-     wpLoad 清掉了 .on），这里也能把画面救回来 —— 让"背景消失"不可能发生。 */
-  wpStage(id).classList.add("on");
   wpCur = id;
+
+  /* ★★★★ 2026-09-29（v1.0.76）：收尾必须建立「**有且只有一层 .on**」这个不变量。
+     为什么这是"新图永久模糊直到下张"的另一半原因：
+       上面任何一步中途抛错 / 被并发打断 ⇒ 可能出现**两层都带 .on**。
+       而 `.wp-stage.on .wp-img{opacity:1}` 是**一条 CSS 规则**，它不认识 z-index ——
+       于是"在下面那层"也会变成不透明；如果它同时残留了转场期的 `filter:blur()`
+       （`eatAway`/`fxStrips` 给旧层加的就是 fill:forwards 的永久模糊），
+       而层级又被倒置过，屏幕上就会**一直**是"糊掉的那一张"。
+     ⇒ 这里显式清掉**另一层**的 .on，把不变量钉死。 */
+  try {
+    const other = (id === "wp-a") ? "wp-b" : "wp-a";
+    wpStage(other).classList.remove("on");
+  } catch (e) { /* 无所谓 */ }
+
+  /* ★ 兜底：收尾后**当前层必须可见**（上面任何一步被打断也能救回来）。 */
+  wpStage(id).classList.add("on");
+
+  /* ★★★★ 2026-09-29（v1.0.76）：**必须先跑 deferred restart，再放锁**。
+     原顺序是 `wpBusy = false;` → `setTimeout(startWallpaperRotation, 0)`。
+     `setTimeout(…, 0)` 是**宏任务**，要到当前同步块结束才跑；而在这段窗口里，
+     页面上任何别的入口（点击 / 轮询 / 事件）都能看到 `wpBusy === false`
+     ⇒ **并发启动第二次转场**；紧接着那个 deferred restart 又跑一次
+     ⇒ 两次重排叠加，把刚收尾好的层级与 `.on` 状态一起搅乱（已实机复现）。
+     ⇒ 现在：先**同步**把重排做完（此时锁仍在手上，别人进不来），最后才放锁。 */
+  if (wpPendingRestart){
+    wpPendingRestart = false;
+    try { startWallpaperRotationCore(); } catch (e) { console.warn("[accel] 重排失败", e); }
+  }
   wpBusy = false;
-  // 切换进行中被要求重排的，现在补上
-  if (wpPendingRestart){ wpPendingRestart = false; setTimeout(startWallpaperRotation, 0); }
 }
 let _wpLastFx = "";
 
-/* ═══ 轮换 ═══ */
+/* ═══ 轮换 ═══
+   ★★★★ 2026-09-29（v1.0.76）：拆成两层。
+
+     `startWallpaperRotation()`  —— **外部入口**（面板保存 / 开屏 / 配置变更）。
+        只做一件事：判断"现在能不能安全重排"，不能就记一个待办。
+     `startWallpaperRotationCore()` —— **实际重排**。不判断锁，
+        因为调用方必须已经确保安全（外部入口判过；收尾路径正持有锁）。
+
+   为什么必须拆：`wpSettle` 需要在**持有锁的情况下**同步跑完重排再放锁，
+   而原来的 `startWallpaperRotation()` 一进来就 `if (wpBusy) { 记待办; return; }`
+   —— 收尾路径调用它只会把待办又置回去，形成"自己排给自己"的死循环。 */
 function startWallpaperRotation(){
   stopWallpaperRotation();
   /* ★★ 切换**在飞的时候绝不能重排图层**。
-     下面会对 wp-a / wp-b **两层**都调用 wpLoad()，而 wpLoad 会清掉 .on 并覆盖图片 ——
-     如果此刻正好有一次切换在跑，那次切换的收尾就会落在"两层都没有 .on"的状态上
-     ⇒ **切完之后背景整个消失**（用户只会看到"黑屏/没效果"，极难归因）。
-     这在真实使用里很容易触发：面板上改「切换间隔 / 开关 / 选壁纸」都会调到这里，
-     只要撞上那 2.6 秒的切换窗口就会出问题。
+     下面会对 wp-a / wp-b **两层**都调用 wpLoad()，而 wpLoad 会覆盖图片 ——
+     如果此刻正好有一次切换在跑，那次切换的收尾就会落在错误的状态上
+     ⇒ **切完之后背景整个消失或停在旧图**（用户只会看到"没效果"，极难归因）。
+     这在真实使用里很容易触发：面板上改「切换间隔 / 开关 / 选壁纸」都会调到这里。
      做法：标记一下，等这次切换结束后再按新配置重排。 */
   if (wpBusy){ wpPendingRestart = true; return; }
+  startWallpaperRotationCore();
+}
+
+function startWallpaperRotationCore(){
+  stopWallpaperRotation();
   wpActive = (Array.isArray(wpPick) && wpPick.length) ? wpPick.slice() : WALLPAPERS.slice();
 
   if (!wpEnabled || !wpActive.length){
