@@ -1187,8 +1187,24 @@ check("★★★ 墨染载体 z-index 必须**大于**壁纸层（否则被旧�
 check("★★ 揭示光环在最上层（rim > 墨染载体）",
       _rimz is not None and _svgz is not None and int(_rimz.group(1)) > int(_svgz.group(1)),
       f"rim={_rimz.group(1) if _rimz else '?'} 载体={_svgz.group(1) if _svgz else '?'}")
-check("★★ fxInk 会清掉壁纸层上残留的 inline z-index（防 burn 的层级把墨染压下去）",
-      re.search(r"st\.style\.zIndex = \"\";", _ink) is not None)
+# ★★★★ 2026-09-29（**契约反转**）
+#  旧契约："fxInk 会清掉壁纸层上残留的 inline z-index"。
+#  那条是**错的**，而且正是用户报的两个 bug 的帮凶：
+#    · 它把 `wpLoad` 刚立好的"新层=2 / 旧层=1"**清成空** ⇒ 层级退回 auto + DOM 顺序
+#      ⇒ 变成"wp-b 恒在最上"的轮盘赌 ⇒ 旧图盖住新图、且带着 blur 常驻 ✗
+#    · 它要防的"fxBurn 残留 z-index 压住墨染"已从**源头**解决：
+#      fxBurn 不再自己写层级（统一交给 wpSetLayerOrder），
+#      并且墨染载体抬到 z-index:3（与壁纸层 1/2 **不同值**，不靠 DOM 顺序比较）。
+#  ⇒ 新契约：**任何地方都不许把壁纸层的 z-index 清空**，否则层级保证就没了。
+check("★★★ 不得清空壁纸层的 inline z-index（否则 wpLoad 立的层级保证被抹掉）",
+      re.search(r'\.style\.zIndex\s*=\s*""', _ink) is None)
+# 载体与壁纸层的 z-index 必须**不相等** —— 相等就要靠 DOM 顺序比大小，
+# 而墨染载体 <svg> 在 DOM 里排在两个 .wp-stage **之前** ⇒ 会被压住（"墨渗没生效"）。
+check("★★★ 墨染载体 z-index 不得与壁纸层的显式值相等（同值 ⇒ 退回 DOM 顺序 ⇒ 被压住）",
+      _svgz is not None and _stz is not None and int(_svgz.group(1)) != int(_stz.group(1)),
+      f"载体={_svgz.group(1) if _svgz else '?'} 壁纸层={_stz.group(1) if _stz else '?'}")
+check("★★★ 图层顺序必须由 wpLoad/wpSetLayerOrder 显式写入（不靠 DOM 顺序）",
+      "function wpSetLayerOrder" in HTML and "wpSetLayerOrder(id)" in HTML)
 
 # ⑤ ★★★ 2026-09-27（第二轮）：收尾那一下的"抖动/重新定位"
 #    墨染把新图交给 SVG `<image>` 画，而收尾后由 `.wp-img`（`.wp-stage` 里）接管。
@@ -1256,13 +1272,27 @@ check("★★ 预加载必须有超时兜底（不能因为一张图没加载完
 # ⚠️ wpNormalize 在文件里**排在 wpSettle 之前**，不能拿它当右边界（会把切片取空 ⇒ 假绿）
 _wp_s = js.index("function wpSettle")
 _settle = js[_wp_s: _wp_s + 3000]
-# ★★★★ 2026-09-27：顺序必须是 **先藏旧层、再跑 wpCleanup()**。
-#   wpCleanup 会撤掉"视觉载体"（墨染的 SVG 图 / 燃纸的描边），
-#   而旧层在墨染里**设计上全程可见**、在燃纸里 `applyMask("none")` 后会恢复不透明
-#   ⇒ 载体一撤、旧层还在 ⇒ 露出**旧图**（用户："最后停在旧图，再硬切到新图"）。
-check("★★★ 收尾必须**先藏旧层**再跑 wpCleanup（否则撤载体时露出旧图）",
+# ★★★★ 2026-09-29（**契约反转**，这是本次修复的核心之一）
+#  旧契约写的是"收尾必须**先藏旧层**再跑 wpCleanup"，但**代码实现是反的**，
+#  而反的那一面才是 bug 本身：
+#      ① 先 `classList.remove("on")` / inline 隐藏 ⇒ CSS **立刻放行**旧层
+#      ② 再 `wpNormalize(fromId)`                  ⇒ 清掉特效残留
+#      ③ 最后 `wpCleanup()`                        ⇒ 此时才撤掉承载新图的载体
+#    ①②③ 之间只要有一帧被画出，画面就是"旧图（也许还带着填满状态的
+#    `filter:blur(11px)` / 受热滤镜）**没人盖着**" ⇒ **旧图闪现** ✗
+#    （用户原话："切到新图后约 1 秒，旧图又闪现一次"。概率性来自 sleep 走定时器、
+#      渲染走帧，`wpCleanup` 里的 timeout/rAF 谁先到不确定。）
+#
+#  ⇒ 正确顺序只有一种：**先撤载体，再放行旧层**，且两步在同一帧同步完成。
+#     · 撤载体时旧层还被 CSS 的 `.on` 挡着 ⇒ 撤掉什么都不露 ✓
+#     · 紧接着摘 .on + 归一化 ⇒ 新图已由 wpLoad 的显式 z-index 保证在上 ⇒ 露出的
+#       只可能是新图 ✓
+check("★★★ 收尾必须**先撤载体**（wpCleanup）**再放行旧层**（摘 .on / 藏 .wp-img）",
+      _settle.find("wpCleanup()") >= 0
+      and _settle.find("wpCleanup()") < _settle.find('classList.remove("on")'))
+check("★★ 收尾不得在任何 remove(\"on\") 之前先隐藏旧层（那等于先放行、再撤载体）",
       _settle.find('_im0.style.opacity = "0"') >= 0
-      and _settle.find('_im0.style.opacity = "0"') < _settle.find("wpCleanup()"))
+      and _settle.find('classList.remove("on")') < _settle.find('_im0.style.opacity = "0"'))
 check("★★ 藏旧层要 opacity:0 + visibility:hidden 双保险（防动画把 opacity 顶回去）",
       '_im0.style.visibility = "hidden"' in _settle)
 check("★★★ 墨染收尾：先藏旧层、再撤墨渗图（顺序反了就会闪旧图）",
@@ -1391,8 +1421,18 @@ check("★★ wpShowLayer 必须同时清 stage 与 img 的 inline 可见性",
                 js) is not None)
 # ★★ 特效**中途**抛错必须就地回收（fxBurn 会先写 stage 的 inline z-index、
 #   再建描边层；此时 wpCleanup 还没赋值 ⇒ 无人回收 ⇒ 层级被永久污染）。
-check("★★ 燃纸中途抛错必须回收 z-index 与描边层",
-      re.search(r"catch \(e\) \{\s*\n\s*try \{ wpStage\(id\)\.style\.zIndex", js) is not None)
+# ★★★★ 2026-09-29（**契约反转**）：这条原来断言"中途抛错要回收 z-index"，
+#   即要求异常路径去 `wpStage(id).style.zIndex = ""`。那**正是 bug**：
+#   层级现在由 wpLoad 的 wpSetLayerOrder 统一保证，"清空"等于把它抹掉
+#   ⇒ 本次与之后每一次切换都退回"靠 DOM 顺序"的轮盘赌
+#   （= 用户报的"新图一直被模糊覆盖"）。
+#   而且 fxBurn 现在**根本不写** stage 层级，异常路径也无从"残留"。
+#   ⇒ 新契约：异常路径**不得清 z-index**，只回收真正由特效产生的副作用（描边层）。
+check("★★★ 燃纸中途抛错必须回收描边层（但**不得**动 z-index）",
+      re.search(r'catch \(e\) \{\s*\n\s*try \{ wpStage\(fromId\)\.querySelectorAll\(\"\.s-strip\"\)',
+                js) is not None)
+check("★★★ 燃纸异常路径不得清空 stage 的 z-index（清空 = 抹掉层级保证）",
+      re.search(r'catch \(e\) \{\s*\n\s*try \{ wpStage\(id\)\.style\.zIndex', js) is None)
 
 # ⑧ ★★★ 燃纸的遮罩/描边必须画在**图层盒**坐标系里。
 #    遮罩是画在 `from`（`.wp-img`）上的，而它的盒子是 `.wp-stage`
