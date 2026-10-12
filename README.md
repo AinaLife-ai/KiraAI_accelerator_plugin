@@ -364,6 +364,16 @@ A：把你的图（webp/jpg/png）丢进 `wallpapers/` 目录，面板里就会�
 <details>
 <summary><b>📜 更新日志</b>（点击展开）</summary>
 
+### v1.0.82
+
+**3.0（v3.0.0-rc.1）兼容：三处静默失效修复（特征识别，不绑版本号）**
+
+- **抢先发送**：3.0 已删 `MessageProcessor.send_xml_messages`（XML 解析/发送迁到 `ExecuteAgentStage` + `MessageDeliveryService`），发送层按世代分流——3.0 包裹 `MessageDeliveryService.send_message_chain` 做**按链对账去重**（每条待发链与抢发台账按规范化内容比对，命中则消费台账并**还回抢发时的真实结果**，未命中原样放行；台账/结果不齐安全放弃——宁可重发，不还错结果）；2.x 照旧类级包裹 `send_xml_messages`，原逻辑一字未动
+- **段解析**：优先 `ctx.message_delivery.parse_xml`（3.0 静态方法），回退 `mp._parse_xml_msg`（2.x）
+- **面板模型下拉不再显示 UUID 乱码**：label 改 `model_name` 优先、`model_id` 兜底；引用值（`pid:内部ID`）在 3.0 语义正确，不受影响
+- **延迟读取双源**：`min/max_message_delay` 3.0 迁到 `MessageDeliveryService`，先探 delivery、回落 mp
+- 版本 v1.0.81 → v1.0.82
+
 ### v1.0.81
 
 **KiraAI 3.0 兼容修复：事件广播在 3.0 上失效（且每次刷 ERROR 日志）**
