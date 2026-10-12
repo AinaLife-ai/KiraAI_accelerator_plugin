@@ -24,6 +24,11 @@
 
 ## 装什么、怎么装
 
+> **兼容性**：KiraAI 2.33.1+ 与 3.0 全系列（含 v3.0.0-rc.1；兼容判断走特征识别，不绑版本号）。
+> v1.0.82 起：抢先发送在 3.0 改为对 `MessageDeliveryService.send_message_chain` 的**按链对账去重**
+> （rc.1 已删 `MessageProcessor.send_xml_messages`/`_parse_xml_msg`），段解析走 `parse_xml` 服务化接口；
+> 面板模型下拉显示可读名（不再显示内部 ID）。
+
 1. 下载 `kira_accelerator` 文件夹（或 zip 解压）
 2. 放进 KiraAI 的 `data/plugins/` 目录
    ```
