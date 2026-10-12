@@ -172,6 +172,7 @@ class AcceleratorPlugin(BasePlugin):
         self._resp_by_sid: dict[str, Any] = {}      # 每个会话各自的"本轮响应"
         # 本轮抢先发送的结果（按顺序），供发送层拼回 message_results 以对齐 message_id
         self._early_results: dict[str, list] = {}
+        self._early_inflight: int = 0  # 抢发自己的投递在飞标记（3.0 按链对账时跳过拦截）
         # ★ 旁证台账：sid → 本轮已抢发的**段原文**列表
         #   （响应标记丢失时的兜底；存原文而不是只存个数，
         #     这样兜底时也能按内容剥离，对文本被改写同样稳健）
@@ -884,6 +885,56 @@ class AcceleratorPlugin(BasePlugin):
         """
         return "%s\x00%s" % (sid, event_id if event_id else "-")
 
+    async def _parse_seg_actions(self, seg, tag_set, mp):
+        """把一段 XML 解析成动作列表（双世代）。
+
+        3.0 起 `MessageProcessor._parse_xml_msg` 已删，解析迁到
+        `MessageDeliveryService.parse_xml`（静态异步方法，ctx.message_delivery 可达）；
+        2.x 用 `mp._parse_xml_msg`。逐级探测，不绑版本号。
+        """
+        delivery = getattr(self.ctx, "message_delivery", None)
+        parse = getattr(delivery, "parse_xml", None) if delivery is not None else None
+        if parse is not None:
+            return await parse(seg, tag_set)
+        return await mp._parse_xml_msg(seg, tag_set)
+
+    def _consume_early_match(self, sid, chain):
+        """3.0 按链对账：该链若与某已抢发段内容一致，消费台账并还回当时的结果。
+
+        2.x 的发送层剥离按"段文本"工作；3.0 的框架发送按"链"逐条走
+        MessageDeliveryService.send_message_chain —— 拦截点改到这里后，
+        用与 2.x 相同的 _norm_seg 规范化做内容比对，位置与动作天然 1:1
+        （每条链至多消费一条台账），add_message_ids 的位置对齐不破。
+        台账/结果数量不齐时放弃对账放行原发送（宁可重发，不还错结果）。
+        """
+        try:
+            text = "".join(getattr(e, "text", "") or "" for e in chain)
+        except Exception:  # noqa: BLE001
+            return None
+        from .early_sent import _norm_seg
+        norm = _norm_seg(text)
+        if not norm:
+            return None
+        prefix = sid + "\x00"
+        for k in list(self._sent_ledger.keys()):
+            if not (isinstance(k, str) and k.startswith(prefix)):
+                continue
+            segs = self._sent_ledger.get(k) or []
+            for i, seg in enumerate(segs):
+                seg_norm = _norm_seg(seg)
+                if not seg_norm:
+                    continue
+                if norm == seg_norm or norm in seg_norm or seg_norm in norm:
+                    results = self._early_results.get(k) or []
+                    if i >= len(results):
+                        return None
+                    result = results.pop(i)
+                    segs.pop(i)
+                    if not segs:
+                        self._sent_ledger.pop(k, None)
+                        self._early_results.pop(k, None)
+                    return result
+        return None
     def _reset_turn_ledger(self, sid: str, event_id=None) -> None:
         """清掉**这一轮**的抢发台账（**不是整个会话**！）。
 
@@ -982,7 +1033,7 @@ class AcceleratorPlugin(BasePlugin):
         #     （细节降级到 debug）。行为完全不变，只是日志不再像故障。
         #   守卫：tests/test_unparsable_handback.py
         try:
-            actions = await mp._parse_xml_msg(seg, ctx.tag_set)
+            actions = await self._parse_seg_actions(seg, ctx.tag_set, mp)
         except Exception as e:  # noqa: BLE001
             logger.warning(
                 "[accel] 抢先发送：本段暂不可解析（多为模型写了未转义的 & 或 <），"
@@ -1051,11 +1102,14 @@ class AcceleratorPlugin(BasePlugin):
             await self._pace(ctx)
 
             # ── 投递本身：这一步成功即等于"已经发出去了"，后面任何失败都不改这个事实 ──
+            self._early_inflight = getattr(self, "_early_inflight", 0) + 1
             try:
                 result = await mp.send_message_chain(ctx.sid, action)
             except Exception:  # noqa: BLE001
                 logger.exception("[accel] 抢先发送失败，本段交回框架发送（不丢内容）")
                 return delivered
+            finally:
+                self._early_inflight = max(0, getattr(self, "_early_inflight", 1) - 1)
             delivered = True
 
             # ── 以下都是"投递之后的杂事"，失败只告警，绝不改变 delivered ──
@@ -1432,8 +1486,15 @@ class AcceleratorPlugin(BasePlugin):
         if mp is None:
             return 0.0, 0.0          # 拿不到就不等（安全默认）
         try:
-            lo = float(getattr(mp, "min_message_delay", 0.0) or 0.0)
-            hi = float(getattr(mp, "max_message_delay", lo) or lo)
+            # 3.0 起延迟配置在 MessageDeliveryService 上；2.x 在 MessageProcessor 上。
+            # 先探 delivery、回落 mp（getattr 默认值即旧路径，两代都读到框架属性）。
+            _delay_src = getattr(self.ctx, "message_delivery", None)
+            lo = float(getattr(_delay_src, "min_message_delay", None)
+                       or getattr(mp, "min_message_delay", 0.0) or 0.0) if _delay_src is not None \
+                else float(getattr(mp, "min_message_delay", 0.0) or 0.0)
+            hi = float(getattr(_delay_src, "max_message_delay", None)
+                       or getattr(mp, "max_message_delay", lo) or lo) if _delay_src is not None \
+                else float(getattr(mp, "max_message_delay", lo) or lo)
             return (min(lo, hi), max(lo, hi))
         except Exception:  # noqa: BLE001
             return 0.0, 0.0
@@ -1695,9 +1756,38 @@ class AcceleratorPlugin(BasePlugin):
             return mark_side_effects(send_xml_messages)
 
         h = PatchHandle("early_sent_strip")
-        if install(h, MessageProcessor, "send_xml_messages", factory) is not None:
-            self.patches.add(h)
-            logger.info("[accel] 发送层已接管（剥离已抢发段，避免重复发送）")
+        if hasattr(MessageProcessor, "send_xml_messages"):
+            # 2.x 形态：类级包裹 send_xml_messages（按段文本剥离）
+            if install(h, MessageProcessor, "send_xml_messages", factory) is not None:
+                self.patches.add(h)
+                logger.info("[accel] 发送层已接管（剥离已抢发段，避免重复发送）")
+        else:
+            # 3.0+ 形态：send_xml_messages 已删，框架发送按链走
+            # MessageDeliveryService.send_message_chain —— 改包它做按链对账去重。
+            delivery = getattr(self.ctx, "message_delivery", None)
+            dcls = type(delivery) if delivery is not None else None
+            if dcls is not None and hasattr(dcls, "send_message_chain"):
+                def delivery_factory(original):
+                    async def send_message_chain(d_self, session, chain, *,
+                                                 memory_message=None, self_id=None):
+                        if not getattr(self, "_early_inflight", 0):
+                            try:
+                                hit = self._consume_early_match(session, chain)
+                                if hit is not None:
+                                    self._stats["strip_calls"] = self._stats.get("strip_calls", 0) + 1
+                                    return hit
+                            except Exception:  # noqa: BLE001
+                                logger.exception("[accel] 抢发对账异常（放行原发送）")
+                        return await original(d_self, session, chain,
+                                              memory_message=memory_message, self_id=self_id)
+                    return mark_side_effects(send_message_chain)
+
+                h2 = PatchHandle("early_sent_dedupe_delivery")
+                if install(h2, dcls, "send_message_chain", delivery_factory) is not None:
+                    self.patches.add(h2)
+                    logger.info("[accel] 发送层已接管（按链对账去重已抢发段）")
+            else:
+                logger.warning("[accel] 未找到可接管的发送服务，抢发剥离未安装（可能重复发送）")
 
     # ══════════════════════════════════════════════════════════
     # 侧边栏面板
@@ -1861,9 +1951,13 @@ class AcceleratorPlugin(BasePlugin):
                 llm = models.get("llm") if isinstance(models, dict) else None
 
                 if isinstance(llm, dict) and llm:
-                    for mid in llm.keys():
+                    for mid, entry in llm.items():
+                        # 展示名优先 3.0 的 model_name；2.x 条目非 dict 自动回退 mid。
+                        # value 保持 pid:内部ID（3.0 规范引用值）不动。
+                        mname = entry.get("model_name") if isinstance(entry, dict) else None
+                        mname = mname or mid
                         out.append({"value": f"{pid}:{mid}",
-                                    "label": f"{mid} ({pname})",
+                                    "label": f"{mname} ({pname})",
                                     "provider_id": pid, "provider_name": pname,
                                     "model_id": mid})
                 else:
