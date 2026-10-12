@@ -903,38 +903,95 @@ class AcceleratorPlugin(BasePlugin):
 
         2.x 的发送层剥离按"段文本"工作；3.0 的框架发送按"链"逐条走
         MessageDeliveryService.send_message_chain —— 拦截点改到这里后，
-        用与 2.x 相同的 _norm_seg 规范化做内容比对，位置与动作天然 1:1
+        用与 2.x 相同的规范化做内容比对，位置与动作天然 1:1
         （每条链至多消费一条台账），add_message_ids 的位置对齐不破。
         台账/结果数量不齐时放弃对账放行原发送（宁可重发，不还错结果）。
+
+        ★★★ v1.0.83（线上：**表情包被发两次、文字正常**）：
+          原来只按"可见文字"比对（`getattr(e, "text", "")`），而贴纸/图片/语音
+          这类元素**没有 text** ⇒ 纯媒体链永远匹配不上 ⇒
+          `if not norm: return None` ⇒ 框架把已抢发的表情包**再发一次**。
+          触发条件正是"表情独立成行"这类 AFTER_XML_PARSE 改写：
+          它把一个 `<msg>` 拆成"贴纸一条 + 文字一条"，于是框架发来的是一条
+          **纯媒体链**，正好落进原来的盲区（文字链能对上 ⇒ 文字不重复）。
+
+          现在两侧都用**身份令牌**（`early_sent.elem_ident` / `seg_idents`）：
+            · 文字链：比对规则与原来完全一致（不回归）；
+            · 媒体链：链上每个身份都能在台账段里找到（各自最多用一次）即命中。
+          Tag 名不参与比对 ⇒ `<file type="image">url</file>` 生成的 Image 元素也能对上；
+          拿不到身份的生成类（`<img>` 出图 / `<record>` TTS）**不参与**比对 ——
+          保守取向：宁可不剥（最多重复一次），也不误吃（会丢内容）。
+
+        ★ 部分消费：同一条台账段可以被**两条链分别消费**（贴纸链吃媒体部分、
+          文字链吃文字部分），只有"整段都被这条链覆盖"时才出账。
+          否则贴纸链先把整段吃掉，兄弟文字链就找不到台账 ⇒
+          **文字会被重复发送**（与本 bug 对称的另一种重复）。
+          台账按 (sid, 轮次) 分键、轮末清理，所以"多留一会儿"是安全的。
         """
+        from .early_sent import elem_ident, norm_text_only, seg_idents
+
+        # 链侧：文字 + 身份（媒体链没有文字，但身份非空）
+        texts, idents = [], []
         try:
-            text = "".join(getattr(e, "text", "") or "" for e in chain)
+            for e in chain:
+                piece = getattr(e, "text", "") or ""
+                if piece:
+                    texts.append(piece)
+                    continue
+                ident = elem_ident(e)
+                if ident:
+                    idents.append(ident)
         except Exception:  # noqa: BLE001
             return None
-        from .early_sent import _norm_seg
-        norm = _norm_seg(text)
-        if not norm:
+        norm = norm_text_only(" ".join(texts))
+        if not norm and not idents:
             return None
+
         prefix = sid + "\x00"
         for k in list(self._sent_ledger.keys()):
             if not (isinstance(k, str) and k.startswith(prefix)):
                 continue
             segs = self._sent_ledger.get(k) or []
             for i, seg in enumerate(segs):
-                seg_norm = _norm_seg(seg)
-                if not seg_norm:
+                seg_text = norm_text_only(seg)        # 只算可见文字（媒体 id 不算文字）
+                seg_ids = seg_idents(seg)
+
+                text_hit = bool(norm) and bool(seg_text) and (
+                    norm == seg_text or norm in seg_text or seg_text in norm)
+
+                ids_hit = False
+                rest_ids = list(seg_ids)
+                if idents:
+                    ids_hit = True
+                    for need in idents:
+                        if need in rest_ids:
+                            rest_ids.remove(need)
+                        else:
+                            ids_hit = False
+                            break
+
+                if not (text_hit or ids_hit):
                     continue
-                if norm == seg_norm or norm in seg_norm or seg_norm in norm:
-                    results = self._early_results.get(k) or []
-                    if i >= len(results):
-                        return None
-                    result = results.pop(i)
+
+                results = self._early_results.get(k) or []
+                if i >= len(results):
+                    return None
+                result = results[i]
+
+                # 整段覆盖 = 该段的文字被这条链完整给出（段无文字则免）
+                #           + 该段的身份全被消费（段本来没有身份则天然满足）
+                text_covered = (not seg_text) or (norm == seg_text)
+                ids_covered = (not seg_ids) or (ids_hit and not rest_ids)
+                fully_covered = text_covered and ids_covered
+                if fully_covered:
+                    results.pop(i)
                     segs.pop(i)
                     if not segs:
                         self._sent_ledger.pop(k, None)
                         self._early_results.pop(k, None)
-                    return result
+                return result
         return None
+
     def _reset_turn_ledger(self, sid: str, event_id=None) -> None:
         """清掉**这一轮**的抢发台账（**不是整个会话**！）。
 
@@ -1691,14 +1748,21 @@ class AcceleratorPlugin(BasePlugin):
                     #   那才是真的会把同一段再发一次 —— 这时才报。
                     #   与"同一 sid 出现两次"那种结构判据不同，这个只在真有重叠时触发。
                     try:
-                        from .early_sent import _norm_seg
+                        from .early_sent import _norm_seg, seg_idents
                         rest_norm = _norm_seg(xml_data)
+                        rest_ids = seg_idents(xml_data)       # ★ v1.0.83：媒体身份也要核对
                         for _s in segs:
                             _piece = _norm_seg(_s)
                             if _piece and _piece in rest_norm:
                                 logger.warning(
                                     "[accel] 剥离后剩余文本里仍含已抢发的段"
                                     "（这一段可能被重复发送）：%s", _piece[:48])
+                                break
+                            _hit_id = next((i for i in seg_idents(_s) if i in rest_ids), "")
+                            if _hit_id:
+                                logger.warning(
+                                    "[accel] 剥离后剩余文本里仍含已抢发的媒体"
+                                    "（这一段可能被重复发送）：%s", _hit_id[:48])
                                 break
                     except Exception:  # noqa: BLE001
                         logger.exception("[accel] 重复发送核对失败（不影响发送）")
@@ -1778,6 +1842,23 @@ class AcceleratorPlugin(BasePlugin):
                                     return hit
                             except Exception:  # noqa: BLE001
                                 logger.exception("[accel] 抢发对账异常（放行原发送）")
+                            # ★★ 交接节奏（v1.0.83）：框架的 sleep 在**每段之后**，
+                            #   它发的第一条不会等待 ⇒ 抢发段与框架首段之间会出现
+                            #   **零间隔**（"两段挤成一条"）—— 2.x 侧当年修过同一个坑，
+                            #   3.0 的链级路径没搬过来，这里补齐。
+                            #
+                            #   判据天然收敛、不会双重等待：只有"距上次发送 < 配置下限"
+                            #   时才等；而框架自己每发一条就 sleep 一次（min..max），
+                            #   所以同轮后续链到来时已经满足间隔，不会再等。
+                            try:
+                                _lo, _hi = self._frame_delay()
+                                _last = self._last_seg_ts.get(session)
+                                if _hi > 0 and _last is not None and (time.monotonic() - _last) < _lo:
+                                    _ctx_now = SendCtx(session, None, None)
+                                    await self._pace(_ctx_now)
+                                    self._mark_sent(_ctx_now)
+                            except Exception:  # noqa: BLE001
+                                logger.exception("[accel] 交接节奏处理失败（不影响发送）")
                         return await original(d_self, session, chain,
                                               memory_message=memory_message, self_id=self_id)
                     return mark_side_effects(send_message_chain)

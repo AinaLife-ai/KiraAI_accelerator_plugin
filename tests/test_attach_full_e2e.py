@@ -22,9 +22,15 @@ import os
 import sys
 import types
 
-GEN = sys.argv[1] if len(sys.argv) > 1 else "3"
+# ★ 与其它套件统一：优先环境变量 GEN，其次命令行参数（原来只认 argv ⇒
+#   在 run_tests.sh 里永远按 3.x 找框架，2.x 环境下被误判成"没有框架"而跳过）
+GEN = os.environ.get("GEN", sys.argv[1] if len(sys.argv) > 1 else "3")
 ROOT = "/var/minis/workspace/qqbot_bridge_review"
-FW = f"{ROOT}/kira-v3" if GEN == "3" else f"{ROOT}/kira-core"
+import _env  # noqa: E402
+_FW = _env.framework_for(GEN)
+if _FW is None:
+    _env.skip(f"需要 KiraAI {GEN}.x 框架源码（设 KIRA_FW=/path/to/KiraAI）")
+FW = _FW
 sys.path.insert(0, FW)
 
 os.makedirs(f"{ROOT}/data", exist_ok=True)
@@ -71,8 +77,40 @@ if ACC is None:
 
 async def main():
     print("\n[1] 真跑 initialize()（全功能挂载入口）")
-    plugin = ACC(ctx=None, cfg={})
-    # 需要的最小上下文：插件的 __init__ 若要求参数则补
+    # ★ 给一个**最小可用 ctx**：3.0 的抢发接管点要求 `ctx.message_delivery` 存在
+    #   （原来传 ctx=None ⇒ 那条接管点装不上、也没被断言到 ⇒ 本测试漏掉了最关键的挂载点）。
+    class _StubDelivery:
+        min_message_delay = 0.0
+        max_message_delay = 0.0
+
+        async def send_message_chain(self, *a, **kw):
+            return None
+
+        def get_session_lock(self, sid):
+            return asyncio.Lock()
+
+    class _StubMP:
+        min_message_delay = 0.0
+        max_message_delay = 0.0
+
+    ctx = types.SimpleNamespace(
+        message_delivery=_StubDelivery(),
+        message_processor=_StubMP(),
+        adapter_mgr=None,
+        config={},
+        event_bus=None,
+        persona_mgr=None,
+        sticker_mgr=None,
+        tool_mgr=None,
+        session_mgr=None,
+        prompt_mgr=None,
+        provider_mgr=None,
+        db=None,
+        plugin_mgr=None,
+        get_plugin_data_dir=lambda: Path(f"{ROOT}/data/plugin"),
+    )
+    cfg = {"section_thinking": {"enabled": True}}      # 打开思考 ⇒ 三个注入点都要装上
+    plugin = ACC(ctx=ctx, cfg=cfg)
     try:
         await plugin.initialize()
         check("initialize() 无异常完成", True)
@@ -91,25 +129,45 @@ async def main():
             names = []
     print(f"      已装接管点：{names}")
 
-    print("\n[2] 逐功能落点（按配置默认值）")
-    check("F1 客户端复用（takeover_build_client）",
-          ("reuse_http_client" in names) if plugin.takeover_build_client else True,
-          f"配置={plugin.takeover_build_client} 已装={names}")
-    if plugin.takeover_build_client:
-        check("F1b ★ HTTP 客户端复用真的挂上了", "reuse_http_client" in names,
-              str(names))
+    print("\n[2] 接管点集合：每个功能都必须**真的装上**（不是只看配置开关）")
+    installed = set(names)
 
-    check("F2 流式引擎（force_stream/early_send）",
-          True if not (plugin.force_stream or plugin.early_send) else bool(names),
-          f"force_stream={plugin.force_stream} early_send={plugin.early_send}")
+    expected = {"reuse_http_client", "stream_engine"}
+    if plugin.force_stream or plugin.early_send:
+        expected.add("early_sent_dedupe_delivery" if GEN != "2" else "early_sent_strip")
+    if plugin._tool_gate.enabled:
+        expected.add("parallel_tools")
+    if plugin.takeover_memory_dump and GEN == "2":
+        expected.add("memory_dump")        # 3.0 会话持久化改 SQLite，无此 API（插件会优雅跳过）
 
-    check("F3 工具闸门（_tool_gate.enabled）",
-          True if not plugin._tool_gate.enabled else any("tool" in n or "parallel" in n for n in names),
-          f"enabled={plugin._tool_gate.enabled} names={names}")
+    # 思考注入：只在**目标类可解析**时才要求装上（与 F9/F10 同一套判据）
+    think_targets = []
+    try:
+        if cc.openai_compatible_client() is not None:
+            think_targets.append("openai")
+    except Exception:  # noqa: BLE001
+        pass
+    for modname, kind in [("core.provider.src.deepseek.model_clients", "deepseek"),
+                          ("core.provider.src.anthropic.model_clients", "anthropic")]:
+        try:
+            importlib.import_module(modname)
+            think_targets.append(kind)
+        except Exception:  # noqa: BLE001
+            pass
+    if plugin.thinking_enabled:
+        expected.update(f"auto_thinking:{k}" for k in think_targets)
 
-    check("F4 记忆落盘（takeover_memory_dump）",
-          ("memory_dump" in " ".join(names)) if plugin.takeover_memory_dump else True,
-          f"配置={plugin.takeover_memory_dump} names={names}")
+    missing = sorted(expected - installed)
+    check("★★ 接管点集合与预期完全一致（漏装即报红）", not missing, f"缺: {missing}｜已装: {sorted(installed)}")
+    check("★ 没有**多余**的接管点（装了没声明的东西也要报）",
+          not (installed - expected - {"memory_dump"}), f"多: {sorted(installed - expected)}")
+    if plugin.thinking_enabled:
+        check("F-思考：三处注入点都装上了（开关注入真的生效）",
+              all(f"auto_thinking:{k}" in installed for k in think_targets), f"{think_targets}")
+    check("F1 客户端复用已装", "reuse_http_client" in installed, str(sorted(installed)))
+    if plugin.force_stream or plugin.early_send:
+        hs = "early_sent_dedupe_delivery" if GEN != "2" else "early_sent_strip"
+        check(f"F2 ★ 抢发去重接管点已装（{hs}）", hs in installed, str(sorted(installed)))
 
     print("\n[3] 事件广播三处（3.0 兼容的核心）")
     reg, et = cc.event_system()

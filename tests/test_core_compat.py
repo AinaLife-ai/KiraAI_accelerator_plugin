@@ -4,7 +4,12 @@ import sys
 
 ROOT = "/var/minis/workspace/qqbot_bridge_review"
 GEN = os.environ.get("GEN", "3")
-sys.path.insert(0, f"{ROOT}/kira-v3" if GEN == "3" else f"{ROOT}/kira-core")
+# ★ 框架定位统一走 _env（KIRA_FW / 旧布局目录都认，且按世代特征校验，不静默测错世代）
+import _env  # noqa: E402
+_FW = _env.framework_for(GEN)
+if _FW is None:
+    _env.skip(f"需要 KiraAI {GEN}.x 框架源码（设 KIRA_FW=/path/to/KiraAI）")
+sys.path.insert(0, _FW)
 os.makedirs(f"{ROOT}/data", exist_ok=True)
 open(f"{ROOT}/data/log.log", "a").close()
 

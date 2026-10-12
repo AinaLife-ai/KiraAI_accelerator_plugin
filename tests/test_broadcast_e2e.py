@@ -29,7 +29,11 @@ from pathlib import Path
 
 ROOT = "/var/minis/workspace/qqbot_bridge_review"
 GEN = os.environ.get("GEN", "3")
-sys.path.insert(0, f"{ROOT}/kira-v3" if GEN == "3" else f"{ROOT}/kira-core")
+import _env  # noqa: E402
+_FW = _env.framework_for(GEN)
+if _FW is None:
+    _env.skip(f"需要 KiraAI {GEN}.x 框架源码（设 KIRA_FW=/path/to/KiraAI）")
+sys.path.insert(0, _FW)
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _env import load                      # noqa: E402 —— 按路径加载被测插件
 
