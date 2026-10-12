@@ -114,6 +114,106 @@ def _seg_sig(seg: str) -> str:
     return re.sub(r"\s+", "", inner)
 
 
+# ════════════════════════════════════════════════════════════════════════
+# v1.0.83：链 ↔ 台账 的「身份令牌」（两侧同源，**tag 无关**）
+#
+#   3.0 的按链对账原来只比"可见文字"（`getattr(e, "text", "")`），而贴纸/图片
+#   这类元素**没有 text** ⇒ 纯媒体链永远匹配不上 ⇒ 框架把已抢发的内容再发一次。
+#   线上现象：**表情包被发两次，文字正常**（触发条件是"表情独立成行"把 sticker
+#   拆成独立消息链）。
+#
+#   这里给"消息元素"与"台账里的原始 XML 段"各写一个身份提取器，规则必须一致：
+#     · 元素侧：按优先级取第一个非空身份字段（`sticker_id` 必须排在 `file` 之前 ——
+#       贴纸元素的 file 是 base64，不可比）；
+#     · XML 侧：已知身份标签取**内文**（`<sticker>21</sticker>` → `21`），
+#       没有内文再取属性；`<img>`/`<selfie>`/`<record>` 的值是**提示词**
+#       （元素侧拿到的是生成结果，身份不可比）、`json`/`forward`/`text`/`msg`
+#       结构复杂或属于正文 ⇒ 一律**不参与比对**（保守：宁可不剥，也不误吃）。
+#
+#   ⚠️ Tag 名**故意不参与**比对：同一个 `<file type="image">url</file>` 在链路里
+#      是 `Image` 元素，按标签比会错配；按"身份 + 计数"比才对得上。
+# ════════════════════════════════════════════════════════════════════════
+
+#: 元素侧身份字段优先级
+_IDENT_FIELDS = ("sticker_id", "md5", "file", "image", "record", "video",
+                 "pid", "user_id", "message_id", "emoji_id")
+
+#: XML 侧不参与比对的标签（生成类 / 正文 / 结构类）
+_IDENT_SKIP_TAGS = ("img", "selfie", "record", "json", "forward", "text", "msg")
+
+#: XML 侧没有内文时，按这个顺序找属性当身份
+_IDENT_ATTRS = ("url", "path", "file", "pid", "id", "message_id", "emoji_id")
+
+_TAG_OPEN_RE = re.compile(r"<([a-zA-Z_][\w.-]*)((?:\s[^>]*)?)\s*(/?)>")
+
+
+def elem_ident(e) -> str:
+    """消息元素 → 可比对身份；拿不到身份（或本身是文字）返回 ""（不参与比对）。"""
+    try:
+        if type(e).__name__ == "Text":
+            return ""
+        for f in _IDENT_FIELDS:
+            v = getattr(e, f, None)
+            if isinstance(v, (str, int)) and str(v).strip():
+                return re.sub(r"\s+", "", str(v))
+    except Exception:  # noqa: BLE001
+        pass
+    return ""
+
+
+def seg_idents(seg: str) -> list:
+    """台账原始 XML 段 → 身份列表（与 `elem_ident` 同源，保持出现顺序）。
+
+    实现要点：**先剥掉最外层 `<msg …>` 包裹**（否则外层标签会把内层一起吞掉，
+    内层身份一个都扫不到），再逐个开标签去找它自己的闭合标签取内文；
+    自闭合标签则从属性里取。
+    """
+    s = re.sub(r"</?msg(?:\s[^>]*)?>", " ", seg or "")
+    out = []
+    for m in _TAG_OPEN_RE.finditer(s):
+        tag = m.group(1).lower()
+        if tag in _IDENT_SKIP_TAGS:
+            continue
+        inner = ""
+        if m.group(3) != "/":                      # 非自闭合：找自己的闭合标签
+            close = s.find("</" + m.group(1), m.end())
+            if close >= 0:
+                inner = s[m.end():close].strip()
+        if inner:
+            out.append(re.sub(r"\s+", "", inner))
+            continue
+        attrs = m.group(2) or ""
+        for a in _IDENT_ATTRS:
+            mm = (re.search(a + r'\s*=\s*"([^"]*)"', attrs)
+                  or re.search(a + r"\s*=\s*'([^']*)'", attrs))
+            if mm and mm.group(1).strip():
+                out.append(re.sub(r"\s+", "", mm.group(1)))
+                break
+    return out
+
+
+#: 媒体/结构化标签（连**内文**一起从"可见文字"里去掉）
+_MEDIA_TAGS = ("sticker", "at", "reply", "emoji", "poke", "file", "image",
+               "img", "record", "video", "selfie", "json", "forward")
+_MEDIA_BLOCK_RE = re.compile(
+    r"<(" + "|".join(_MEDIA_TAGS) + r")(?:\s[^>]*)?(?:/>|>.*?</\1>)",
+    re.DOTALL | re.IGNORECASE,
+)
+
+
+def norm_text_only(seg: str) -> str:
+    """只要"可见文字"：把媒体/结构化标签**连同内文**一并去掉再规范化。
+
+    与 `_norm_seg` 的区别（为什么 3.0 链级对账需要它）：
+      · `_norm_seg('<msg><sticker>21</sticker></msg>')` = `'21'` —— 贴纸 id 混进了"文字"，
+        于是"纯媒体段"永远不可能被判定为"文字也覆盖了" ⇒ 台账出不了账；
+      · 这里 `norm_text_only(...)` = `''`，媒体身份一律走 `seg_idents`，
+        两个维度各自干净 ✓（纯媒体段命中后能正常出账）。
+    `_norm_seg` 本身**不动**（2.x 剥离路径的既有语义与测试都依赖它）。
+    """
+    return _norm_seg(_MEDIA_BLOCK_RE.sub(" ", seg or ""))
+
+
 def _find_anchor_run(text: str, blocks: list, emitted_full: str,
                      media_sigs: list, media_total: int):
     """扫描出"匹配最完整"的一段连续块 —— 它们合起来正是**已发内容**。
