@@ -29,6 +29,7 @@ import random
 import re
 import sys
 import time
+import types
 from pathlib import Path
 
 os.makedirs("/tmp/itest/data", exist_ok=True)
@@ -87,8 +88,81 @@ class FakeMP:
         return R()
 
 
+def _ctx30(delivery):
+    return types.SimpleNamespace(
+        message_delivery=delivery, message_processor=delivery,
+        adapter_mgr=None, config={}, event_bus=None, persona_mgr=None,
+        sticker_mgr=None, tool_mgr=None, session_mgr=None, prompt_mgr=None,
+        provider_mgr=None, db=None, plugin_mgr=None,
+    )
+
+
+async def main_30():
+    """★ 3.0 交接节奏：抢发段 → 框架首段之间必须守间隔。
+
+    为什么这条在 3.0 也要测：框架的 sleep 是**每段之后**（`execute.py` 里
+    `send_message_chain` 之后再 sleep）⇒ 它发的**第一条不会等待**；而抢发段是
+    accel 自己按 min/max 节奏发的 ⇒ 交接处若不补等待就会出现"零间隔、两条挤成一条"。
+    2.x 侧当年修过同一个坑；v1.0.83 起 3.0 的链级包装也补上了（本测试就是它的守卫）。
+    """
+    from core.chat.message_elements import Text
+    from core.chat import MessageChain
+
+    LO = HI = 0.3
+
+    class Result:
+        message_id = "M"
+        ok = True
+        err = None
+
+    class FakeDelivery:
+        min_message_delay = LO
+        max_message_delay = HI
+
+        def __init__(self):
+            self.ts = []
+
+        async def send_message_chain(self, session, chain, *, memory_message=None, self_id=None):
+            self.ts.append(time.monotonic())
+            return Result()
+
+        def get_session_lock(self, sid):
+            return asyncio.Lock()
+
+    delivery = FakeDelivery()
+    plugin = main_mod.AcceleratorPlugin(ctx=_ctx30(delivery), cfg={})
+    plugin.patches.uninstall_all()
+    plugin.early_send = True
+    plugin._install_early_sent_strip()
+    dcls = type(delivery)
+    SID = "test:gm:1"
+
+    print("\n[3.0] 1) 模拟「刚抢发过一段」后，框架发第一条链")
+    plugin._last_seg_ts[SID] = time.monotonic()      # _emit_segment 收尾留下的状态
+    t0 = time.monotonic()
+    await dcls.send_message_chain(delivery, SID, MessageChain([Text("框架第1段")]))
+    gap1 = delivery.ts[0] - t0
+    print(f"     交接间隔 = {gap1:.3f}s（配置 {LO}s）")
+    check("★★ 抢发段 → 框架首段的交接处守间隔（关键）",
+          gap1 >= LO * 0.9, f"{gap1:.3f}s（≈0 就是又挤成一条了）")
+
+    print("\n[3.0] 2) 框架自己每段后会 sleep ⇒ 后续链不该被**双重**等待")
+    await asyncio.sleep(LO)                          # 镜像框架的 sleep
+    await dcls.send_message_chain(delivery, SID, MessageChain([Text("框架第2段")]))
+    gap2 = delivery.ts[1] - delivery.ts[0]
+    print(f"     第二条链间隔 = {gap2:.3f}s（框架已等过一次）")
+    check("★ 不双重等待（间隔≈框架自己的节奏，不是 2×配置）",
+          gap2 < LO * 1.6, f"{gap2:.3f}s")
+
+    plugin.patches.uninstall_all()
+
+
 async def main():
     full = "".join("<msg>第%d段</msg>" % i for i in range(1, 6))     # 5 段
+    from core.message_manager import MessageProcessor as _MP   # 世代判定用（局部导入避免作用域问题）
+    if not hasattr(_MP, "send_xml_messages"):
+        await main_30()
+        return
     plugin = main_mod.AcceleratorPlugin(ctx=None, cfg={})
     plugin.patches.uninstall_all()
     plugin.early_send = True

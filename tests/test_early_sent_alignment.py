@@ -26,6 +26,7 @@ import asyncio
 import os
 import re
 import sys
+import types
 from pathlib import Path
 
 os.makedirs("/tmp/itest/data", exist_ok=True)
@@ -86,13 +87,96 @@ class FakeMP:
         return Result("F" + str(len(self.sent)))      # 框架发出的段：F1, F2, ...
 
 
-# 直接用框架的 _add_message_ids / send_xml_messages（不复制逻辑）
-_add_ids = MessageProcessor._add_message_ids
+# 直接用框架自己的实现（不复制逻辑）—— 2.x 在 MessageProcessor，3.0 迁到 MessageDeliveryService
+_add_ids = getattr(MessageProcessor, "_add_message_ids", None)
+
+
+def _make_ctx(delivery):
+    """最小可用 ctx（3.0 的抢发接管点打在 type(ctx.message_delivery) 上）。"""
+    return types.SimpleNamespace(
+        message_delivery=delivery, message_processor=delivery,
+        adapter_mgr=None, config={}, event_bus=None, persona_mgr=None,
+        sticker_mgr=None, tool_mgr=None, session_mgr=None, prompt_mgr=None,
+        provider_mgr=None, db=None, plugin_mgr=None,
+    )
+
+
+async def main_30():
+    """★ 3.0 路径：发送按**链**走，框架逐链收集结果，最后按位置贴 message_id。
+
+    不变量与 2.x 完全一致：**每一条已经发出去的链，必须还回它自己那份结果**；
+    否则 add_message_ids 会把 ID 贴到别的 <msg> 上（模型在历史里读到错位 ID）。
+    """
+    from core.chat.message_elements import Text
+    from core.chat import MessageChain
+    from core.workflow.src.im.message_delivery import MessageDeliveryService
+
+    full = "".join("<msg>第%d段</msg>" % i for i in range(1, 6))
+
+    class Result:
+        def __init__(self, mid):
+            self.message_id = mid
+            self.ok = True
+            self.err = None
+
+    class FakeDelivery:
+        """冒充真实 delivery：记录真正发出去的链，并给出新结果（F1, F2…）。"""
+
+        def __init__(self):
+            self.sent = []
+            self.min_message_delay = 0.0
+            self.max_message_delay = 0.0
+
+        async def send_message_chain(self, session, chain, *, memory_message=None, self_id=None):
+            self.sent.append("".join(getattr(e, "text", "") or "" for e in chain))
+            return Result("F%d" % len(self.sent))
+
+        def get_session_lock(self, sid):
+            return asyncio.Lock()
+
+    print("\n1) 装补丁（走插件自己的 _install_early_sent_strip —— 3.0 打在 delivery 上）")
+    delivery = FakeDelivery()
+    plugin = main_mod.AcceleratorPlugin(ctx=_make_ctx(delivery), cfg={})
+    plugin.patches.uninstall_all()
+    plugin.early_send = True
+    plugin._install_early_sent_strip()
+    dcls = type(delivery)
+    check("补丁已安装（type(ctx.message_delivery).send_message_chain 被包装）",
+          getattr(dcls.send_message_chain, "__kira_accel__", False) is True)
+
+    SID = "test:gm:1"
+    print("\n2) 模拟：前 3 段已抢先发出，框架逐链发剩下 2 段")
+    key = plugin._ckey(SID, "e1")
+    plugin._sent_ledger[key] = ["<msg>第%d段</msg>" % i for i in (1, 2, 3)]
+    plugin._early_results[key] = [Result("E1"), Result("E2"), Result("E3")]
+
+    results = []
+    for i in range(1, 6):
+        chain = MessageChain([Text("第%d段" % i)])
+        results.append(await dcls.send_message_chain(delivery, SID, chain))
+
+    print(f"     框架真正发出去的: {delivery.sent}")
+    check("★ 框架只发了没抢发的 2 段（没有重发已抢发的）",
+          delivery.sent == ["第4段", "第5段"], str(delivery.sent))
+    check("★★ 结果条数 == 原文 <msg> 条数（位置能对上）", len(results) == 5, str(len(results)))
+
+    print("\n3) 用框架自己的 add_message_ids 贴 ID，逐个核对")
+    raw = MessageDeliveryService.add_message_ids(full, results)
+    got = re.findall(r'<msg message_id="([^"]*)">([^<]*)</msg>', raw)
+    expect = [("E1", "第1段"), ("E2", "第2段"), ("E3", "第3段"), ("F1", "第4段"), ("F2", "第5段")]
+    check("★★★ 每一段拿到的都是它自己的 ID", got == expect, str(got))
+    check("★ 抢先发出的 3 段没有丢 ID", all(g[0] for g in got[:3]), str([g[0] for g in got[:3]]))
+    plugin.patches.uninstall_all()
 
 
 async def main():
     full = "".join("<msg>第%d段</msg>" % i for i in range(1, 6))   # 5 段
     check("构造出 5 段的原文", full.count("<msg>") == 5)
+
+    if not hasattr(MessageProcessor, "send_xml_messages"):
+        # ★ 3.0：send_xml_messages 已被删除，改用链级路径（同一不变量的等价形态）
+        await main_30()
+        return
 
     print("\n1) 装补丁（走插件自己的 _install_early_sent_strip）")
     plugin = main_mod.AcceleratorPlugin(ctx=None, cfg={})

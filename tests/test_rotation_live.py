@@ -231,7 +231,14 @@ if (!H) { console.log('HOOK_MISSING'); process.exit(4); }
     seen.push(/wallpapers\/([^")]+)/.exec(img || '')?.[1] || null);
     busyTrack.push(H.wpBusy);
   }, 300);
-  await new Promise(r => setTimeout(r, 9000));
+  // ★★ 不用"固定等待"（与上面 waitLockReleased 同一条原则）：
+  //   机器被占满时事件循环会被饿到 ⇒ 固定 9 秒可能只采到 1 张 ⇒ **假红**。
+  //   这里轮询到"已采到 ≥2 张不同壁纸"就提前结束，上限 30 秒 ——
+  //   判据（必须真的在换）一点没放松，只是不再因为负载而误报。
+  for (let i = 0; i < 100; i++) {
+    if (new Set(seen.filter(Boolean)).size >= 2) break;
+    await new Promise(r => setTimeout(r, 300));
+  }
   clearInterval(iv);
   out.rotationSamples = seen;
   out.distinct = [...new Set(seen.filter(Boolean))];

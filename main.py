@@ -1842,6 +1842,23 @@ class AcceleratorPlugin(BasePlugin):
                                     return hit
                             except Exception:  # noqa: BLE001
                                 logger.exception("[accel] 抢发对账异常（放行原发送）")
+                            # ★★ 交接节奏（v1.0.83）：框架的 sleep 在**每段之后**，
+                            #   它发的第一条不会等待 ⇒ 抢发段与框架首段之间会出现
+                            #   **零间隔**（"两段挤成一条"）—— 2.x 侧当年修过同一个坑，
+                            #   3.0 的链级路径没搬过来，这里补齐。
+                            #
+                            #   判据天然收敛、不会双重等待：只有"距上次发送 < 配置下限"
+                            #   时才等；而框架自己每发一条就 sleep 一次（min..max），
+                            #   所以同轮后续链到来时已经满足间隔，不会再等。
+                            try:
+                                _lo, _hi = self._frame_delay()
+                                _last = self._last_seg_ts.get(session)
+                                if _hi > 0 and _last is not None and (time.monotonic() - _last) < _lo:
+                                    _ctx_now = SendCtx(session, None, None)
+                                    await self._pace(_ctx_now)
+                                    self._mark_sent(_ctx_now)
+                            except Exception:  # noqa: BLE001
+                                logger.exception("[accel] 交接节奏处理失败（不影响发送）")
                         return await original(d_self, session, chain,
                                               memory_message=memory_message, self_id=self_id)
                     return mark_side_effects(send_message_chain)

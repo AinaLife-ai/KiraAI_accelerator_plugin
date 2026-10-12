@@ -58,6 +58,51 @@ def load(submodule: str):
 SKIP_MARK = "[SKIP]"
 
 
+def gen() -> str:
+    """被测世代：3 = KiraAI 3.0（默认），2 = 2.x。"""
+    return os.environ.get("GEN", "3")
+
+
+def _looks_like(gen_want: str, root: str) -> bool:
+    """按**世代特征**判断这份框架源码是不是该世代（不绑版本号）。
+
+    · 3.0：发送/解析链路已服务化 —— 有 `core/workflow/src/im/stages/` 与 message_delivery.py
+    · 2.x：`core/message_manager.py` 里仍有 `send_xml_messages`（本插件 2.x 的接管点）
+    这样即使把另一个世代的框架塞进 KIRA_FW，也不会"静默测错世代"。
+    """
+    if not root or not os.path.isdir(os.path.join(root, "core")):
+        return False
+    if gen_want == "3":
+        return (os.path.isfile(os.path.join(root, "core", "workflow", "src", "im", "stages", "execute.py"))
+                and os.path.isfile(os.path.join(root, "core", "workflow", "src", "im", "message_delivery.py")))
+    mm = os.path.join(root, "core", "message_manager.py")
+    if not os.path.isfile(mm):
+        return False
+    try:
+        with open(mm, encoding="utf-8") as fh:
+            return "def send_xml_messages" in fh.read()
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def framework_for(gen_want: str) -> "str | None":
+    """按世代取框架源码；取不到返回 None（调用方应 `skip()` 而不是当成失败）。
+
+    查找顺序：`KIRA_FW3`/`KIRA_FW2` → `KIRA_FW` → 插件根下的旧布局目录（kira-v3 / kira-core）。
+    每一项都要**通过世代特征校验**才认，避免拿错世代的框架去测。
+    """
+    cands = [
+        os.environ.get("KIRA_FW3" if gen_want == "3" else "KIRA_FW2"),
+        os.environ.get("KIRA_FW"),
+        str(ROOT / ("kira-v3" if gen_want == "3" else "kira-core")),
+        str(ROOT.parent / ("kira-v3" if gen_want == "3" else "kira-core")),
+    ]
+    for c in cands:
+        if c and _looks_like(gen_want, c):
+            return c
+    return None
+
+
 def skip(why: str) -> None:
     """打印跳过原因并以 0 退出（跳过不算失败）。"""
     print(f"⚠ {SKIP_MARK} {why}")

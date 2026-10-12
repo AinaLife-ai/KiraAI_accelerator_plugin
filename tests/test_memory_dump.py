@@ -63,6 +63,29 @@ def main():
     plugin = main_mod.AcceleratorPlugin(ctx=None, cfg={})
     plugin.patches.uninstall_all()
     plugin.takeover_memory_dump = True
+
+    # ★★ 世代分流（这条优化只对 2.x 的"整文件重写 chat_memory.json"适用）：
+    #    3.0 起会话记忆改为 SQLite 持久化，没有 `_save_memory` 这个热点
+    #    ⇒ 插件会**优雅跳过**（不崩、不误装）。这里要断言"跳过是干净的"，
+    #      而不是把它当成失败 —— 也不能反过来假装"测过了等价性"（那是自欺）。
+    if not hasattr(SessionManager, "_save_memory"):
+        print("   ★ 3.0（会话记忆 SQLite 化）没有 `_save_memory` 热点 ⇒ 本优化不适用")
+        plugin._install_memory_dump()          # 必须不抛异常
+        names = [h.name for h in getattr(plugin.patches, "_handles", [])]
+        check("3.0：插件优雅跳过（不抛异常）", True)
+        check("3.0：没有残留接管点（不误装到别的类上）",
+              "memory_dump" not in names, str(names))
+        plugin.terminate and None              # 保持结构一致（terminate 由测试末尾统一验证）
+        print()
+        print("=" * 60)
+        print(f"通过 {len(PASS)}  失败 {len(FAIL)}")
+        if FAIL:
+            for f in FAIL:
+                print("   ✗", f)
+            sys.exit(1)
+        print("🎉 3.0 下本优化不适用，且插件「跳过」得干净（不是静默假装成功）")
+        return
+
     plugin._install_memory_dump()
     check("补丁已安装", getattr(SessionManager._save_memory, "__kira_accel__", False) is True)
 

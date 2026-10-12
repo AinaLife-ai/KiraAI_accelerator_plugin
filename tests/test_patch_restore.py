@@ -16,6 +16,7 @@
 """
 import asyncio
 import os
+import types
 import sys
 from pathlib import Path
 
@@ -49,8 +50,11 @@ TARGETS = [
     ("reuse_http_client", mc.OpenAICompatibleLLMClient, "_build_client"),
     ("stream_engine", ProviderManager, "get_model_client"),
     ("auto_thinking:openai", mc.OpenAICompatibleLLMClient, "_build_request_kwargs"),
-    ("early_sent_strip", MessageProcessor, "send_xml_messages"),
 ]
+
+# ★★ 抢发去重接管点**不在这里硬编码**：它打在"ctx 交给插件的那个 delivery 类"上
+#    （生产里就是 MessageDeliveryService，测试桩是另一个类）——装完之后从**插件自己的
+#    句柄**里派生出来（见下面 "1)" 段），这样既与生产一致，也不会因为世代改名而失配。
 # 可选依赖：SDK 不在就跳过对应接管点
 for modpath, clsname, attr, label in [
     ("core.provider.src.deepseek.model_clients", "DeepSeekLLMClient",
@@ -75,13 +79,42 @@ def snapshot():
     return {(label, id(cls), attr): getattr(cls, attr) for label, cls, attr in TARGETS}
 
 
+def make_ctx():
+    """最小可用 ctx —— 3.0 的抢发接管点要求 `ctx.message_delivery` 存在。
+
+    之前这里（以及下面的热重载/认领场景）传的是 `ctx=None` ⇒ 那条接管点装不上，
+    于是"逐个还原"这套断言**漏掉了最关键的一个接管点**。
+    """
+
+    class _StubDelivery:
+        min_message_delay = 0.0
+        max_message_delay = 0.0
+
+        async def send_message_chain(self, *a, **kw):
+            return None
+
+        def get_session_lock(self, sid):
+            return asyncio.Lock()
+
+    class _StubMP:
+        min_message_delay = 0.0
+        max_message_delay = 0.0
+
+    return types.SimpleNamespace(
+        message_delivery=_StubDelivery(), message_processor=_StubMP(),
+        adapter_mgr=None, config={}, event_bus=None, persona_mgr=None,
+        sticker_mgr=None, tool_mgr=None, session_mgr=None, prompt_mgr=None,
+        provider_mgr=None, db=None, plugin_mgr=None,
+    )
+
+
 async def main():
     print("0) 记录接管前的原始方法对象")
     orig = snapshot()
     check("拿到全部接管点的原始实现", len(orig) == len(TARGETS), f"{len(orig)} 个")
 
     print("\n1) 打开所有功能并安装接管")
-    plugin = main_mod.AcceleratorPlugin(ctx=None, cfg={})
+    plugin = main_mod.AcceleratorPlugin(ctx=make_ctx(), cfg={})
     plugin.observe_enabled = True
     plugin.force_stream = True
     plugin.early_send = True
@@ -102,6 +135,14 @@ async def main():
     plugin._install_request_hook()
     plugin._install_early_sent_strip()
     plugin._install_parallel_tools()
+
+    # ★ 抢发去重接管点：从插件句柄派生（名字随世代：early_sent_strip / early_sent_dedupe_delivery）
+    _es = next((h for h in getattr(plugin.patches, "_handles", []) if h.name.startswith("early_sent")), None)
+    check("★ 抢发去重接管点已安装（按世代命名）", _es is not None,
+          str([h.name for h in getattr(plugin.patches, "_handles", [])]))
+    if _es is not None and _es.owner is not None:
+        TARGETS.append((_es.name, _es.owner, _es.attr))
+        orig[(_es.name, id(_es.owner), _es.attr)] = _es.original   # 句柄记的就是安装前那份
 
     installed = snapshot()
     changed = [k[0] for k, v in installed.items() if v is not orig[k]]
@@ -134,7 +175,7 @@ async def main():
 
     print("\n4) 多次热重载（装→卸 ×3）仍然干净")
     for i in range(3):
-        p2 = main_mod.AcceleratorPlugin(ctx=None, cfg={})
+        p2 = main_mod.AcceleratorPlugin(ctx=make_ctx(), cfg={})
         p2._proxy_cache = {}
         p2._client_cache = {}
         p2._resp_by_sid = {}
@@ -171,13 +212,13 @@ async def main():
     orig0 = orig[key]
     setattr(mc.OpenAICompatibleLLMClient, "_build_client", orig0)   # 从干净状态开始
 
-    A = main_mod.AcceleratorPlugin(ctx=None, cfg={})
+    A = main_mod.AcceleratorPlugin(ctx=make_ctx(), cfg={})
     A._client_cache = {}
     A.takeover_build_client = True
     A._install_client_cache()
     check("A 装上补丁", mc.OpenAICompatibleLLMClient._build_client is not orig0)
 
-    B = main_mod.AcceleratorPlugin(ctx=None, cfg={})
+    B = main_mod.AcceleratorPlugin(ctx=make_ctx(), cfg={})
     B._client_cache = {}
     B.takeover_build_client = True
     B._install_client_cache()          # 幂等 ⇒ 应当"认领"而不是无视
