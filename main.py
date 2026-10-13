@@ -918,6 +918,44 @@ class AcceleratorPlugin(BasePlugin):
         """
         return "%s\x00%s" % (sid, event_id if event_id else "-")
 
+    #: `发送入口是否接受某关键字` 的缓存（键=函数对象）
+    _kwarg_probe_cache: dict = {}
+
+    @classmethod
+    def _accepts_kwarg(cls, fn, name: str) -> bool:
+        """`fn` 是否接受某个关键字（含 `**kwargs`）。**只探测，不重试**。
+
+        为什么要探测而不是"试着传一下，报错再退"：发送是**有副作用的**，
+        try/except 重试等于把消息发两遍（历史教训）。这里用 inspect 静态判断，并缓存。
+        """
+        try:
+            key = (fn, name)
+            if key in cls._kwarg_probe_cache:
+                return cls._kwarg_probe_cache[key]
+        except Exception:  # noqa: BLE001
+            key = None
+        ok = False
+        try:
+            import inspect
+            params = inspect.signature(fn).parameters
+            ok = name in params or any(p.kind == p.VAR_KEYWORD for p in params.values())
+        except Exception:  # noqa: BLE001
+            ok = False
+        try:
+            if key is not None:
+                cls._kwarg_probe_cache[key] = ok
+        except Exception:  # noqa: BLE001
+            pass
+        return ok
+
+    @staticmethod
+    def _event_bot(ctx):
+        """本轮事件上的 bot 身份（rc2 起框架用它记录出站历史）；拿不到返回 None。"""
+        try:
+            return getattr(getattr(ctx, "event", None), "bot", None)
+        except Exception:  # noqa: BLE001
+            return None
+
     async def _parse_seg_actions(self, seg, tag_set, mp):
         """把一段 XML 解析成动作列表（双世代）。
 
@@ -1379,10 +1417,21 @@ class AcceleratorPlugin(BasePlugin):
                 # ★ v1.0.88：优先走**框架推荐且未弃用**的入口
                 #   （新版框架会把 `MessageProcessor.send_message_chain` 标弃用：
                 #    线上日志里每发一段就刷一条 DeprecationWarning，且其签名随时可能变）。
-                if callable(_ctx_send):
-                    result = await _ctx_send(ctx.sid, action)
-                else:
-                    result = await mp.send_message_chain(ctx.sid, action)
+                #
+                # ★★★ v1.0.89：把"出站消息的 bot 身份"也带上。
+                #   rc2 起框架把 `send_message_chain` 的 `self_id=` 换成了 `bot: User`
+                #   （`execute.py` 里是 `bot=event.bot`），并用它记录出站历史：
+                #   `record_outgoing(self_id=bot.user_id, sender_name=bot.nickname)`。
+                #   不带 ⇒ 记录里 `self_id=None`、名字回落人设名 ⇒ 与框架自己发的
+                #   记录**不一致**（而 acc 抢发的正是大多数消息）。
+                #   ⚠️ 只在目标**接受** `bot=` 时才传（rc1 / 2.x 都没有这个参数）；
+                #      判据用 `inspect`（缓存），**绝不 try/except 重试** ——
+                #      发送有副作用，重试等于重发。
+                _fn = _ctx_send if callable(_ctx_send) else mp.send_message_chain
+                _kw = {}
+                if self._accepts_kwarg(_fn, "bot"):
+                    _kw["bot"] = self._event_bot(ctx)
+                result = await _fn(ctx.sid, action, **_kw)
             except Exception:  # noqa: BLE001
                 logger.exception("[accel] 抢先发送失败，本段交回框架发送（不丢内容）")
                 return delivered

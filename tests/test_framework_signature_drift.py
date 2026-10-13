@@ -122,21 +122,28 @@ class _MP:
 
 
 class _Ctx:
-    def __init__(self, delivery, mp, with_ctx_send=True):
+    def __init__(self, delivery, mp, with_ctx_send=True, ctx_send_has_bot=True):
         self.message_delivery = delivery
         self.message_processor = mp
         self.adapter_mgr = None
         self.provider_mgr = None
-        if with_ctx_send:
-            # 框架推荐的入口（PluginContext.send_message_chain）：只转发
-            async def _ctx_send(session, chain):
+        if with_ctx_send and not ctx_send_has_bot:
+            # rc1 形状：入口在，但**不吃 bot**
+            async def _ctx_send_rc1(session, chain):
                 return await self.message_delivery.send_message_chain(session, chain)
+            self.send_message_chain = _ctx_send_rc1
+        elif with_ctx_send:
+            # 框架推荐的入口（PluginContext.send_message_chain）：
+            # 形状按 **rc2**（`*, bot=None`）——真实 rc1 没这个参数，acc 会按探测结果处理
+            async def _ctx_send(session, chain, *, bot=None):
+                return await self.message_delivery.send_message_chain(
+                    session, chain, bot=bot)
             self.send_message_chain = _ctx_send
         self._with_ctx_send = with_ctx_send
 
 
-def _plugin(delivery, mp, with_ctx_send=True):
-    p = main_mod.AcceleratorPlugin(_Ctx(delivery, mp, with_ctx_send), {})
+def _plugin(delivery, mp, with_ctx_send=True, ctx_send_has_bot=True):
+    p = main_mod.AcceleratorPlugin(_Ctx(delivery, mp, with_ctx_send, ctx_send_has_bot), {})
     p._install_early_sent_strip()
     return p
 
@@ -226,6 +233,40 @@ async def run():
                                       main_mod.SendCtx(SID, types.SimpleNamespace(sid=SID, event_id="e2"), _tagset()))
     if is30:
         check("S5b 没有 ctx.send_message_chain ⇒ 回落弃用入口也能发出去", bool(ok5c) and mp2.used == 1)
+
+    # S8/S9 出站身份：rc2 起框架用 `bot=` 记录出站历史（self_id/sender_name）。
+    #        · 目标**接受** bot= ⇒ acc 抢发必须把本轮 event 的 bot 带上；
+    #        · 目标**不接受** ⇒ 绝不能传（否则 TypeError，且不许用重试兜）。
+    if is30:
+        marker = object()
+        d3 = _Delivery()
+        _CURRENT[0] = d3
+        mp3 = _MP(d3)
+        plugin3 = _plugin(d3, mp3)
+        ev8 = types.SimpleNamespace(sid=SID, event_id="e8", bot=marker)
+        ok8 = await plugin3._emit_segment("<msg><text>带 bot</text></msg>",
+                                         main_mod.SendCtx(SID, ev8, _tagset()))
+        got_bot = d3.got[-1]["kwargs"].get("bot") if d3.got else None
+        check("S8 目标接受 bot= ⇒ 抢发把本轮 event.bot 带上（出站历史身份一致）",
+              bool(ok8) and got_bot is marker, f"got={got_bot!r}")
+
+        class _NoBotDelivery(_Delivery):
+            async def send_message_chain(self, session, chain):       # 老签名：不吃 bot
+                self.got.append({"session": session, "chain": chain, "args": (), "kwargs": {}})
+                return KiraIMSentResult(message_id="SENT", ok=True)
+
+        d4 = _NoBotDelivery()
+        _CURRENT[0] = d4
+        # rc1 形状：ctx 入口在、但不吃 bot（真实旧框架就是这样）
+        plugin4 = _plugin(d4, _MP(d4), with_ctx_send=True, ctx_send_has_bot=False)
+        try:
+            ok9 = await plugin4._emit_segment("<msg><text>无 bot</text></msg>",
+                                             main_mod.SendCtx(SID, ev8, _tagset()))
+            err9 = ""
+        except Exception as exc:
+            ok9, err9 = False, f"{type(exc).__name__}: {exc}"
+        check("S9 目标不接受 bot= ⇒ 绝不传（老框架/2.x 也不会被 TypeError 挡死）",
+              bool(ok9) and bool(d4.got) and "bot" not in d4.got[-1]["kwargs"], err9)
 
     # S6 2.x 世代（若当前走 send_xml_messages 分支）：
     #    把框架的方法换成"新版签名"（多收参数）再装接管点 —— 模拟"框架加参数"的真实情形。

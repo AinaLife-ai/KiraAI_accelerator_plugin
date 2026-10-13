@@ -34,6 +34,9 @@
 > 且图片身份**不再被惰性算出的 md5 顶掉** —— 修掉「`<file>` 发的文件/图片被发两次」。
 > v1.0.85 起：抢发台账改记**链侧签名**（与对账同一个函数产出，解析期改写影响不到它），
 > 生成类段（出图/自拍/TTS/生成视频/JSON/合并转发）也能正确出账 —— 修掉「这类消息被发两次」。
+> v1.0.89 起：**3.0 rc2 兼容** —— 抢发时把出站历史的 **bot 身份**一起带上
+> （rc2 把 `self_id=` 换成 `bot:`，并用它记录 `record_outgoing(self_id=…, sender_name=…)`），
+> 且**探测式**传参（目标不吃就不传，绝不靠重试兜）。
 > v1.0.88 起：接管点的**签名一律原样透传**（`*args, **kwargs`）—— 框架给
 > `send_message_chain` 加参数（如新版加的 `bot=`）不会再让发送整条失败；
 > 抢发也改走框架推荐的 `ctx.send_message_chain`（不再刷弃用告警）。
@@ -378,6 +381,30 @@ A：把你的图（webp/jpg/png）丢进 `wallpapers/` 目录，面板里就会�
 
 <details>
 <summary><b>📜 更新日志</b>（点击展开）</summary>
+
+### v1.0.89
+
+**3.0 rc2 兼容：抢发把「出站历史的 bot 身份」也带上（并核实 rc2 就是上次事故的来源）**
+
+- 🔎 **核实**：用户环境那次 `TypeError: ... unexpected keyword argument 'bot'` 的根因就是
+  **rc2 的改动** —— rc1 的签名是 `send_message_chain(..., self_id: str | None = None)`，
+  rc2 换成 `bot: User | None = None`（`core/message_manager.py` 的弃用入口与
+  `PluginContext.send_message_chain` 同步改名；`execute.py` 里传 `bot=event.bot`）。
+  acc 当时把签名写死 ⇒ 一改就炸（v1.0.88 已从结构上免疫：签名原样透传）。
+- 🐛 **本版修的**：rc2 的 `bot` 用来记录出站历史 ——
+  `record_outgoing(session, chain, self_id=str(bot.user_id), sender_name=bot.nickname)`。
+  acc 抢发（大多数消息走它）原来不带 ⇒ 记录里 `self_id=None`、名字回落人设名
+  ⇒ 与框架自己发的记录**不一致**。
+- ✅ **修法**：**探测式**传参 —— 用 `inspect.signature`（带缓存）判断目标是否接受 `bot=`，
+  接受才传，值取本轮 `event.bot`；**绝不 try/except 重试**（发送有副作用，重试＝重发）。
+  rc1 / 2.x 没有这个参数 ⇒ 自动不传，行为不变。
+- 🧪 套件 `tests/test_framework_signature_drift.py` 新增两条：
+  **S8** 目标接受 `bot=` ⇒ 抢发必须带上本轮 `event.bot`；
+  **S9** 目标不接受（rc1 形状）⇒ 绝不能传（也不许用重试兜）。
+- ⚠️ 顺带把一条**写过头的静态守卫**修正（它盯着发送那一行的字面量；
+  实现改成 `_fn` 分发后即失效）—— 判据改为"候选串里最早出现者"，避免同样的脆弱。
+- ✅ **验证**：三框架全量 🎉 —— `KIRA_FW=<3.0 rc.2>` / `<3.0 rc.1>` / `<2.34.8>` 全部通过。
+- 版本 v1.0.88 → v1.0.89
 
 ### v1.0.88
 

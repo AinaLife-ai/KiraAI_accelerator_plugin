@@ -120,7 +120,10 @@ check("★ 不再每轮重置时间戳（否则第二轮起会贴脸发）",
 # ★★ 节奏必须在**发送之前**：放发送之后、又让第一段跳过等待的话，
 #    第二段就会紧贴第一段出去（实测间隔 0s，用户报过）。
 i_pace = src.index("await self._pace(ctx)")
-i_send = src.index("await mp.send_message_chain(ctx.sid, action)")
+# ★ 2026-10-13（v1.0.88/89）：发送点改成了"先选入口（优先框架推荐的
+#   ctx.send_message_chain）+ 按需带 bot="的分发写法 ⇒ 判据跟着换，本意不变：
+#   **节奏必须在真正发送之前**。
+i_send = src.index("await _fn(ctx.sid, action")
 check("★★ 节奏在发送之前（这是「间隔没生效」的真凶）", i_pace < i_send,
       f"_pace@{i_pace} vs send@{i_send}")
 
