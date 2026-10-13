@@ -312,6 +312,26 @@ async def run():
     check("S7 三处发送/解析包装的签名都带 **kwargs（别再写死参数表）",
           not missing, f"缺 kwargs 的：{missing}（已见到的：{sorted(found)}）")
 
+    # S7b ★ v1.0.90：**所有**"工厂内 + 调用 original"的包装（= 接管框架方法的实现体）
+    #     都必须带 **kwargs —— 这是本次事故的通用判据（框架一加参数就 TypeError）。
+    bad_wrappers = []
+    for fn in ast.walk(tree):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        args = {x.arg for x in list(fn.args.posonlyargs) + list(fn.args.args) + list(fn.args.kwonlyargs)}
+        if not (args & {"original", "orig", "_orig", "raw", "inner"}) or len(args) > 2:
+            continue
+        for sub in ast.walk(fn):                     # 工厂里嵌套的实现体
+            if not isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef)) or sub is fn:
+                continue
+            src_sub = ast.unparse(sub)
+            if "original(" not in src_sub and "await original" not in src_sub:
+                continue                             # 不调 original ⇒ 只是内部辅助函数
+            if sub.args.kwarg is None:
+                bad_wrappers.append(f"{sub.name}@{sub.lineno}")
+    check("S7b ★ 所有「包装框架方法」的实现体都带 **kwargs（通用的签名漂移防线）",
+          not bad_wrappers, f"缺 kwargs：{bad_wrappers}")
+
 
 asyncio.run(run())
 

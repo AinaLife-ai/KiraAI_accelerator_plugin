@@ -679,7 +679,8 @@ class AcceleratorPlugin(BasePlugin):
         cache = self._client_cache
 
         def factory(original):
-            def make(self):
+            def make(self, *args, **kwargs):
+                # ★ v1.0.90：签名原样透传（框架给 _build_client 加参数也不炸）
                 # ★ 键必须覆盖 _build_client 真正用到的一切：
                 #   api_key / base_url / default_headers。
                 #
@@ -694,7 +695,7 @@ class AcceleratorPlugin(BasePlugin):
                        repr(sorted(hdr.items())) if isinstance(hdr, dict) else "")
                 c = cache.get(key)
                 if c is None:
-                    c = original(self)
+                    c = original(self, *args, **kwargs)
                     if len(cache) > 32:          # 防着配置反复变更把缓存撑大
                         cache.clear()
                     cache[key] = c
@@ -732,8 +733,9 @@ class AcceleratorPlugin(BasePlugin):
         MAX_PROXY_CACHE = 64
 
         def factory(original):
-            def get_model_client(self, provider_id, model_id, model_type=None):
-                client = original(self, provider_id, model_id, model_type)
+            def get_model_client(self, *args, **kwargs):
+                # ★ v1.0.90：签名原样透传（框架加参数/换顺序都不会把我们打死）
+                client = original(self, *args, **kwargs)
                 if client is None:
                     return None
                 # 只包装 LLM 客户端（其它类型如 TTS/STT 无流式语义）
@@ -1720,7 +1722,11 @@ class AcceleratorPlugin(BasePlugin):
         plugin = self
 
         def factory(original):
-            async def execute_tool(self, event, resp, tool_set=None):
+            async def execute_tool(self, *args, **kwargs):
+                # ★ v1.0.90：原样透传；自己要的三个值从 args/kwargs 里取
+                event = args[0] if args else kwargs.get("event")
+                resp = args[1] if len(args) > 1 else kwargs.get("resp")
+                tool_set = args[2] if len(args) > 2 else kwargs.get("tool_set")
                 calls = getattr(resp, "tool_calls", None) or []
 
                 # 先读框架自己的两个配置（与原实现一致）
@@ -1733,7 +1739,7 @@ class AcceleratorPlugin(BasePlugin):
                 to_run = calls[:max_calls] if max_calls >= 0 else []
                 ok, reason = gate.can_parallelize(to_run)
                 if not ok:
-                    return await original(self, event, resp, tool_set=tool_set)
+                    return await original(self, *args, **kwargs)
 
                 plugin._stats["parallel_batches"] = plugin._stats.get("parallel_batches", 0) + 1
                 logger.info("[accel] 同轮工具并行：%s", reason)
@@ -1887,7 +1893,10 @@ class AcceleratorPlugin(BasePlugin):
             return
 
         def factory(original):
-            def _save_memory(self, memory=None, path=None):
+            def _save_memory(self, *args, **kwargs):
+                # ★ v1.0.90：框架调用点，签名同样要透传
+                memory = args[0] if args else kwargs.get("memory")
+                path = args[1] if len(args) > 1 else kwargs.get("path")
                 if not memory:
                     memory = self.chat_memory
                 if not path:
