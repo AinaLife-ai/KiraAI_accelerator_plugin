@@ -70,6 +70,7 @@ run "★抢发兼容AFTER_XML_PARSE" tests/test_after_xml_parse.py
 run "★★媒体链去重（表情包不重发）" tests/test_media_dedupe.py
 run "★★解析前剥离（3.0 不重复生成）" tests/test_preparse_strip.py
 run "★★自定义标签安全（只执行一次/未交付不剥离）" tests/test_custom_tag_safety.py
+run "★★qqbot-fullmsg-bridge 兼容（md/键盘不重复）" tests/test_qqbot_fullmsg_compat.py
 run "★文本被改写后的剥离"     tests/test_strip_when_text_rewritten.py
 run "★前端审计（层级/开屏/墨渗）" tests/test_frontend_audit.py
 run "★计数保留期（30天/永久）" tests/test_stats_retention.py

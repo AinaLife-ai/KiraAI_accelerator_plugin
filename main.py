@@ -1354,6 +1354,19 @@ class AcceleratorPlugin(BasePlugin):
             #     这正是用户报的"最小/最大间隔没生效"。
             await self._pace(ctx)
 
+            # ★★★ v1.0.87：抢发链的签名必须在**发送之前**取！
+            #   下游插件可能在发送层改写这条链（生态实例：qqbot-fullmsg-bridge
+            #   会在 `_send_message_inner` 里做媒体强转 `coerce_media_chain`，
+            #   至于摘走富媒体/键盘元素的实现同样是"在发送那一刻动链"）。
+            #   若等发送之后再取，记进台账的就是**被改写后**的链，
+            #   而框架那遍解析出的是**原始**链 ⇒ 对账失配（多生成/多发送一类问题）。
+            #   所以先取签名（= acc 自己解析出来的产物），再发。
+            _pre_sig = None
+            try:
+                _pre_sig = _chain_signature(action)
+            except Exception:  # noqa: BLE001
+                logger.debug("[accel] 取抢发链签名失败（不记签名，仅影响兜底对账）")
+
             # ── 投递本身：这一步成功即等于"已经发出去了"，后面任何失败都不改这个事实 ──
             self._early_inflight = getattr(self, "_early_inflight", 0) + 1
             try:
@@ -1390,7 +1403,7 @@ class AcceleratorPlugin(BasePlugin):
                 #   生成类（出图/TTS/视频）没有可比身份，靠 `kinds`（元素种类）
                 #   在**本轮内按顺序**配对。
                 self._chain_records.setdefault(_k, []).append({
-                    "sig": _chain_signature(action),
+                    "sig": _pre_sig if _pre_sig is not None else _chain_signature(action),
                     "result": result,
                     # ★ 生成类标签（出图/自拍/TTS/生成视频）：元素身份是**生成结果**，
                     #   与框架那遍**再次生成**的结果必然不同 ⇒ 身份维度天然不可比，
