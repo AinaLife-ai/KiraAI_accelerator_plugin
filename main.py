@@ -918,6 +918,44 @@ class AcceleratorPlugin(BasePlugin):
         """
         return "%s\x00%s" % (sid, event_id if event_id else "-")
 
+    #: `发送入口是否接受某关键字` 的缓存（键=函数对象）
+    _kwarg_probe_cache: dict = {}
+
+    @classmethod
+    def _accepts_kwarg(cls, fn, name: str) -> bool:
+        """`fn` 是否接受某个关键字（含 `**kwargs`）。**只探测，不重试**。
+
+        为什么要探测而不是"试着传一下，报错再退"：发送是**有副作用的**，
+        try/except 重试等于把消息发两遍（历史教训）。这里用 inspect 静态判断，并缓存。
+        """
+        try:
+            key = (fn, name)
+            if key in cls._kwarg_probe_cache:
+                return cls._kwarg_probe_cache[key]
+        except Exception:  # noqa: BLE001
+            key = None
+        ok = False
+        try:
+            import inspect
+            params = inspect.signature(fn).parameters
+            ok = name in params or any(p.kind == p.VAR_KEYWORD for p in params.values())
+        except Exception:  # noqa: BLE001
+            ok = False
+        try:
+            if key is not None:
+                cls._kwarg_probe_cache[key] = ok
+        except Exception:  # noqa: BLE001
+            pass
+        return ok
+
+    @staticmethod
+    def _event_bot(ctx):
+        """本轮事件上的 bot 身份（rc2 起框架用它记录出站历史）；拿不到返回 None。"""
+        try:
+            return getattr(getattr(ctx, "event", None), "bot", None)
+        except Exception:  # noqa: BLE001
+            return None
+
     async def _parse_seg_actions(self, seg, tag_set, mp):
         """把一段 XML 解析成动作列表（双世代）。
 
@@ -972,9 +1010,9 @@ class AcceleratorPlugin(BasePlugin):
           · 剥离函数复用 2.x 的 `strip_early_sent_smart`（按内容剥离，抗改写）；
           · 任何异常都只告警并按**原文本**解析（宁可多生成一次，也不改变发送语义）。
         """
-        async def parse_xml(xml_data, tag_set):
+        async def parse_xml(xml_data=None, tag_set=None, *args, **kwargs):
             if getattr(self, "_accel_parse_inflight", 0):
-                return await original(xml_data, tag_set)
+                return await original(xml_data, tag_set, *args, **kwargs)
             try:
                 key, segs, early = self._turn_for_text(xml_data)
                 if key and segs:
@@ -993,7 +1031,7 @@ class AcceleratorPlugin(BasePlugin):
                         xml_data = stripped
             except Exception:  # noqa: BLE001
                 logger.exception("[accel] 解析前剥离失败（按原文本解析）")
-            return await original(xml_data, tag_set)
+            return await original(xml_data, tag_set, *args, **kwargs)
         return parse_xml
 
     def _ids_splice_factory(self, original):
@@ -1005,11 +1043,13 @@ class AcceleratorPlugin(BasePlugin):
         ⇒ 少解析一段就少一个结果，必须在这个函数入口把抢发结果补回最前面
         （顺序 = 抢发顺序 = 文档顺序），否则模型历史里的 message_id 会整体错位。
         """
-        def add_message_ids(xml_data, message_results):
+        def add_message_ids(xml_data=None, message_results=None, *args, **kwargs):
+            # ★ v1.0.88：同样**原样透传**（框架加参数不能让这个接管点炸掉）
             early = self._strip_ctx.pop(xml_data, None)
             if early:
-                return original(xml_data, list(early) + list(message_results))
-            return original(xml_data, message_results)
+                return original(xml_data, list(early) + list(message_results),
+                                *args, **kwargs)
+            return original(xml_data, message_results, *args, **kwargs)
         return add_message_ids
 
     def _consume_chain_record(self, prefix, norm, idents, kinds):
@@ -1230,7 +1270,11 @@ class AcceleratorPlugin(BasePlugin):
         import asyncio
 
         mp = getattr(self.ctx, "message_processor", None)
-        if ctx is None or mp is None or not ctx.sid or ctx.tag_set is None:
+        # ★ v1.0.88：发送入口可能是 `ctx.send_message_chain`（框架推荐路径），
+        #   此时没有 `message_processor` 也能抢发 ⇒ 守卫不能再要求 mp 非空。
+        _ctx_send = getattr(self.ctx, "send_message_chain", None)
+        if ctx is None or (mp is None and not callable(_ctx_send)) \
+                or not ctx.sid or ctx.tag_set is None:
             # ★ 2026-10-05 降级为 debug：这是**可预期情形**而非故障 ——
             #   不经过消息管线的 LLM 调用（记忆整理 / JEV 决策等后台调用）
             #   本来就没有发送上下文，整段交回框架是完全正确的行为。
@@ -1370,7 +1414,24 @@ class AcceleratorPlugin(BasePlugin):
             # ── 投递本身：这一步成功即等于"已经发出去了"，后面任何失败都不改这个事实 ──
             self._early_inflight = getattr(self, "_early_inflight", 0) + 1
             try:
-                result = await mp.send_message_chain(ctx.sid, action)
+                # ★ v1.0.88：优先走**框架推荐且未弃用**的入口
+                #   （新版框架会把 `MessageProcessor.send_message_chain` 标弃用：
+                #    线上日志里每发一段就刷一条 DeprecationWarning，且其签名随时可能变）。
+                #
+                # ★★★ v1.0.89：把"出站消息的 bot 身份"也带上。
+                #   rc2 起框架把 `send_message_chain` 的 `self_id=` 换成了 `bot: User`
+                #   （`execute.py` 里是 `bot=event.bot`），并用它记录出站历史：
+                #   `record_outgoing(self_id=bot.user_id, sender_name=bot.nickname)`。
+                #   不带 ⇒ 记录里 `self_id=None`、名字回落人设名 ⇒ 与框架自己发的
+                #   记录**不一致**（而 acc 抢发的正是大多数消息）。
+                #   ⚠️ 只在目标**接受** `bot=` 时才传（rc1 / 2.x 都没有这个参数）；
+                #      判据用 `inspect`（缓存），**绝不 try/except 重试** ——
+                #      发送有副作用，重试等于重发。
+                _fn = _ctx_send if callable(_ctx_send) else mp.send_message_chain
+                _kw = {}
+                if self._accepts_kwarg(_fn, "bot"):
+                    _kw["bot"] = self._event_bot(ctx)
+                result = await _fn(ctx.sid, action, **_kw)
             except Exception:  # noqa: BLE001
                 logger.exception("[accel] 抢先发送失败，本段交回框架发送（不丢内容）")
                 return delivered
@@ -1875,7 +1936,8 @@ class AcceleratorPlugin(BasePlugin):
         plugin = self
 
         def factory(original):
-            async def send_xml_messages(self, event, xml_data, tag_set):
+            async def send_xml_messages(self, event=None, xml_data=None,
+                                        tag_set=None, *args, **kwargs):
                 # ★ 按 sid 取"本轮响应"。
                 #   ⚠️ 刻意**不**回退到 self._current_resp：那是实例级的，
                 #   并发会话下可能是**别的会话**的响应，拿它去剥离就会
@@ -2014,7 +2076,8 @@ class AcceleratorPlugin(BasePlugin):
                         # 框架立刻就会发第一段 ⇒ 现在这个时刻就等于它的发送时刻
                         plugin._mark_sent(ctx_now)
                 try:
-                    rest = await original(self, event, xml_data, tag_set)
+                    rest = await original(self, event, xml_data, tag_set,
+                                          *args, **kwargs)
                     # ★ 把抢先发出的结果按【顺序】拼回去：
                     #   框架随后用 _add_message_ids 按位置给 <msg> 贴 ID，
                     #   只还回剩余段会让 ID 全部错位（模型会引用错消息）。
@@ -2063,8 +2126,18 @@ class AcceleratorPlugin(BasePlugin):
             dcls = type(delivery) if delivery is not None else None
             if dcls is not None and hasattr(dcls, "send_message_chain"):
                 def delivery_factory(original):
-                    async def send_message_chain(d_self, session, chain, *,
-                                                 memory_message=None, self_id=None):
+                    # ★★★ v1.0.88：签名**必须**容忍框架加参数，并原样透传。
+                    #   线上事故（2026-10-13 20:49，用户环境的新版框架）：
+                    #   框架给 `send_message_chain` 加了 `bot=` 关键字
+                    #   （`MessageProcessor.send_message_chain` 已弃用，转发时会带上它），
+                    #   而这里原来把签名写死成 `(d_self, session, chain, *, memory_message=None, self_id=None)`
+                    #   ⇒ `TypeError: got an unexpected keyword argument 'bot'`。
+                    #   更糟的是：这个接管点声明了"有不可撤销的副作用、**不回退原实现**"
+                    #   ⇒ 不是退回旧行为，而是**整条发送失败** —— 框架直发/弃用入口/抢发
+                    #   三个路径全被挡死，实测投递次数 0（消息一条都发不出去）。
+                    #   ⇒ 现在只按位置取 session/chain，其余 `*args, **kwargs` 原样转发。
+                    async def send_message_chain(d_self, session=None, chain=None,
+                                                 *args, **kwargs):
                         if not getattr(self, "_early_inflight", 0):
                             try:
                                 hit = self._consume_early_match(session, chain)
@@ -2090,8 +2163,7 @@ class AcceleratorPlugin(BasePlugin):
                                     self._mark_sent(_ctx_now)
                             except Exception:  # noqa: BLE001
                                 logger.exception("[accel] 交接节奏处理失败（不影响发送）")
-                        return await original(d_self, session, chain,
-                                              memory_message=memory_message, self_id=self_id)
+                        return await original(d_self, session, chain, *args, **kwargs)
                     return mark_side_effects(send_message_chain)
 
                 h2 = PatchHandle("early_sent_dedupe_delivery")

@@ -34,6 +34,12 @@
 > 且图片身份**不再被惰性算出的 md5 顶掉** —— 修掉「`<file>` 发的文件/图片被发两次」。
 > v1.0.85 起：抢发台账改记**链侧签名**（与对账同一个函数产出，解析期改写影响不到它），
 > 生成类段（出图/自拍/TTS/生成视频/JSON/合并转发）也能正确出账 —— 修掉「这类消息被发两次」。
+> v1.0.89 起：**3.0 rc2 兼容** —— 抢发时把出站历史的 **bot 身份**一起带上
+> （rc2 把 `self_id=` 换成 `bot:`，并用它记录 `record_outgoing(self_id=…, sender_name=…)`），
+> 且**探测式**传参（目标不吃就不传，绝不靠重试兜）。
+> v1.0.88 起：接管点的**签名一律原样透传**（`*args, **kwargs`）—— 框架给
+> `send_message_chain` 加参数（如新版加的 `bot=`）不会再让发送整条失败；
+> 抢发也改走框架推荐的 `ctx.send_message_chain`（不再刷弃用告警）。
 > v1.0.87 起：与 **qqbot-fullmsg-bridge** 的兼容性已审查并通过（markdown / 键盘不会重复、
 > 不会丢失）；抢发链的签名改在**发送之前**取（下游在发送层改写链也不影响对账）。
 > v1.0.86 起：**把接缝补回"解析之前"**（包 `parse_xml` 做入口剥离 + 包 `add_message_ids`
@@ -375,6 +381,59 @@ A：把你的图（webp/jpg/png）丢进 `wallpapers/` 目录，面板里就会�
 
 <details>
 <summary><b>📜 更新日志</b>（点击展开）</summary>
+
+### v1.0.89
+
+**3.0 rc2 兼容：抢发把「出站历史的 bot 身份」也带上（并核实 rc2 就是上次事故的来源）**
+
+- 🔎 **核实**：用户环境那次 `TypeError: ... unexpected keyword argument 'bot'` 的根因就是
+  **rc2 的改动** —— rc1 的签名是 `send_message_chain(..., self_id: str | None = None)`，
+  rc2 换成 `bot: User | None = None`（`core/message_manager.py` 的弃用入口与
+  `PluginContext.send_message_chain` 同步改名；`execute.py` 里传 `bot=event.bot`）。
+  acc 当时把签名写死 ⇒ 一改就炸（v1.0.88 已从结构上免疫：签名原样透传）。
+- 🐛 **本版修的**：rc2 的 `bot` 用来记录出站历史 ——
+  `record_outgoing(session, chain, self_id=str(bot.user_id), sender_name=bot.nickname)`。
+  acc 抢发（大多数消息走它）原来不带 ⇒ 记录里 `self_id=None`、名字回落人设名
+  ⇒ 与框架自己发的记录**不一致**。
+- ✅ **修法**：**探测式**传参 —— 用 `inspect.signature`（带缓存）判断目标是否接受 `bot=`，
+  接受才传，值取本轮 `event.bot`；**绝不 try/except 重试**（发送有副作用，重试＝重发）。
+  rc1 / 2.x 没有这个参数 ⇒ 自动不传，行为不变。
+- 🧪 套件 `tests/test_framework_signature_drift.py` 新增两条：
+  **S8** 目标接受 `bot=` ⇒ 抢发必须带上本轮 `event.bot`；
+  **S9** 目标不接受（rc1 形状）⇒ 绝不能传（也不许用重试兜）。
+- ⚠️ 顺带把一条**写过头的静态守卫**修正（它盯着发送那一行的字面量；
+  实现改成 `_fn` 分发后即失效）—— 判据改为"候选串里最早出现者"，避免同样的脆弱。
+- ✅ **验证**：三框架全量 🎉 —— `KIRA_FW=<3.0 rc.2>` / `<3.0 rc.1>` / `<2.34.8>` 全部通过。
+- 版本 v1.0.88 → v1.0.89
+
+### v1.0.88
+
+**修复线上事故：框架给 `send_message_chain` 加参数 ⇒ acc 把发送整条挡死**
+
+- 🐛 **现象**（用户实测，2026-10-13 20:49）：新版框架给
+  `MessageDeliveryService.send_message_chain` 加了 `bot=` 关键字
+  （`MessageProcessor.send_message_chain` 已弃用，转发时会带上它）：
+
+      TypeError: ...delivery_factory.<locals>.send_message_chain()
+                 got an unexpected keyword argument 'bot'
+
+- 💥 **为什么特别严重**：这个接管点被声明为「有不可撤销的副作用 ⇒ **不回退原实现**」
+  ⇒ 不是退回旧行为，而是**整条发送失败**：框架直发 / 弃用入口 / acc 抢发
+  **三个路径全被挡死**，实测**投递次数 0**（消息一条都发不出去）。
+- ✅ **修法**：四处接管点的签名一律改成「只按位置取自己需要的参数，其余
+  `*args, **kwargs` **原样透传**」——
+  `send_message_chain`（3.0 发送层）、`send_xml_messages`（2.x 发送层）、
+  `parse_xml` / `add_message_ids`（解析层）。以后框架再加参数也不会炸。
+- ✅ **顺带**：抢发优先走框架明确推荐的 `ctx.send_message_chain`
+  （`MessageProcessor.send_message_chain` 已弃用，线上每发一段刷一条
+  DeprecationWarning）；拿不到时才回落旧入口，老框架照旧可用。
+- 🧪 新增套件 `tests/test_framework_signature_drift.py`（已登记）：模拟"新版框架
+  多收参数"，断言 ① 框架直发带 `bot=` 能投递且参数原样到达；② 弃用入口转发能投递；
+  ③ 任意位置/关键字附加参数原样透传；④ 解析层同样透传；⑤ 抢发走推荐入口且投递成功；
+  ⑥ 没有推荐入口时回落旧入口仍能发；⑦ **静态守卫**：四处包装签名必须带 `**kwargs`。
+  **反向验证**：同一套件跑在修前代码上 ⇒ S1/S2/S3/S5/S7 五条按预期报红
+  （复现线上那条 `TypeError`）。
+- 版本 v1.0.87 → v1.0.88
 
 ### v1.0.87
 
