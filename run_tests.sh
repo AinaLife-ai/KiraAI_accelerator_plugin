@@ -68,6 +68,7 @@ run "★重复发送：跨轮次(优先级)" tests/test_dup_across_turns.py
 run "★与xml修复器兼容（剥离）" tests/test_compat_xmlfixer.py
 run "★抢发兼容AFTER_XML_PARSE" tests/test_after_xml_parse.py
 run "★★媒体链去重（表情包不重发）" tests/test_media_dedupe.py
+run "★★解析前剥离（3.0 不重复生成）" tests/test_preparse_strip.py
 run "★文本被改写后的剥离"     tests/test_strip_when_text_rewritten.py
 run "★前端审计（层级/开屏/墨渗）" tests/test_frontend_audit.py
 run "★计数保留期（30天/永久）" tests/test_stats_retention.py

@@ -187,6 +187,25 @@ class AcceleratorPlugin(BasePlugin):
         #   `(可见文字, 身份, 元素类名)` ⇒ 两侧同源，差异从根上消失。
         #   与 `_early_results` 一一对应（同一次投递写一条）。
         self._chain_records: dict[str, list] = {}
+        # ★★★ v1.0.86：3.0 的「解析前剥离」——把接缝补回 2.x 的位置。
+        #
+        #   2.x：acc 包住 `MessageProcessor.send_xml_messages`，在**入口**把已抢发段
+        #        从 `xml_data` 里刨掉；而那个函数**自己解析**
+        #        （`actions = await self._parse_xml_msg(xml_data, tag_set)`）
+        #        ⇒ 框架压根看不到那些段 ⇒ 不会重复解析、更不会重复**生成**。
+        #   3.0：`send_xml_messages` 已删。解析搬到了 workflow
+        #        （`core/workflow/src/im/stages/execute.py:63` 调 `parse_xml`），
+        #        发送在第 77 行走 `send_message_chain`（acc 原来只包了这里）
+        #        ⇒ **解析（含出图/TTS/视频的真执行）发生在 acc 拿到控制权之前**
+        #        ⇒ 生成类段会被生成两次（实测：`<img>`/`<record>`/`<video>` 各 2 次）。
+        #
+        #   这里把接缝补到解析前：包 `parse_xml` 做同样的剥离；
+        #   再包 `add_message_ids` 把抢发结果按顺序拼回（= 2.x 的 `early + rest`），
+        #   否则"少解析一段 ⇒ 少一个结果"会让模型历史里的 message_id 错位
+        #   （`add_message_ids` 是**按 `<msg>` 位置**贴 ID 的）。
+        #   两层都留了兜底：链级对账（v1.0.85）仍在，剥离失败只告警、不改变发送。
+        self._strip_ctx: dict[str, list] = {}     # 本轮响应文本 → 抢发结果（供拼回）
+        self._accel_parse_inflight: int = 0       # 我们自己调 parse_xml 时的标记
         # （`_ledger_consumed` 已删除：它编码的是"已消费 ⇒ 跳过剥离"这个
         #   错误设计，而它正是"还是经常重复发送"的根因 ——
         #   每一次 send_xml_messages 对应多步 loop 的一步，台账按步消费即可，
@@ -909,8 +928,89 @@ class AcceleratorPlugin(BasePlugin):
         delivery = getattr(self.ctx, "message_delivery", None)
         parse = getattr(delivery, "parse_xml", None) if delivery is not None else None
         if parse is not None:
-            return await parse(seg, tag_set)
+            # ★ v1.0.86：标记"这是我们自己为了抢发而解析"，让包装过的 parse_xml
+            #   不要对我们自己的段做"解析前剥离"（否则会剥掉刚要发的内容）。
+            self._accel_parse_inflight = getattr(self, "_accel_parse_inflight", 0) + 1
+            try:
+                return await parse(seg, tag_set)
+            finally:
+                self._accel_parse_inflight = max(0, getattr(self, "_accel_parse_inflight", 1) - 1)
         return await mp._parse_xml_msg(seg, tag_set)
+
+    def _turn_for_text(self, text):
+        """把"框架那遍手里的响应文本"对回本轮状态 `(key, 已抢发段, 抢发结果)`。
+
+        为什么必须靠文本反查：3.0 的 `parse_xml(xml_data, tag_set)` 与
+        `add_message_ids(xml_data, results)` 都是**静态方法**，签名里**不带 sid/轮次**，
+        而我们要剥的恰恰是"**本轮**抢发了哪些段"。响应文本是天然可用的对应物 ——
+        `_resp_by_sid[key]` 存的就是本轮响应对象，其 `text_response` 即模型完整输出
+        （acc 刻意保持它完整，见 early_sent.py 顶部说明）。
+        匹配用去空白比较（execute.py 传给 parse_xml 的是 `text.strip()`）。
+        """
+        want = (text or "").strip()
+        if not want:
+            return None, [], []
+        for k, resp in list(getattr(self, "_resp_by_sid", {}).items()):
+            if (getattr(resp, "text_response", "") or "").strip() == want:
+                return (k, list(self._sent_ledger.get(k) or []),
+                        list(self._early_results.get(k) or []))
+        return None, [], []
+
+    def _parse_strip_factory(self, original):
+        """包 `MessageDeliveryService.parse_xml`：解析**之前**刨掉已抢发段。
+
+        为什么必须在这一层（v1.0.86 的实测依据）：3.0 的解析在
+        `execute.py:63`（`delivery.parse_xml(text, tag_set)`），而 acc 原来的接管点
+        `send_message_chain` 在第 77 行 —— 等它拿到控制权，标签处理器（出图/TTS/视频）
+        已经**又执行了一遍**。包住 `parse_xml` 后框架只解析"还没发过的部分"，
+        与 2.x 在自己的 `send_xml_messages` 入口剥离完全等价。
+
+        安全边界：
+          · 只对"**在本轮响应文本里**"的调用生效（`_turn_for_text` 精确匹配）——
+            别的插件自己解析 XML 不会被误伤；
+          · acc 自己为了抢发而解析时打了 `_accel_parse_inflight` 标记 ⇒ 直接放行；
+          · 剥离函数复用 2.x 的 `strip_early_sent_smart`（按内容剥离，抗改写）；
+          · 任何异常都只告警并按**原文本**解析（宁可多生成一次，也不改变发送语义）。
+        """
+        async def parse_xml(xml_data, tag_set):
+            if getattr(self, "_accel_parse_inflight", 0):
+                return await original(xml_data, tag_set)
+            try:
+                key, segs, early = self._turn_for_text(xml_data)
+                if key and segs:
+                    from .early_sent import strip_early_sent_smart
+                    stripped = strip_early_sent_smart(xml_data, len(segs), segs)
+                    if stripped != xml_data:
+                        # 记下"这条响应文本对应的抢发结果"，等 `add_message_ids`
+                        # 把 ID 贴回来时按顺序拼上（= 2.x 的 `early + rest`）
+                        self._strip_ctx[xml_data] = list(early)
+                        if len(self._strip_ctx) > 32:      # 防泄漏
+                            self._strip_ctx.pop(next(iter(self._strip_ctx)), None)
+                        self._stats["preparse_strip"] = self._stats.get("preparse_strip", 0) + 1
+                        logger.info(
+                            "[accel] 解析前剥离 %d 段（框架不会再解析它们 ⇒ "
+                            "不会重复生成/重复发送）", len(segs))
+                        xml_data = stripped
+            except Exception:  # noqa: BLE001
+                logger.exception("[accel] 解析前剥离失败（按原文本解析）")
+            return await original(xml_data, tag_set)
+        return parse_xml
+
+    def _ids_splice_factory(self, original):
+        """包 `MessageDeliveryService.add_message_ids`：把抢发结果按顺序拼回去。
+
+        2.x 里框架的 `send_xml_messages` 会 `return` 结果列表，acc 直接
+        `return early + rest` 就完成了对位；3.0 的 `execute.py` 自己收集结果、
+        再调 `add_message_ids(text, message_results)` **按 `<msg>` 位置**贴 ID
+        ⇒ 少解析一段就少一个结果，必须在这个函数入口把抢发结果补回最前面
+        （顺序 = 抢发顺序 = 文档顺序），否则模型历史里的 message_id 会整体错位。
+        """
+        def add_message_ids(xml_data, message_results):
+            early = self._strip_ctx.pop(xml_data, None)
+            if early:
+                return original(xml_data, list(early) + list(message_results))
+            return original(xml_data, message_results)
+        return add_message_ids
 
     def _consume_chain_record(self, prefix, norm, idents, kinds):
         """按「抢发时那条链自己的签名」对账 —— 3.0 的**首选**判据（v1.0.85）。
@@ -1985,6 +2085,30 @@ class AcceleratorPlugin(BasePlugin):
                 if install(h2, dcls, "send_message_chain", delivery_factory) is not None:
                     self.patches.add(h2)
                     logger.info("[accel] 发送层已接管（按链对账去重已抢发段）")
+
+                # ── ★★★ v1.0.86：把接缝补到**解析之前**（等价 2.x 的入口剥离）──
+                #   这是"生成类被生成两次"的根治：只要框架那遍**解析不到**已抢发段，
+                #   标签处理器（出图/TTS/视频）就不会被再执行一次。
+                #
+                #   ⚠️ `parse_xml` / `add_message_ids` 都是 **staticmethod**：
+                #      直接 setattr 一个普通函数会让**实例调用多传一个 self**
+                #      （execute.py 里是 `delivery.parse_xml(...)`）⇒ 必须包回
+                #      `staticmethod`，还原时同样要还原成 staticmethod。
+                for _attr, _factory, _name in (
+                    ("parse_xml", self._parse_strip_factory, "early_sent_parse_strip"),
+                    ("add_message_ids", self._ids_splice_factory, "early_sent_ids_splice"),
+                ):
+                    if not hasattr(dcls, _attr):
+                        continue
+                    _orig = getattr(dcls, _attr)              # staticmethod 解包后的函数
+                    _hh = PatchHandle(_name)
+                    if install(_hh, dcls, _attr, _factory) is None:
+                        continue
+                    setattr(dcls, _attr, staticmethod(getattr(dcls, _attr)))
+                    _hh.installed = getattr(dcls, _attr)      # 还原判据 = 我们装的函数
+                    _hh.original = staticmethod(_orig)        # 还原成 staticmethod 语义
+                    self.patches.add(_hh)
+                    logger.info("[accel] 解析层已接管（%s：已抢发段在解析前剥离）", _attr)
             else:
                 logger.warning("[accel] 未找到可接管的发送服务，抢发剥离未安装（可能重复发送）")
 
