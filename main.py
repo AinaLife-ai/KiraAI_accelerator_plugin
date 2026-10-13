@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import random
+import re
 import time
 from collections import deque
 from typing import Any, Optional
@@ -28,6 +29,7 @@ from core.provider import LLMRequest, LLMResponse
 from core.chat.message_utils import KiraMessageBatchEvent
 
 from .core_compat import event_system, openai_compatible_client
+from .early_sent import chain_signature as _chain_signature
 from .patches import (PatchHandle, PatchRegistry, install, breaker_for,
                       mark_side_effects)
 from .stream_engine import StreamEngine, LLMClientProxy
@@ -177,6 +179,14 @@ class AcceleratorPlugin(BasePlugin):
         #   （响应标记丢失时的兜底；存原文而不是只存个数，
         #     这样兜底时也能按内容剥离，对文本被改写同样稳健）
         self._sent_ledger: dict[str, list] = {}
+        # ★★★ v1.0.85：按**链**记账的抢发签名（元素侧生成，与对账**同一函数**）。
+        #   为什么不再只靠"段原文"：段是**解析前**的文本，链是**解析后**的元素，
+        #   解析期任何改写（`<file>` 的路径解析、`Image.md5` 惰性算出、生成类结果）
+        #   都会让两侧对不上 ⇒ 台账出不了账 ⇒ 框架再发一次（线上：表情包/文件/
+        #   出图/语音被发两次）。这里记抢发时那条链自己的
+        #   `(可见文字, 身份, 元素类名)` ⇒ 两侧同源，差异从根上消失。
+        #   与 `_early_results` 一一对应（同一次投递写一条）。
+        self._chain_records: dict[str, list] = {}
         # （`_ledger_consumed` 已删除：它编码的是"已消费 ⇒ 跳过剥离"这个
         #   错误设计，而它正是"还是经常重复发送"的根因 ——
         #   每一次 send_xml_messages 对应多步 loop 的一步，台账按步消费即可，
@@ -453,13 +463,15 @@ class AcceleratorPlugin(BasePlugin):
             if event_id:
                 # ★ 只清"本轮"这一份（复合键）
                 _k = self._ckey(sid, event_id)
-                for _d in (self._sent_ledger, self._resp_by_sid, self._early_results):
+                for _d in (self._sent_ledger, self._resp_by_sid, self._early_results,
+                        self._chain_records):
                     _d.pop(_k, None)
                 return
             # 拿不到轮次 id（理论上不该发生）⇒ **保守**：只清"不带轮次"的旧键。
             # 带轮次的其它键一律不动 —— 宁可让 `_clear_stale_round_state`
             # 稍后按 600s 窗口回收，也绝不误清仍在跑的另一轮（那会造成重复发送）。
-            for _d in (self._sent_ledger, self._resp_by_sid, self._early_results):
+            for _d in (self._sent_ledger, self._resp_by_sid, self._early_results,
+                        self._chain_records):
                 _d.pop(sid, None)
         except Exception:  # noqa: BLE001
             logger.exception("[accel] 清理本轮发送状态失败（不影响发送）")
@@ -547,7 +559,8 @@ class AcceleratorPlugin(BasePlugin):
             #    否则某些键（比如只出现在 _resp_by_sid 里的）永远清不掉 ⇒
             #    多群聊场景下这几个字典会**随会话数缓慢增长**（内存泄漏）。
             keys = set()
-            for d in (self._ledger_ts, self._sent_ledger, self._resp_by_sid, self._early_results):
+            for d in (self._ledger_ts, self._sent_ledger, self._resp_by_sid, self._early_results,
+                            self._chain_records):
                 if isinstance(d, dict):
                     keys |= set(d.keys())
             for k in keys:
@@ -563,7 +576,8 @@ class AcceleratorPlugin(BasePlugin):
                 # 没有时间戳的（陈旧遗留）按「更早」处理 ⇒ 一并清掉
                 if ts and (now - ts) <= 1800:
                     continue
-                for _d in (self._ledger_ts, self._sent_ledger, self._resp_by_sid, self._early_results):
+                for _d in (self._ledger_ts, self._sent_ledger, self._resp_by_sid, self._early_results,
+                            self._chain_records):
                     _d.pop(k, None)
         except Exception:  # noqa: BLE001
             logger.exception("[accel] 陈旧状态清理失败（不影响请求）")
@@ -898,6 +912,77 @@ class AcceleratorPlugin(BasePlugin):
             return await parse(seg, tag_set)
         return await mp._parse_xml_msg(seg, tag_set)
 
+    def _consume_chain_record(self, prefix, norm, idents, kinds):
+        """按「抢发时那条链自己的签名」对账 —— 3.0 的**首选**判据（v1.0.85）。
+
+        判据（按记账顺序，一条链最多消费一条记录）：
+          · **文字**：两侧都用 `chain_signature` 的 `norm_text_only` ⇒ 相等即覆盖；
+          · **身份**：`ident_match`（两侧都由元素侧生成 ⇒ `<file>` 的路径解析、
+            `Image.md5` 惰性算出这些差异**天然不存在**）；
+          · **生成类/结构类**（出图 `<img>`/`<selfie>`、TTS `<record>`、
+            生成视频 `<video>`、`<json>`、`<forward>`）：它们的元素身份是
+            **生成结果**、与台账里的提示词不可比 ⇒ 唯一可靠的判据是
+            「两侧都没有文字、都没有身份、**元素种类完全一致**」+ 本轮顺序。
+            没有这条，这类段永远出不了账 ⇒ 框架把它们再发一次（重复）。
+          · 记录里的抢发结果若明确失败（`ok=False`）⇒ **只销账、不返回**
+            （那一段其实没发出去，要放行框架去发，否则丢内容）。
+
+        为什么这套判据比"段原文对账"可靠：抢发时链就在手上，签名由**同一个函数**
+        产出 ⇒ 不受解析期改写影响。段对账保留为兜底（见 `_consume_early_match`）。
+        """
+        from .early_sent import ident_match
+
+        for key in list(self._chain_records.keys()):
+            if not (isinstance(key, str) and key.startswith(prefix)):
+                continue
+            recs = self._chain_records.get(key) or []
+            for i, rec in enumerate(recs):
+                r_text, r_ids, r_kinds = rec.get("sig") or ("", [], [])
+                text_hit = bool(norm) and bool(r_text) and (
+                    norm == r_text or norm in r_text or r_text in norm)
+
+                ids_hit = False
+                rest = list(r_ids)
+                if idents and r_ids:
+                    ids_hit = True
+                    for need in idents:
+                        j = next((x for x, c in enumerate(rest)
+                                  if ident_match(need, c)), None)
+                        if j is None:
+                            ids_hit = False
+                            break
+                        rest.pop(j)
+
+                # 无信号段：种类一致即视为同一条
+                #   · Json / Forward 这类**两侧都没有身份**的：两侧身份都为空即可；
+                #   · 生成类（img/selfie/record/video）：链侧身份是"生成结果"、
+                #     与抢发那遍不是同一个值 ⇒ 只要**记账时标了 volatile**
+                #     且**元素种类完全一致**就认（这是唯一可靠的判据）。
+                same_kind = (bool(kinds) and list(kinds) == list(r_kinds)
+                             and not norm and not r_text
+                             and (bool(rec.get("volatile")) or (not idents and not r_ids)))
+                if not (text_hit or ids_hit or same_kind):
+                    continue
+
+                if same_kind:
+                    # 生成类/结构类：身份维度天然不可比 ⇒ 种类一致即视为整段覆盖
+                    pass
+                else:
+                    text_covered = (not r_text) or (norm == r_text)
+                    ids_covered = (not r_ids) or (ids_hit and not rest)
+                    if not (text_covered and ids_covered):
+                        continue
+
+                recs.pop(i)
+                if not recs:
+                    self._chain_records.pop(key, None)
+                result = rec.get("result")
+                if getattr(result, "ok", True) is False:
+                    # 销账但放行：那一段其实**没投递成功**，框架这次发的正是它
+                    return None
+                return result
+        return None
+
     def _consume_early_match(self, sid, chain):
         """3.0 按链对账：该链若与某已抢发段内容一致，消费台账并还回当时的结果。
 
@@ -928,26 +1013,27 @@ class AcceleratorPlugin(BasePlugin):
           **文字会被重复发送**（与本 bug 对称的另一种重复）。
           台账按 (sid, 轮次) 分键、轮末清理，所以"多留一会儿"是安全的。
         """
-        from .early_sent import elem_ident, ident_match, norm_text_only, seg_idents
+        from .early_sent import (chain_signature, elem_ident, ident_match,
+                                 norm_text_only, seg_idents)
 
-        # 链侧：文字 + 身份（媒体链没有文字，但身份非空）
-        texts, idents = [], []
-        try:
-            for e in chain:
-                piece = getattr(e, "text", "") or ""
-                if piece:
-                    texts.append(piece)
-                    continue
-                ident = elem_ident(e)
-                if ident:
-                    idents.append(ident)
-        except Exception:  # noqa: BLE001
+        # ★★★ v1.0.85：链侧签名与**抢发时**记下的签名同源（同一个 `chain_signature`）
+        norm, idents, kinds = chain_signature(chain)
+        if not norm and not idents and not kinds:
             return None
-        norm = norm_text_only(" ".join(texts))
-        if not norm and not idents:
-            return None
-
         prefix = sid + "\x00"
+
+        # ① 首选：按"抢发时那条链自己的签名"对账（元素侧，无解析期差异）
+        try:
+            hit = self._consume_chain_record(prefix, norm, idents, kinds)
+            if hit is not None:
+                return hit
+        except Exception:  # noqa: BLE001
+            logger.exception("[accel] 抢发链签名对账异常（回退到段对账）")
+
+        # ② 兜底：按**段原文**对账（v1.0.83/84 的逻辑）
+        #   用于"框架拿到的链与抢发时那条链不同形"的情形（例如插件在
+        #   框架那遍改写了链的顺序/粒度，或本条链是抢发之后新增的）。
+        #   注意这里用的仍是链侧签名（norm/idents），只是台账换成了段原文。
         for k in list(self._sent_ledger.keys()):
             if not (isinstance(k, str) and k.startswith(prefix)):
                 continue
@@ -1017,6 +1103,7 @@ class AcceleratorPlugin(BasePlugin):
             self._sent_ledger.pop(k, None)
             self._resp_by_sid.pop(k, None)
             self._early_results.pop(k, None)
+            self._chain_records.pop(k, None)
         except Exception:  # noqa: BLE001
             pass
 
@@ -1193,6 +1280,27 @@ class AcceleratorPlugin(BasePlugin):
                 self._early_results.setdefault(_k, []).append(result)
             except Exception:  # noqa: BLE001
                 logger.exception("[accel] 记录抢发结果失败（不影响已投递的事实）")
+
+            try:
+                # ★★★ v1.0.85：同时记下**这条链自己的签名**（元素侧、与对账同一函数）。
+                #   这是 3.0 按链对账的首选判据 —— 段原文是"解析前"的文本，
+                #   链是"解析后"的元素，两者异源 ⇒ 解析期任何改写（路径解析、
+                #   惰性 md5、生成类结果）都会让台账出不了账 ⇒ 框架再发一次。
+                #   记元素侧签名后，两侧由同一函数产出 ⇒ 从根上没有这类差异；
+                #   生成类（出图/TTS/视频）没有可比身份，靠 `kinds`（元素种类）
+                #   在**本轮内按顺序**配对。
+                self._chain_records.setdefault(_k, []).append({
+                    "sig": _chain_signature(action),
+                    "result": result,
+                    # ★ 生成类标签（出图/自拍/TTS/生成视频）：元素身份是**生成结果**，
+                    #   与框架那遍**再次生成**的结果必然不同 ⇒ 身份维度天然不可比，
+                    #   只能靠"元素种类一致 + 本轮顺序"配对（见 `_consume_chain_record`）。
+                    #   抢发的这一刻我们从原始段就知道是不是生成类 ⇒ 在这里标出来。
+                    "volatile": bool(re.search(r"<(?:img|selfie|record|video)\b",
+                                               seg or "", re.I)),
+                })
+            except Exception:  # noqa: BLE001
+                logger.exception("[accel] 记录抢发链签名失败（不影响已投递的事实）")
 
             try:
                 self._mark_sent(ctx)

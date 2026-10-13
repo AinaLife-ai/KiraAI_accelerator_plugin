@@ -109,7 +109,10 @@ _i = MAIN.find("def _consume_early_match")
 _j = MAIN.find("\n    def ", _i + 10)
 _BODY = MAIN[_i:_j if _j > _i else len(MAIN)]
 _CODE = re.sub(r"#[^\n]*", "", _BODY)          # 去注释：注释里提到旧写法不算数
-check("用 elem_ident 取媒体身份", "elem_ident(e)" in _CODE)
+ES_SRC = (ROOT / "early_sent.py").read_text(encoding="utf-8")
+_ES_CODE = re.sub(r"#[^\n]*", "", ES_SRC)
+check("用 elem_ident 取媒体身份（v1.0.85 起由 chain_signature 统一产出）",
+      "elem_ident(e)" in _ES_CODE and "chain_signature(chain)" in _CODE)
 check("用 seg_idents 取台账身份", "seg_idents(seg)" in _CODE)
 check("文字维度用 norm_text_only（不再拿 _norm_seg(seg) 当正文）",
       "norm_text_only(" in _CODE and "_norm_seg(seg)" not in _CODE)
@@ -125,7 +128,8 @@ if FW is None:
     print("═══ 5) 集成：按链对账的真实行为 —— [SKIP] 需要 KIRA_FW")
 else:
     sys.path.insert(0, FW)
-    from core.chat.message_elements import Text, Sticker, Image, At, Emoji, File   # noqa: E402
+    from core.chat.message_elements import (   # noqa: E402
+        Text, Sticker, Image, At, Emoji, File, Record, Video, Json, Forward)
     from core.chat import MessageChain                                      # noqa: E402
 
     main_mod = _env.load("main")
@@ -236,6 +240,122 @@ else:
     instM, _ = _fresh([SEG_IMG_URL])
     check("★ URL 图片但 md5 已被算过 ⇒ 仍要命中（修前：元素身份=md5 ⇒ 对不上 ⇒ 重复）",
           instM._consume_early_match(SID, MessageChain([_img_md5])) == "R0")
+
+    # ────────────────────────────────────────────────────────────
+    # 5c) v1.0.85：链签名台账 —— 生成类 / 结构类不再重复
+    #     抢发时那条链就在手上，台账直接记**元素侧签名**（与对账同一函数）
+    #     ⇒ 解析期改写（路径、md5、生成结果）再也影响不到对账。
+    #     生成类（出图/自拍/TTS/视频）的元素身份是**生成结果**、与台账里的
+    #     提示词不可比 ⇒ 靠"元素种类一致 + 本轮顺序"配对（volatile 记录）。
+    # ────────────────────────────────────────────────────────────
+    print()
+    print("═══ 5c) v1.0.85：链签名台账（生成类/结构类不再重复）")
+
+    def _with_records(seg, pre_chain, n_records=1, ok=True):
+        inst = main_mod.AcceleratorPlugin(_Ctx(), {})
+        k = inst._ckey(SID, "evt-1")
+        inst._sent_ledger[k] = [seg]
+        inst._early_results[k] = ["R0"]
+        inst._chain_records[k] = [
+            {"sig": es.chain_signature(pre_chain), "result": ("R%d" % i if ok else None),
+             "volatile": ("<img" in seg.lower() or "<selfie" in seg.lower()
+                          or "<record" in seg.lower() or "<video" in seg.lower())}
+            for i in range(n_records)]
+        return inst, k
+
+    class _Res:
+        def __init__(self, mid, ok=True):
+            self.message_id = mid
+            self.ok = ok
+
+    # 6 类"元素身份不可比"的段：修前全部不命中（框架再发一次 ⇒ 重复）
+    _GEN = [
+        ("出图 <img>", "<msg><img>画一只猫</img></msg>",
+         lambda url: MessageChain([Image(image=url)])),
+        ("自拍 <selfie>", "<msg><selfie>来张自拍</selfie></msg>",
+         lambda url: MessageChain([Image(image=url)])),
+        ("TTS <record>", "<msg><record>说句话</record></msg>",
+         lambda url: MessageChain([Record(record=url)])),
+        ("生成 <video>", "<msg><video>一段视频</video></msg>",
+         lambda url: MessageChain([Video(file=url)])),
+        ("<json>", '<msg><json>{"a":1}</json></msg>',
+         lambda url: MessageChain([Json({"a": 1})])),
+        ("<forward>", '<msg><forward merge="true">m1,m2</forward></msg>',
+         lambda url: MessageChain([Forward(message_id=["m1", "m2"], merge=True)])),
+    ]
+    for _label, _seg, _mk in _GEN:
+        _pre = _mk("https://cdn/early.png" if "json" not in _label and "forward" not in _label
+                   else "https://cdn/irrelevant")
+        _fw = _mk("https://cdn/later.png" if "json" not in _label and "forward" not in _label
+                  else "https://cdn/irrelevant")
+        _inst, _k = _with_records(_seg, _pre)
+        check(f"★ {_label}：抢发段必须被消费（修前：不命中 ⇒ 框架再发一次）",
+              _inst._consume_early_match(SID, _fw) is not None)
+        check(f"   {_label}：消费后记录清空", not (_inst._chain_records.get(_k) or []))
+
+    # 种类不同 ⇒ 绝不能配对（防误吃丢内容）
+    _instA, _ = _with_records("<msg><img>猫</img></msg>", MessageChain([Image(image="https://cdn/a.png")]))
+    check("★ 生成类但元素种类不同（记的是 Image、来的是 Record）⇒ 放行",
+          _instA._consume_early_match(SID, MessageChain([Record(record="https://cdn/b.mp3")])) is None)
+    _instB, _ = _with_records("<msg><record>话</record></msg>",
+                              MessageChain([Record(record="https://cdn/a.mp3")]))
+    check("★ 生成类但元素种类不同（记的是 Record、来的是 Image）⇒ 放行",
+          _instB._consume_early_match(SID, MessageChain([Image(image="https://cdn/b.png")])) is None)
+
+    # 抢发结果明确失败 ⇒ 销账但不返回（框架这次发的正是那一段，必须放行）
+    _instC, _kC = _with_records("<msg><img>猫</img></msg>",
+                                MessageChain([Image(image="https://cdn/a.png")]), ok=False)
+    check("★ 抢发那遍**没发成功**（ok=False）⇒ 放行框架去发（不丢内容）",
+          _instC._consume_early_match(SID, MessageChain([Image(image="https://cdn/b.png")])) is None)
+    check("   但记录已被销账（不会一直挂着）", not (_instC._chain_records.get(_kC) or []))
+
+    # 同轮两条生成段：按顺序各消费一条，结果各归各（message_id 不再错位）
+    _instD = main_mod.AcceleratorPlugin(_Ctx(), {})
+    _kD = _instD._ckey(SID, "evt-1")
+    _instD._sent_ledger[_kD] = ["<msg><img>一</img></msg>", "<msg><img>二</img></msg>"]
+    _instD._early_results[_kD] = [_Res("M1"), _Res("M2")]
+    _instD._chain_records[_kD] = [
+        {"sig": es.chain_signature(MessageChain([Image(image="https://cdn/g1.png")])),
+         "result": _Res("M1"), "volatile": True},
+        {"sig": es.chain_signature(MessageChain([Image(image="https://cdn/g2.png")])),
+         "result": _Res("M2"), "volatile": True},
+    ]
+    _h1 = _instD._consume_early_match(SID, MessageChain([Image(image="https://cdn/h1.png")]))
+    _h2 = _instD._consume_early_match(SID, MessageChain([Image(image="https://cdn/h2.png")]))
+    check("★ 同轮两条生成段：按顺序各归各（ID 不错位）",
+          getattr(_h1, "message_id", None) == "M1" and getattr(_h2, "message_id", None) == "M2",
+          f"{getattr(_h1, 'message_id', None)}/{getattr(_h2, 'message_id', None)}")
+    check("   两条记录都出账", not (_instD._chain_records.get(_kD) or []))
+
+    # 拆分场景（sticker + text 两条链 = 两条记录）⇒ 各自命中、ID 各归各
+    _instE = main_mod.AcceleratorPlugin(_Ctx(), {})
+    _kE = _instE._ckey(SID, "evt-1")
+    _instE._sent_ledger[_kE] = ["<msg><sticker>27</sticker><text>看看</text></msg>"]
+    _instE._early_results[_kE] = [_Res("S1"), _Res("S2")]
+    _instE._chain_records[_kE] = [
+        {"sig": es.chain_signature(MessageChain([Sticker(sticker="data:image/png;base64,AA", sticker_id="27")])),
+         "result": _Res("S1"), "volatile": False},
+        {"sig": es.chain_signature(MessageChain([Text("看看")])), "result": _Res("S2"), "volatile": False},
+    ]
+    _m = _instE._consume_early_match(SID, MessageChain([Sticker(sticker="https://x/s27.png", sticker_id="27")]))
+    _t = _instE._consume_early_match(SID, MessageChain([Text("看看")]))
+    check("★ 拆链场景：媒体链拿抢发的第 1 条、文字链拿第 2 条（ID 对位）",
+          getattr(_m, "message_id", None) == "S1" and getattr(_t, "message_id", None) == "S2",
+          f"{getattr(_m, 'message_id', None)}/{getattr(_t, 'message_id', None)}")
+
+    # 没抢发过的内容绝不能被链签名台账吃掉
+    _instF2, _ = _with_records("<msg><img>猫</img></msg>", MessageChain([Image(image="https://cdn/a.png")]))
+    check("★ 链签名台账没有对应记录 ⇒ 放行（不丢内容）",
+          _instF2._consume_early_match(SID, MessageChain([Text("全新的一句话")])) is None)
+
+    # 静态守卫：记账必须真的在 `_emit_segment` 里、且标注生成类
+    _EMIT = MAIN[MAIN.find("async def _emit_segment"):MAIN.find("async def _emit_segment") + 40000]
+    _EMIT_CODE = re.sub(r"#[^\n]*", "", _EMIT)
+    check("★ 抢发时记下链签名（_chain_records）", "_chain_records.setdefault(_k, [])" in _EMIT_CODE)
+    check("★ 生成类段标注 volatile（img/selfie/record/video）",
+          "volatile" in _EMIT_CODE and "img|selfie|record|video" in _EMIT_CODE)
+    check("★ 对账首选链签名、段台账留作兜底",
+          "_consume_chain_record(" in _CODE and "self._sent_ledger.keys()" in _CODE)
 
     # 误吃防线：同名不同目录，绝不能算同一张（那会丢内容）
     _other = _tmp / "elsewhere" / "other" / "a.txt"

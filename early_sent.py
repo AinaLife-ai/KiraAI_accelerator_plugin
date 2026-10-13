@@ -145,7 +145,10 @@ _IDENT_FIELDS = ("sticker_id", "file", "image", "record", "video",
                  "pid", "user_id", "message_id", "emoji_id", "md5")
 
 #: XML 侧不参与比对的标签（生成类 / 正文 / 结构类）
-_IDENT_SKIP_TAGS = ("img", "selfie", "record", "json", "forward", "text", "msg")
+#:   `video` 与 `img`/`selfie`/`record` 同类：**生成类**（值只是提示词，
+#:   元素侧拿到的是生成结果、身份不可比）⇒ 提示词绝不能当身份用
+#:   （否则可能与别的段的属性撞车 ⇒ 误吃丢内容）。
+_IDENT_SKIP_TAGS = ("img", "selfie", "record", "video", "json", "forward", "text", "msg")
 
 #: XML 侧没有内文时，按这个顺序找属性当身份
 _IDENT_ATTRS = ("url", "path", "file", "pid", "id", "message_id", "emoji_id")
@@ -256,6 +259,38 @@ def norm_text_only(seg: str) -> str:
     `_norm_seg` 本身**不动**（2.x 剥离路径的既有语义与测试都依赖它）。
     """
     return _norm_seg(_MEDIA_BLOCK_RE.sub(" ", seg or ""))
+
+
+def chain_signature(chain) -> tuple:
+    """消息链 → `(可见文字, 身份列表, 元素类名列表)`。
+
+    ★★★ 为什么必须有这个函数（v1.0.85）：
+      3.0 的对账原本是"**台账=原始 XML 文本** ↔ **链=解析后的元素**"两侧异源，
+      于是解析期的**任何**改写都会静默让判据失效：
+        · `<file>` 的本地路径被解析成绝对路径（v1.0.84 修的）
+        · `Image.md5` 惰性算出后顶掉 `file`（v1.0.84 修的）
+        · 生成类（出图/TTS/视频）的元素身份是**生成结果**、与提示词不可比
+          ⇒ 台账侧永远配不上 ⇒ 整段无法出账 ⇒ 框架再发一次（同一类重复）
+      抢发的那一刻，**那条链就在我们手上** ⇒ 台账直接记"元素侧签名"，
+      两侧由**同一个函数**产出 ⇒ 从根上不存在这类差异。
+
+    `kinds`（元素类名列表）用于"生成类"段：它们的身份不可比，只能靠
+    "元素种类完全一致 + 本轮顺序"配对（见 `main._consume_chain_record`）。
+    """
+    texts, idents, kinds = [], [], []
+    try:
+        for e in chain:
+            kinds.append(type(e).__name__)
+            piece = getattr(e, "text", "") or ""
+            if piece:
+                texts.append(piece)
+                continue
+            ident = elem_ident(e)
+            if ident:
+                idents.append(ident)
+    except Exception:  # noqa: BLE001
+        pass
+    return norm_text_only(" ".join(texts)), idents, kinds
 
 
 def _find_anchor_run(text: str, blocks: list, emitted_full: str,
