@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import random
+import re
 import time
 from collections import deque
 from typing import Any, Optional
@@ -28,6 +29,7 @@ from core.provider import LLMRequest, LLMResponse
 from core.chat.message_utils import KiraMessageBatchEvent
 
 from .core_compat import event_system, openai_compatible_client
+from .early_sent import chain_signature as _chain_signature
 from .patches import (PatchHandle, PatchRegistry, install, breaker_for,
                       mark_side_effects)
 from .stream_engine import StreamEngine, LLMClientProxy
@@ -177,6 +179,33 @@ class AcceleratorPlugin(BasePlugin):
         #   （响应标记丢失时的兜底；存原文而不是只存个数，
         #     这样兜底时也能按内容剥离，对文本被改写同样稳健）
         self._sent_ledger: dict[str, list] = {}
+        # ★★★ v1.0.85：按**链**记账的抢发签名（元素侧生成，与对账**同一函数**）。
+        #   为什么不再只靠"段原文"：段是**解析前**的文本，链是**解析后**的元素，
+        #   解析期任何改写（`<file>` 的路径解析、`Image.md5` 惰性算出、生成类结果）
+        #   都会让两侧对不上 ⇒ 台账出不了账 ⇒ 框架再发一次（线上：表情包/文件/
+        #   出图/语音被发两次）。这里记抢发时那条链自己的
+        #   `(可见文字, 身份, 元素类名)` ⇒ 两侧同源，差异从根上消失。
+        #   与 `_early_results` 一一对应（同一次投递写一条）。
+        self._chain_records: dict[str, list] = {}
+        # ★★★ v1.0.86：3.0 的「解析前剥离」——把接缝补回 2.x 的位置。
+        #
+        #   2.x：acc 包住 `MessageProcessor.send_xml_messages`，在**入口**把已抢发段
+        #        从 `xml_data` 里刨掉；而那个函数**自己解析**
+        #        （`actions = await self._parse_xml_msg(xml_data, tag_set)`）
+        #        ⇒ 框架压根看不到那些段 ⇒ 不会重复解析、更不会重复**生成**。
+        #   3.0：`send_xml_messages` 已删。解析搬到了 workflow
+        #        （`core/workflow/src/im/stages/execute.py:63` 调 `parse_xml`），
+        #        发送在第 77 行走 `send_message_chain`（acc 原来只包了这里）
+        #        ⇒ **解析（含出图/TTS/视频的真执行）发生在 acc 拿到控制权之前**
+        #        ⇒ 生成类段会被生成两次（实测：`<img>`/`<record>`/`<video>` 各 2 次）。
+        #
+        #   这里把接缝补到解析前：包 `parse_xml` 做同样的剥离；
+        #   再包 `add_message_ids` 把抢发结果按顺序拼回（= 2.x 的 `early + rest`），
+        #   否则"少解析一段 ⇒ 少一个结果"会让模型历史里的 message_id 错位
+        #   （`add_message_ids` 是**按 `<msg>` 位置**贴 ID 的）。
+        #   两层都留了兜底：链级对账（v1.0.85）仍在，剥离失败只告警、不改变发送。
+        self._strip_ctx: dict[str, list] = {}     # 本轮响应文本 → 抢发结果（供拼回）
+        self._accel_parse_inflight: int = 0       # 我们自己调 parse_xml 时的标记
         # （`_ledger_consumed` 已删除：它编码的是"已消费 ⇒ 跳过剥离"这个
         #   错误设计，而它正是"还是经常重复发送"的根因 ——
         #   每一次 send_xml_messages 对应多步 loop 的一步，台账按步消费即可，
@@ -453,13 +482,15 @@ class AcceleratorPlugin(BasePlugin):
             if event_id:
                 # ★ 只清"本轮"这一份（复合键）
                 _k = self._ckey(sid, event_id)
-                for _d in (self._sent_ledger, self._resp_by_sid, self._early_results):
+                for _d in (self._sent_ledger, self._resp_by_sid, self._early_results,
+                        self._chain_records):
                     _d.pop(_k, None)
                 return
             # 拿不到轮次 id（理论上不该发生）⇒ **保守**：只清"不带轮次"的旧键。
             # 带轮次的其它键一律不动 —— 宁可让 `_clear_stale_round_state`
             # 稍后按 600s 窗口回收，也绝不误清仍在跑的另一轮（那会造成重复发送）。
-            for _d in (self._sent_ledger, self._resp_by_sid, self._early_results):
+            for _d in (self._sent_ledger, self._resp_by_sid, self._early_results,
+                        self._chain_records):
                 _d.pop(sid, None)
         except Exception:  # noqa: BLE001
             logger.exception("[accel] 清理本轮发送状态失败（不影响发送）")
@@ -547,7 +578,8 @@ class AcceleratorPlugin(BasePlugin):
             #    否则某些键（比如只出现在 _resp_by_sid 里的）永远清不掉 ⇒
             #    多群聊场景下这几个字典会**随会话数缓慢增长**（内存泄漏）。
             keys = set()
-            for d in (self._ledger_ts, self._sent_ledger, self._resp_by_sid, self._early_results):
+            for d in (self._ledger_ts, self._sent_ledger, self._resp_by_sid, self._early_results,
+                            self._chain_records):
                 if isinstance(d, dict):
                     keys |= set(d.keys())
             for k in keys:
@@ -563,7 +595,8 @@ class AcceleratorPlugin(BasePlugin):
                 # 没有时间戳的（陈旧遗留）按「更早」处理 ⇒ 一并清掉
                 if ts and (now - ts) <= 1800:
                     continue
-                for _d in (self._ledger_ts, self._sent_ledger, self._resp_by_sid, self._early_results):
+                for _d in (self._ledger_ts, self._sent_ledger, self._resp_by_sid, self._early_results,
+                            self._chain_records):
                     _d.pop(k, None)
         except Exception:  # noqa: BLE001
             logger.exception("[accel] 陈旧状态清理失败（不影响请求）")
@@ -895,8 +928,160 @@ class AcceleratorPlugin(BasePlugin):
         delivery = getattr(self.ctx, "message_delivery", None)
         parse = getattr(delivery, "parse_xml", None) if delivery is not None else None
         if parse is not None:
-            return await parse(seg, tag_set)
+            # ★ v1.0.86：标记"这是我们自己为了抢发而解析"，让包装过的 parse_xml
+            #   不要对我们自己的段做"解析前剥离"（否则会剥掉刚要发的内容）。
+            self._accel_parse_inflight = getattr(self, "_accel_parse_inflight", 0) + 1
+            try:
+                return await parse(seg, tag_set)
+            finally:
+                self._accel_parse_inflight = max(0, getattr(self, "_accel_parse_inflight", 1) - 1)
         return await mp._parse_xml_msg(seg, tag_set)
+
+    def _turn_for_text(self, text):
+        """把"框架那遍手里的响应文本"对回本轮状态 `(key, 已抢发段, 抢发结果)`。
+
+        为什么必须靠文本反查：3.0 的 `parse_xml(xml_data, tag_set)` 与
+        `add_message_ids(xml_data, results)` 都是**静态方法**，签名里**不带 sid/轮次**，
+        而我们要剥的恰恰是"**本轮**抢发了哪些段"。响应文本是天然可用的对应物 ——
+        `_resp_by_sid[key]` 存的就是本轮响应对象，其 `text_response` 即模型完整输出
+        （acc 刻意保持它完整，见 early_sent.py 顶部说明）。
+        匹配用去空白比较（execute.py 传给 parse_xml 的是 `text.strip()`）。
+        """
+        want = (text or "").strip()
+        if not want:
+            return None, [], []
+        for k, resp in list(getattr(self, "_resp_by_sid", {}).items()):
+            if (getattr(resp, "text_response", "") or "").strip() == want:
+                return (k, list(self._sent_ledger.get(k) or []),
+                        list(self._early_results.get(k) or []))
+        return None, [], []
+
+    def _parse_strip_factory(self, original):
+        """包 `MessageDeliveryService.parse_xml`：解析**之前**刨掉已抢发段。
+
+        为什么必须在这一层（v1.0.86 的实测依据）：3.0 的解析在
+        `execute.py:63`（`delivery.parse_xml(text, tag_set)`），而 acc 原来的接管点
+        `send_message_chain` 在第 77 行 —— 等它拿到控制权，标签处理器（出图/TTS/视频）
+        已经**又执行了一遍**。包住 `parse_xml` 后框架只解析"还没发过的部分"，
+        与 2.x 在自己的 `send_xml_messages` 入口剥离完全等价。
+
+        安全边界：
+          · 只对"**在本轮响应文本里**"的调用生效（`_turn_for_text` 精确匹配）——
+            别的插件自己解析 XML 不会被误伤；
+          · acc 自己为了抢发而解析时打了 `_accel_parse_inflight` 标记 ⇒ 直接放行；
+          · 剥离函数复用 2.x 的 `strip_early_sent_smart`（按内容剥离，抗改写）；
+          · 任何异常都只告警并按**原文本**解析（宁可多生成一次，也不改变发送语义）。
+        """
+        async def parse_xml(xml_data, tag_set):
+            if getattr(self, "_accel_parse_inflight", 0):
+                return await original(xml_data, tag_set)
+            try:
+                key, segs, early = self._turn_for_text(xml_data)
+                if key and segs:
+                    from .early_sent import strip_early_sent_smart
+                    stripped = strip_early_sent_smart(xml_data, len(segs), segs)
+                    if stripped != xml_data:
+                        # 记下"这条响应文本对应的抢发结果"，等 `add_message_ids`
+                        # 把 ID 贴回来时按顺序拼上（= 2.x 的 `early + rest`）
+                        self._strip_ctx[xml_data] = list(early)
+                        if len(self._strip_ctx) > 32:      # 防泄漏
+                            self._strip_ctx.pop(next(iter(self._strip_ctx)), None)
+                        self._stats["preparse_strip"] = self._stats.get("preparse_strip", 0) + 1
+                        logger.info(
+                            "[accel] 解析前剥离 %d 段（框架不会再解析它们 ⇒ "
+                            "不会重复生成/重复发送）", len(segs))
+                        xml_data = stripped
+            except Exception:  # noqa: BLE001
+                logger.exception("[accel] 解析前剥离失败（按原文本解析）")
+            return await original(xml_data, tag_set)
+        return parse_xml
+
+    def _ids_splice_factory(self, original):
+        """包 `MessageDeliveryService.add_message_ids`：把抢发结果按顺序拼回去。
+
+        2.x 里框架的 `send_xml_messages` 会 `return` 结果列表，acc 直接
+        `return early + rest` 就完成了对位；3.0 的 `execute.py` 自己收集结果、
+        再调 `add_message_ids(text, message_results)` **按 `<msg>` 位置**贴 ID
+        ⇒ 少解析一段就少一个结果，必须在这个函数入口把抢发结果补回最前面
+        （顺序 = 抢发顺序 = 文档顺序），否则模型历史里的 message_id 会整体错位。
+        """
+        def add_message_ids(xml_data, message_results):
+            early = self._strip_ctx.pop(xml_data, None)
+            if early:
+                return original(xml_data, list(early) + list(message_results))
+            return original(xml_data, message_results)
+        return add_message_ids
+
+    def _consume_chain_record(self, prefix, norm, idents, kinds):
+        """按「抢发时那条链自己的签名」对账 —— 3.0 的**首选**判据（v1.0.85）。
+
+        判据（按记账顺序，一条链最多消费一条记录）：
+          · **文字**：两侧都用 `chain_signature` 的 `norm_text_only` ⇒ 相等即覆盖；
+          · **身份**：`ident_match`（两侧都由元素侧生成 ⇒ `<file>` 的路径解析、
+            `Image.md5` 惰性算出这些差异**天然不存在**）；
+          · **生成类/结构类**（出图 `<img>`/`<selfie>`、TTS `<record>`、
+            生成视频 `<video>`、`<json>`、`<forward>`）：它们的元素身份是
+            **生成结果**、与台账里的提示词不可比 ⇒ 唯一可靠的判据是
+            「两侧都没有文字、都没有身份、**元素种类完全一致**」+ 本轮顺序。
+            没有这条，这类段永远出不了账 ⇒ 框架把它们再发一次（重复）。
+          · 记录里的抢发结果若明确失败（`ok=False`）⇒ **只销账、不返回**
+            （那一段其实没发出去，要放行框架去发，否则丢内容）。
+
+        为什么这套判据比"段原文对账"可靠：抢发时链就在手上，签名由**同一个函数**
+        产出 ⇒ 不受解析期改写影响。段对账保留为兜底（见 `_consume_early_match`）。
+        """
+        from .early_sent import ident_match
+
+        for key in list(self._chain_records.keys()):
+            if not (isinstance(key, str) and key.startswith(prefix)):
+                continue
+            recs = self._chain_records.get(key) or []
+            for i, rec in enumerate(recs):
+                r_text, r_ids, r_kinds = rec.get("sig") or ("", [], [])
+                text_hit = bool(norm) and bool(r_text) and (
+                    norm == r_text or norm in r_text or r_text in norm)
+
+                ids_hit = False
+                rest = list(r_ids)
+                if idents and r_ids:
+                    ids_hit = True
+                    for need in idents:
+                        j = next((x for x, c in enumerate(rest)
+                                  if ident_match(need, c)), None)
+                        if j is None:
+                            ids_hit = False
+                            break
+                        rest.pop(j)
+
+                # 无信号段：种类一致即视为同一条
+                #   · Json / Forward 这类**两侧都没有身份**的：两侧身份都为空即可；
+                #   · 生成类（img/selfie/record/video）：链侧身份是"生成结果"、
+                #     与抢发那遍不是同一个值 ⇒ 只要**记账时标了 volatile**
+                #     且**元素种类完全一致**就认（这是唯一可靠的判据）。
+                same_kind = (bool(kinds) and list(kinds) == list(r_kinds)
+                             and not norm and not r_text
+                             and (bool(rec.get("volatile")) or (not idents and not r_ids)))
+                if not (text_hit or ids_hit or same_kind):
+                    continue
+
+                if same_kind:
+                    # 生成类/结构类：身份维度天然不可比 ⇒ 种类一致即视为整段覆盖
+                    pass
+                else:
+                    text_covered = (not r_text) or (norm == r_text)
+                    ids_covered = (not r_ids) or (ids_hit and not rest)
+                    if not (text_covered and ids_covered):
+                        continue
+
+                recs.pop(i)
+                if not recs:
+                    self._chain_records.pop(key, None)
+                result = rec.get("result")
+                if getattr(result, "ok", True) is False:
+                    # 销账但放行：那一段其实**没投递成功**，框架这次发的正是它
+                    return None
+                return result
+        return None
 
     def _consume_early_match(self, sid, chain):
         """3.0 按链对账：该链若与某已抢发段内容一致，消费台账并还回当时的结果。
@@ -928,26 +1113,27 @@ class AcceleratorPlugin(BasePlugin):
           **文字会被重复发送**（与本 bug 对称的另一种重复）。
           台账按 (sid, 轮次) 分键、轮末清理，所以"多留一会儿"是安全的。
         """
-        from .early_sent import elem_ident, norm_text_only, seg_idents
+        from .early_sent import (chain_signature, elem_ident, ident_match,
+                                 norm_text_only, seg_idents)
 
-        # 链侧：文字 + 身份（媒体链没有文字，但身份非空）
-        texts, idents = [], []
-        try:
-            for e in chain:
-                piece = getattr(e, "text", "") or ""
-                if piece:
-                    texts.append(piece)
-                    continue
-                ident = elem_ident(e)
-                if ident:
-                    idents.append(ident)
-        except Exception:  # noqa: BLE001
+        # ★★★ v1.0.85：链侧签名与**抢发时**记下的签名同源（同一个 `chain_signature`）
+        norm, idents, kinds = chain_signature(chain)
+        if not norm and not idents and not kinds:
             return None
-        norm = norm_text_only(" ".join(texts))
-        if not norm and not idents:
-            return None
-
         prefix = sid + "\x00"
+
+        # ① 首选：按"抢发时那条链自己的签名"对账（元素侧，无解析期差异）
+        try:
+            hit = self._consume_chain_record(prefix, norm, idents, kinds)
+            if hit is not None:
+                return hit
+        except Exception:  # noqa: BLE001
+            logger.exception("[accel] 抢发链签名对账异常（回退到段对账）")
+
+        # ② 兜底：按**段原文**对账（v1.0.83/84 的逻辑）
+        #   用于"框架拿到的链与抢发时那条链不同形"的情形（例如插件在
+        #   框架那遍改写了链的顺序/粒度，或本条链是抢发之后新增的）。
+        #   注意这里用的仍是链侧签名（norm/idents），只是台账换成了段原文。
         for k in list(self._sent_ledger.keys()):
             if not (isinstance(k, str) and k.startswith(prefix)):
                 continue
@@ -964,11 +1150,20 @@ class AcceleratorPlugin(BasePlugin):
                 if idents:
                     ids_hit = True
                     for need in idents:
-                        if need in rest_ids:
-                            rest_ids.remove(need)
-                        else:
+                        # ★★ v1.0.84：这里必须是 ident_match，不能写 `need in rest_ids`。
+                        #   框架解析 <file> 时会把本地路径解析成**绝对路径**
+                        #   （kira-ai 的 resolve_local_send_path：data/files/x.txt →
+                        #   <数据根>/files/x.txt），而台账里存的是**原始 XML 段**
+                        #   ⇒ 严格相等时整段身份都在、却一个都对不上 ⇒ 台账不出账
+                        #   ⇒ 框架把文件再发一次（线上：文件重复发送）。
+                        #   放宽规则只针对「data/ 相对路径 vs 它的绝对形式」，
+                        #   同名不同目录**不算匹配**（宁可重复，也不误吃丢内容）。
+                        _at = next((j for j, c in enumerate(rest_ids)
+                                    if ident_match(need, c)), None)
+                        if _at is None:
                             ids_hit = False
                             break
+                        rest_ids.pop(_at)
 
                 if not (text_hit or ids_hit):
                     continue
@@ -1008,6 +1203,7 @@ class AcceleratorPlugin(BasePlugin):
             self._sent_ledger.pop(k, None)
             self._resp_by_sid.pop(k, None)
             self._early_results.pop(k, None)
+            self._chain_records.pop(k, None)
         except Exception:  # noqa: BLE001
             pass
 
@@ -1184,6 +1380,27 @@ class AcceleratorPlugin(BasePlugin):
                 self._early_results.setdefault(_k, []).append(result)
             except Exception:  # noqa: BLE001
                 logger.exception("[accel] 记录抢发结果失败（不影响已投递的事实）")
+
+            try:
+                # ★★★ v1.0.85：同时记下**这条链自己的签名**（元素侧、与对账同一函数）。
+                #   这是 3.0 按链对账的首选判据 —— 段原文是"解析前"的文本，
+                #   链是"解析后"的元素，两者异源 ⇒ 解析期任何改写（路径解析、
+                #   惰性 md5、生成类结果）都会让台账出不了账 ⇒ 框架再发一次。
+                #   记元素侧签名后，两侧由同一函数产出 ⇒ 从根上没有这类差异；
+                #   生成类（出图/TTS/视频）没有可比身份，靠 `kinds`（元素种类）
+                #   在**本轮内按顺序**配对。
+                self._chain_records.setdefault(_k, []).append({
+                    "sig": _chain_signature(action),
+                    "result": result,
+                    # ★ 生成类标签（出图/自拍/TTS/生成视频）：元素身份是**生成结果**，
+                    #   与框架那遍**再次生成**的结果必然不同 ⇒ 身份维度天然不可比，
+                    #   只能靠"元素种类一致 + 本轮顺序"配对（见 `_consume_chain_record`）。
+                    #   抢发的这一刻我们从原始段就知道是不是生成类 ⇒ 在这里标出来。
+                    "volatile": bool(re.search(r"<(?:img|selfie|record|video)\b",
+                                               seg or "", re.I)),
+                })
+            except Exception:  # noqa: BLE001
+                logger.exception("[accel] 记录抢发链签名失败（不影响已投递的事实）")
 
             try:
                 self._mark_sent(ctx)
@@ -1748,7 +1965,7 @@ class AcceleratorPlugin(BasePlugin):
                     #   那才是真的会把同一段再发一次 —— 这时才报。
                     #   与"同一 sid 出现两次"那种结构判据不同，这个只在真有重叠时触发。
                     try:
-                        from .early_sent import _norm_seg, seg_idents
+                        from .early_sent import _norm_seg, ident_match, seg_idents
                         rest_norm = _norm_seg(xml_data)
                         rest_ids = seg_idents(xml_data)       # ★ v1.0.83：媒体身份也要核对
                         for _s in segs:
@@ -1758,7 +1975,8 @@ class AcceleratorPlugin(BasePlugin):
                                     "[accel] 剥离后剩余文本里仍含已抢发的段"
                                     "（这一段可能被重复发送）：%s", _piece[:48])
                                 break
-                            _hit_id = next((i for i in seg_idents(_s) if i in rest_ids), "")
+                            _hit_id = next((i for i in seg_idents(_s)
+                                            if any(ident_match(i, c) for c in rest_ids)), "")
                             if _hit_id:
                                 logger.warning(
                                     "[accel] 剥离后剩余文本里仍含已抢发的媒体"
@@ -1867,6 +2085,30 @@ class AcceleratorPlugin(BasePlugin):
                 if install(h2, dcls, "send_message_chain", delivery_factory) is not None:
                     self.patches.add(h2)
                     logger.info("[accel] 发送层已接管（按链对账去重已抢发段）")
+
+                # ── ★★★ v1.0.86：把接缝补到**解析之前**（等价 2.x 的入口剥离）──
+                #   这是"生成类被生成两次"的根治：只要框架那遍**解析不到**已抢发段，
+                #   标签处理器（出图/TTS/视频）就不会被再执行一次。
+                #
+                #   ⚠️ `parse_xml` / `add_message_ids` 都是 **staticmethod**：
+                #      直接 setattr 一个普通函数会让**实例调用多传一个 self**
+                #      （execute.py 里是 `delivery.parse_xml(...)`）⇒ 必须包回
+                #      `staticmethod`，还原时同样要还原成 staticmethod。
+                for _attr, _factory, _name in (
+                    ("parse_xml", self._parse_strip_factory, "early_sent_parse_strip"),
+                    ("add_message_ids", self._ids_splice_factory, "early_sent_ids_splice"),
+                ):
+                    if not hasattr(dcls, _attr):
+                        continue
+                    _orig = getattr(dcls, _attr)              # staticmethod 解包后的函数
+                    _hh = PatchHandle(_name)
+                    if install(_hh, dcls, _attr, _factory) is None:
+                        continue
+                    setattr(dcls, _attr, staticmethod(getattr(dcls, _attr)))
+                    _hh.installed = getattr(dcls, _attr)      # 还原判据 = 我们装的函数
+                    _hh.original = staticmethod(_orig)        # 还原成 staticmethod 语义
+                    self.patches.add(_hh)
+                    logger.info("[accel] 解析层已接管（%s：已抢发段在解析前剥离）", _attr)
             else:
                 logger.warning("[accel] 未找到可接管的发送服务，抢发剥离未安装（可能重复发送）")
 

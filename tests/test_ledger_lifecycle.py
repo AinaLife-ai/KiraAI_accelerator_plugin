@@ -79,7 +79,13 @@ _lb = MAIN[_i0:MAIN.index("elif n > 0 and not segs:", _i0)]
 check("★ 台账优先：`if ledger:` 分支里就用台账覆盖 n 与 segs",
       "n = len(ledger)" in _lb and "segs = list(ledger)" in _lb)
 check("★ 且该分支在按序号剥离之前（不会被绕过）",
-      MAIN.index("if ledger:") < MAIN.index("strip_early_sent_smart("))
+      # ★ 2026-10-13：改成"在 `if ledger:` **之后**找剥离调用"。
+      #   原来比的是全文里两个字符串的首次出现位置 —— v1.0.86 在**前面**的
+      #   `_parse_strip_factory` 里也用到了 `strip_early_sent_smart`（3.0 的
+      #   解析前剥离），于是这个守卫被"另一个接缝"提前命中而误报。
+      #   判据的本意是"同一个发送层函数里，台账决策在剥离之前" ⇒ 从台账分支往后找。
+      MAIN.index("if ledger:") < MAIN.index("strip_early_sent_smart(",
+                                            MAIN.index("if ledger:")))
 
 # 去掉注释后再查（注释里会引用旧文案，说明"曾经这么报"）
 _code = re.sub(r"(?m)^\s*#.*$", "", MAIN)
