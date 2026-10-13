@@ -928,7 +928,7 @@ class AcceleratorPlugin(BasePlugin):
           **文字会被重复发送**（与本 bug 对称的另一种重复）。
           台账按 (sid, 轮次) 分键、轮末清理，所以"多留一会儿"是安全的。
         """
-        from .early_sent import elem_ident, norm_text_only, seg_idents
+        from .early_sent import elem_ident, ident_match, norm_text_only, seg_idents
 
         # 链侧：文字 + 身份（媒体链没有文字，但身份非空）
         texts, idents = [], []
@@ -964,11 +964,20 @@ class AcceleratorPlugin(BasePlugin):
                 if idents:
                     ids_hit = True
                     for need in idents:
-                        if need in rest_ids:
-                            rest_ids.remove(need)
-                        else:
+                        # ★★ v1.0.84：这里必须是 ident_match，不能写 `need in rest_ids`。
+                        #   框架解析 <file> 时会把本地路径解析成**绝对路径**
+                        #   （kira-ai 的 resolve_local_send_path：data/files/x.txt →
+                        #   <数据根>/files/x.txt），而台账里存的是**原始 XML 段**
+                        #   ⇒ 严格相等时整段身份都在、却一个都对不上 ⇒ 台账不出账
+                        #   ⇒ 框架把文件再发一次（线上：文件重复发送）。
+                        #   放宽规则只针对「data/ 相对路径 vs 它的绝对形式」，
+                        #   同名不同目录**不算匹配**（宁可重复，也不误吃丢内容）。
+                        _at = next((j for j, c in enumerate(rest_ids)
+                                    if ident_match(need, c)), None)
+                        if _at is None:
                             ids_hit = False
                             break
+                        rest_ids.pop(_at)
 
                 if not (text_hit or ids_hit):
                     continue
@@ -1748,7 +1757,7 @@ class AcceleratorPlugin(BasePlugin):
                     #   那才是真的会把同一段再发一次 —— 这时才报。
                     #   与"同一 sid 出现两次"那种结构判据不同，这个只在真有重叠时触发。
                     try:
-                        from .early_sent import _norm_seg, seg_idents
+                        from .early_sent import _norm_seg, ident_match, seg_idents
                         rest_norm = _norm_seg(xml_data)
                         rest_ids = seg_idents(xml_data)       # ★ v1.0.83：媒体身份也要核对
                         for _s in segs:
@@ -1758,7 +1767,8 @@ class AcceleratorPlugin(BasePlugin):
                                     "[accel] 剥离后剩余文本里仍含已抢发的段"
                                     "（这一段可能被重复发送）：%s", _piece[:48])
                                 break
-                            _hit_id = next((i for i in seg_idents(_s) if i in rest_ids), "")
+                            _hit_id = next((i for i in seg_idents(_s)
+                                            if any(ident_match(i, c) for c in rest_ids)), "")
                             if _hit_id:
                                 logger.warning(
                                     "[accel] 剥离后剩余文本里仍含已抢发的媒体"

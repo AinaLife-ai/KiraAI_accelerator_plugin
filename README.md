@@ -30,6 +30,8 @@
 > 面板模型下拉显示可读名（不再显示内部 ID）。
 > v1.0.83 起：按链对账**同时比对文字与媒体身份**（贴纸/图片/语音/@/emoji…），
 > 并允许一条台账被两条链分别消费 —— 修掉「表情独立成行时**表情包被发两次**」。
+> v1.0.84 起：身份比对**认路径**（`data/...` 相对路径 vs 框架解析出的绝对路径算同一个文件），
+> 且图片身份**不再被惰性算出的 md5 顶掉** —— 修掉「`<file>` 发的文件/图片被发两次」。
 
 1. 下载 `kira_accelerator` 文件夹（或 zip 解压）
 2. 放进 KiraAI 的 `data/plugins/` 目录
@@ -365,6 +367,38 @@ A：把你的图（webp/jpg/png）丢进 `wallpapers/` 目录，面板里就会�
 
 <details>
 <summary><b>📜 更新日志</b>（点击展开）</summary>
+
+### v1.0.84
+
+**3.0 修复：`<file>` 发的文件/图片被发两次（身份令牌"一条都对不上"）**
+
+- 🐛 **现象**：3.0 上让 bot 写个文件发上来（`<file type="file">data/files/xxx.txt</file>`），
+  它会被**发两次**；本地图片（`<file type="image">data/files/pic.png</file>`）同理。
+- 🔍 **根因**：框架解析 `<file>` 时会把**本地路径解析成绝对路径**
+  （kira-ai `file_send_policy.resolve_local_send_path`：`data/files/x.txt` →
+  `<数据根>/files/x.txt`，2.x 与 3.0 同款实现），而台账里存的是**原始 XML 段**。
+  3.0 的按链对账是**严格字符串相等** ⇒ 链侧 `/…/data/files/x.txt` 与台账侧
+  `data/files/x.txt` 对不上 ⇒ 整段身份"都在、却一个都配不上" ⇒ 台账不出账 ⇒
+  框架把文件**再发一次**。（2.x 的剥离路径不吃这个亏：它两侧都是原始 XML 文本。）
+- 🐛 **顺带修掉同源的第二个坑**：`Image` 的 `md5` 是**惰性算出**的
+  （`message_formatter` 做图描述时会调 `hash_image()`），而 `elem_ident` 的元素侧
+  优先级原来把 `md5` 排在 `file` **前面** ⇒ 同一张 **URL 图片**一旦算过 md5，
+  元素身份就变 `md5`、台账身份还是 url ⇒ 同样对不上 ⇒ 图片重复。
+- ✅ **修法**：
+  · 新增 `early_sent._canon_ident`（两侧**同一套**规范化：去空白、`\` 归一到 `/`、
+    `data/` 相对路径做 normpath）与 `early_sent.ident_match`；
+  · 对账身份比较从 `need in rest_ids` 改为 `ident_match(need, c)`；
+  · `ident_match` **只放宽一种情况**：台账里的 `data/…` 相对路径落在链侧绝对路径的
+    **路径分隔符边界**上（`…/data/files/x.txt` 认 `data/files/x.txt`；
+    `/x/zhabc.txt` **不认** `abc.txt`，不同目录下的同名文件也**不认**）——
+    宁可重复一次，也不误吃丢内容；
+  · `md5` 在 `_IDENT_FIELDS` 里**降到最后一档**（台账侧永远不会有 md5，
+    排在前面只会顶掉正确的 `file`/`image`）。
+- 🧪 回归：`tests/test_media_dedupe.py` 新增 5b（集成，真元素+真对账方法）与
+  6（纯逻辑 `ident_match`/`_canon_ident`）两段共 **22 条**断言，
+  含"同名不同目录必须放行""后缀撞车必须放行"两条误吃防线；
+  **反向验证**：把新用例跑在修前的代码上 ⇒ 5 条按预期报红。
+- 版本 v1.0.83 → v1.0.84
 
 ### v1.0.83
 

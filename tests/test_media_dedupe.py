@@ -125,7 +125,7 @@ if FW is None:
     print("═══ 5) 集成：按链对账的真实行为 —— [SKIP] 需要 KIRA_FW")
 else:
     sys.path.insert(0, FW)
-    from core.chat.message_elements import Text, Sticker, Image, At, Emoji   # noqa: E402
+    from core.chat.message_elements import Text, Sticker, Image, At, Emoji, File   # noqa: E402
     from core.chat import MessageChain                                      # noqa: E402
 
     main_mod = _env.load("main")
@@ -202,6 +202,101 @@ else:
     check("结果缺失 ⇒ 放行（不还错结果）",
           inst11._consume_early_match(
               SID, MessageChain([Sticker(sticker="https://x/s21.png", sticker_id="21")])) is None)
+
+    # ────────────────────────────────────────────────────────────
+    # 5b) v1.0.84：<file> 本地路径 & 图片 md5 —— 同类重复（线上：文件被发两次）
+    #     框架解析 `<file>` 会把 data/ 相对路径拼成**绝对路径**
+    #     （kira-ai 的 resolve_local_send_path），台账里却是原始 XML ⇒ 严格相等时
+    #     身份一个都对不上 ⇒ 台账不出账 ⇒ 框架再发一次。下面是真实形状的回归。
+    # ────────────────────────────────────────────────────────────
+    print()
+    print("═══ 5b) v1.0.84：<file> 本地路径 / 图片 md5（同类重复）")
+    _tmp = pathlib.Path("/tmp") / "acc_media_dedupe_t"
+    _abs = str(_tmp / "data" / "files" / "香香写给哥.txt")
+    pathlib.Path(_abs).parent.mkdir(parents=True, exist_ok=True)
+    pathlib.Path(_abs).write_text("hi", encoding="utf-8")
+
+    SEG_FILE_REL = '<msg><file type="file">data/files/香香写给哥.txt</file></msg>'
+    instF, kF = _fresh([SEG_FILE_REL])
+    check("★ 文件：链里是**绝对路径**元素、台账是相对路径 ⇒ 必须命中"
+          "（修前：None ⇒ 框架再发一次 ⇒ 文件重复）",
+          instF._consume_early_match(SID, MessageChain([File(file=_abs, name="香香写给哥.txt")])) == "R0")
+    check("★ 整段覆盖 ⇒ 出账（不会一直挂着这条台账）", not (instF._sent_ledger.get(kF) or []))
+
+    SEG_IMG_REL = '<msg><file type="image">data/files/pic.png</file></msg>'
+    _abs_pic = str(_tmp / "data" / "files" / "pic.png")
+    pathlib.Path(_abs_pic).write_bytes(b"\x89PNG\r\n\x1a\n")
+    instP, _ = _fresh([SEG_IMG_REL])
+    check("★ 本地图片：绝对路径元素 vs 相对路径台账 ⇒ 命中",
+          instP._consume_early_match(SID, MessageChain([Image(image=_abs_pic)])) == "R0")
+
+    SEG_IMG_URL = '<msg><file type="image">https://cdn/a.png</file></msg>'
+    _img_md5 = Image(image="https://cdn/a.png")
+    _img_md5.md5 = "9f2cdeadbeef00112233"      # 模拟 message_formatter 调过 hash_image
+    instM, _ = _fresh([SEG_IMG_URL])
+    check("★ URL 图片但 md5 已被算过 ⇒ 仍要命中（修前：元素身份=md5 ⇒ 对不上 ⇒ 重复）",
+          instM._consume_early_match(SID, MessageChain([_img_md5])) == "R0")
+
+    # 误吃防线：同名不同目录，绝不能算同一张（那会丢内容）
+    _other = _tmp / "elsewhere" / "other" / "a.txt"
+    _other.parent.mkdir(parents=True, exist_ok=True)
+    _other.write_text("x", encoding="utf-8")
+    _zh = _tmp / "elsewhere" / "zhabc.txt"
+    _zh.write_text("x", encoding="utf-8")
+    instN, _ = _fresh(['<msg><file type="file">data/files/a.txt</file></msg>'])
+    check("★ 另一个目录下的同名文件 ⇒ 放行（宁可重复，也不误吃丢内容）",
+          instN._consume_early_match(
+              SID, MessageChain([File(file=str(_other), name="a.txt")])) is None)
+    check("★ 后缀撞车（zhabc.txt ≠ abc.txt）⇒ 放行",
+          instN._consume_early_match(
+              SID, MessageChain([File(file=str(_zh), name="zhabc.txt")])) is None)
+    # 文件与图片混在同一轮：各自的台账各自消费
+    instX, kX = _fresh([SEG_FILE_REL, SEG_IMG_URL])
+    check("同一轮里文件+图片各消费各的",
+          instX._consume_early_match(SID, MessageChain([File(file=_abs, name="香香写给哥.txt")])) == "R0"
+          and instX._consume_early_match(SID, MessageChain([Image(image="https://cdn/a.png")])) == "R1"
+          and not (instX._sent_ledger.get(kX) or []))
+
+# ────────────────────────────────────────────────────────────────
+# 6) v1.0.84 纯逻辑：身份规范化 + 身份匹配（不依赖框架源码）
+# ────────────────────────────────────────────────────────────────
+print()
+print("═══ 6) v1.0.84 纯逻辑：ident_match / _canon_ident")
+_im = es.ident_match
+check("相等 ⇒ 匹配", _im("https://cdn/a.png", "https://cdn/a.png") is True)
+check("data/ 相对路径 vs 它的绝对形式 ⇒ 匹配（这是线上那条文件重复的修法）",
+      _im("data/files/香香写给哥.txt",
+          "/var/minis/data/files/香香写给哥.txt") is True)
+check("顺序无关", _im("/root/data/files/a.png", "data/files/a.png") is True)
+check("空值一律不匹配（避免空串互相吃掉）",
+      _im("", "") is False and _im("", "data/files/a.txt") is False)
+check("同名不同目录 ⇒ 不匹配（绝不丢内容）",
+      _im("data/files/a.txt", "/elsewhere/other/a.txt") is False)
+check("后缀撞车不算（必须整段路径对得上）",
+      _im("data/files/abc.txt", "/x/zhabc.txt") is False)
+check("非 data/ 的短边不放宽（URL/绝对路径只认严格相等）",
+      _im("https://cdn/a.png", "/tmp/x/a.png") is False
+      and _im("/mnt/a.png", "/other/a.png") is False)
+check("图片 md5 不再抢 `file` 的身份",
+      es.elem_ident(type("E", (), {"file": "https://cdn/a.png", "md5": "deadbeef"})()) == "https://cdn/a.png")
+check("只有 md5 时仍可当身份（兜底，不报错）",
+      es.elem_ident(type("E", (), {"md5": " deadbeef "})()) == "deadbeef")
+check("反斜杠归一到 /",
+      es._canon_ident("data\\files\\a.txt") == "data/files/a.txt")
+check("data/ 路径做 normpath（`data/./files/x` 也要认）",
+      es._canon_ident("data/./files/x.txt") == "data/files/x.txt")
+check("台账身份同样规范化",
+      es.seg_idents('<msg><file type="file">data\\./files\\\\x.txt</file></msg>')
+      == ["data/files/x.txt"])
+check("带空白的台账身份被去掉空白",
+      es.seg_idents("<msg><sticker> 27 </sticker></msg>") == ["27"])
+
+# 静态守卫：对账循环里必须用 ident_match（不能用严格 `in`）
+_i = MAIN.find("def _consume_early_match")
+_j = MAIN.find("\n    def ", _i + 10)
+_BODY2 = re.sub(r"#[^\n]*", "", MAIN[_i:_j if _j > _i else len(MAIN)])
+check("★ 对账身份比较走 ident_match（不再用 `need in rest_ids`）",
+      "ident_match(need, c)" in _BODY2 and "if need in rest_ids" not in _BODY2)
 
 print()
 print("=" * 60)

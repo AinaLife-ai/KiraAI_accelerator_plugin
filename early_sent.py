@@ -47,6 +47,7 @@ from __future__ import annotations
 MARKER_KEY = "_accel_early_sent"
 
 # 正则：匹配一个**已闭合**的 <msg> 段（与 stream_first 保持一致）
+import posixpath  # noqa: E402
 import re  # noqa: E402
 from xml.sax.saxutils import unescape  # noqa: E402
 
@@ -135,8 +136,13 @@ def _seg_sig(seg: str) -> str:
 # ════════════════════════════════════════════════════════════════════════
 
 #: 元素侧身份字段优先级
-_IDENT_FIELDS = ("sticker_id", "md5", "file", "image", "record", "video",
-                 "pid", "user_id", "message_id", "emoji_id")
+#:   · `sticker_id` 必须排在 `file` 之前（贴纸元素的 file 是 base64，不可比）；
+#:   · `md5` 必须排在**最后**：它只有图片（`Image`）才有、且是**惰性算出**的
+#:     （`message_formatter` 做图描述时会调 `hash_image()`），而台账侧**永远
+#:     不会有 md5** ⇒ 一旦它排在 `file` 前面，同一个 URL / 本地路径的图片就会
+#:     因为"元素侧给 md5、台账侧给 url/path"而对不上 ⇒ 图片重复发送。
+_IDENT_FIELDS = ("sticker_id", "file", "image", "record", "video",
+                 "pid", "user_id", "message_id", "emoji_id", "md5")
 
 #: XML 侧不参与比对的标签（生成类 / 正文 / 结构类）
 _IDENT_SKIP_TAGS = ("img", "selfie", "record", "json", "forward", "text", "msg")
@@ -147,6 +153,44 @@ _IDENT_ATTRS = ("url", "path", "file", "pid", "id", "message_id", "emoji_id")
 _TAG_OPEN_RE = re.compile(r"<([a-zA-Z_][\w.-]*)((?:\s[^>]*)?)\s*(/?)>")
 
 
+def _canon_ident(s: str) -> str:
+    """身份令牌的规范化（两侧**同一套**规则）。
+
+    为什么需要：框架解析 `<file>` 时会把 `data/...` 拼成**绝对路径**
+    （kira-ai 的 `resolve_local_send_path`：`data/files/x.txt` →
+    `<数据根>/files/x.txt`，2.x/3.0 同款实现），而台账里存的是**原始 XML**。
+    这里统一去掉空白、把 `\\` 归一到 `/`、并对 `data/` 相对路径做 normpath，
+    让"同一个文件"在两侧落到同一种写法上。
+    """
+    s = re.sub(r"\s+", "", s or "")
+    if not s:
+        return ""
+    if "\\" in s:
+        s = s.replace("\\", "/")
+    if s.startswith("data/"):
+        s = posixpath.normpath(s)
+    return s
+
+
+def ident_match(a: str, b: str) -> bool:
+    """两个身份令牌是否指**同一个**东西。
+
+    相等即匹配；此外只放宽**一种**已知情况（否则就是 bug 的来源）：
+    台账里的 `data/...` 相对路径在链侧已被框架解析成**绝对路径** ⇒
+    "短的那个"落在"长的那个"的**路径分隔符边界**上就算同一个
+    （`/x/zhabc.txt` 与 `abc.txt` 不算 —— 必须整段路径对得上，避免误吃）。
+
+    刻意**不**放宽的：不同目录下的同名文件（只比 basename）**不匹配** ——
+    那会把"另一条媒体"误判成已发 ⇒ 丢内容。宁可重复一次，也不丢。
+    """
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    short, long_ = (a, b) if len(a) <= len(b) else (b, a)
+    return short.startswith("data/") and long_.endswith("/" + short)
+
+
 def elem_ident(e) -> str:
     """消息元素 → 可比对身份；拿不到身份（或本身是文字）返回 ""（不参与比对）。"""
     try:
@@ -155,7 +199,7 @@ def elem_ident(e) -> str:
         for f in _IDENT_FIELDS:
             v = getattr(e, f, None)
             if isinstance(v, (str, int)) and str(v).strip():
-                return re.sub(r"\s+", "", str(v))
+                return _canon_ident(str(v))
     except Exception:  # noqa: BLE001
         pass
     return ""
@@ -180,14 +224,14 @@ def seg_idents(seg: str) -> list:
             if close >= 0:
                 inner = s[m.end():close].strip()
         if inner:
-            out.append(re.sub(r"\s+", "", inner))
+            out.append(_canon_ident(inner))
             continue
         attrs = m.group(2) or ""
         for a in _IDENT_ATTRS:
             mm = (re.search(a + r'\s*=\s*"([^"]*)"', attrs)
                   or re.search(a + r"\s*=\s*'([^']*)'", attrs))
             if mm and mm.group(1).strip():
-                out.append(re.sub(r"\s+", "", mm.group(1)))
+                out.append(_canon_ident(mm.group(1)))
                 break
     return out
 
