@@ -1027,9 +1027,23 @@ class AcceleratorPlugin(BasePlugin):
                         if len(self._strip_ctx) > 32:      # 防泄漏
                             self._strip_ctx.pop(next(iter(self._strip_ctx)), None)
                         self._stats["preparse_strip"] = self._stats.get("preparse_strip", 0) + 1
-                        logger.info(
-                            "[accel] 解析前剥离 %d 段（框架不会再解析它们 ⇒ "
-                            "不会重复生成/重复发送）", len(segs))
+                        # ★ v1.0.91：日志必须打**实际剥掉的段数**，而不是台账条数 ——
+                        #   旧日志（len(segs)）在"只剥掉一部分"时也会说"剥离 3 段"，
+                        #   把真正的重复发送线索掩盖掉。
+                        try:
+                            from .early_sent import count_segments_removed
+                            _removed = count_segments_removed(stripped, segs)
+                        except Exception:  # noqa: BLE001
+                            _removed = len(segs)
+                        if _removed < len(segs):
+                            logger.warning(
+                                "[accel] 解析前剥离：台账 %d 段，**实际只剥掉 %d 段** —— "
+                                "残留的段会被框架再发一次（群里出现重复消息时，这就是原因）",
+                                len(segs), _removed)
+                        else:
+                            logger.info(
+                                "[accel] 解析前剥离 %d 段（框架不会再解析它们 ⇒ "
+                                "不会重复生成/重复发送）", len(segs))
                         xml_data = stripped
             except Exception:  # noqa: BLE001
                 logger.exception("[accel] 解析前剥离失败（按原文本解析）")
