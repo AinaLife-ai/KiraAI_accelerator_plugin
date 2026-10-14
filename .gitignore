@@ -2,3 +2,8 @@ __pycache__/
 *.pyc
 *.zip
 .DS_Store
+
+# 运行期产物（跑测试 / 插件时会在仓库根生成，勿提交）
+# 整个 data/ 都是运行期目录：插件自己的数据目录由框架 ctx.get_plugin_data_dir() 提供，
+# 仓库内不需要、也不应该有任何 data/ 内容（测试脚本会往这里写 log.log）。
+data/

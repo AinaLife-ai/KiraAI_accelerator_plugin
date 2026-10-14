@@ -347,6 +347,48 @@ def _find_anchor_run(text: str, blocks: list, emitted_full: str,
     return best
 
 
+
+def _strip_leftover_segments(text: str, segments: list) -> str:
+    """逐段独立兜底剥离（v1.0.91）。
+
+    为什么需要：`strip_by_content` 的锚点是"一段**连续且同序**的已发内容"。
+    一旦下游把已发段**重排 / 拆分 / 穿插别的块**，或只匹配到其中一部分，
+    剩下的段会原样留在文本里 ⇒ 框架**再发一次**（线上现象：同一个贴纸被上传两次、
+    同一条引用回复在群里出现两遍；而日志只打了台账条数，看不出漏剥）。
+
+    做法：对每个"已发段原文"，在**块级**（顶层 `<msg>…</msg>`）做一次**精确匹配**
+    （规范化后相等），命中就整块删除；匹配不上就**原样保留**（绝不做局部切除，
+    宁可留给调用方告警，也不切坏别人的块）。
+
+    安全性：只处理**台账里的段**——accel 只把"确认投递成功"的段写进台账，
+    因此这里删掉的一定是"已经发出去过、再发就是重复"的内容。
+    """
+    if not text or not segments:
+        return text
+    for seg in segments:
+        key = _norm_seg(seg)
+        if not key:
+            continue
+        hit = None
+        for (s, e) in _top_level_msgs(text):
+            if _norm_seg(text[s:e]) == key:
+                hit = (s, e)
+                break
+        if hit is None:
+            continue
+        text = text[:hit[0]] + text[hit[1]:]
+    return text if text.strip() else "<msg/>"
+
+
+def count_segments_removed(text: str, segments: list) -> int:
+    """返回 segments 里**已经不在 text 中**的条数（供调用方打真实日志/告警）。"""
+    try:
+        n_out = _norm_seg(text)
+        return sum(1 for s in segments if not (_norm_seg(s) and _norm_seg(s) in n_out))
+    except Exception:
+        return 0
+
+
 def strip_by_content(text: str, segments: list[str]) -> str | None:
     """按**内容**剥掉已发出的段（贪心锚点版，2026-09-28 审计 P3 重构）。成功返回剩余文本；无法匹配返回 None。
 
@@ -398,6 +440,9 @@ def strip_by_content(text: str, segments: list[str]) -> str | None:
             cursor = e
     out.append(text[cursor:])
     rest = "".join(out)
+    # ★★★ v1.0.91：锚点只保证"连续且同序"的那一段被剥掉。剩下的已发段**逐段兜底**
+    #   （块级精确匹配）——它们已经发出去过了，留下就会被框架再发一遍。
+    rest = _strip_leftover_segments(rest, segments)
     return rest if rest.strip() else "<msg/>"
 
 
