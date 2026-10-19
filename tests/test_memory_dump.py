@@ -108,10 +108,26 @@ def main():
     import copy
     orig_mem = copy.deepcopy(mem)
     orig_path = h.chat_memory_path + ".orig"
-    t0 = time.perf_counter()
-    with open(orig_path, "w", encoding="utf-8") as f:
-        f.write(json.dumps(orig_mem, indent=4, ensure_ascii=False))
-    slow_ms = (time.perf_counter() - t0) * 1000
+
+    def _best_ms(fn, n=3):
+        """测 n 次取最小值：沙箱/CI 有调度噪声，单次测量会把 6 倍差测成 1.6 倍。"""
+        best = float("inf")
+        for _ in range(n):
+            t0 = time.perf_counter()
+            fn()
+            best = min(best, (time.perf_counter() - t0) * 1000)
+        return best
+
+    def _slow_write():
+        with open(orig_path, "w", encoding="utf-8") as f:
+            f.write(json.dumps(orig_mem, indent=4, ensure_ascii=False))
+
+    def _fast_write():
+        SessionManager._save_memory(h)
+
+    _slow_write()
+    slow_ms = _best_ms(_slow_write)
+    fast_ms = min(fast_ms, _best_ms(_fast_write))
     with open(orig_path, encoding="utf-8") as f:
         back2 = json.load(f)
     check("★★ 新旧两种写法的**解析结果**逐字段相同", back2 == back,

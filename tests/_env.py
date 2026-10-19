@@ -59,8 +59,22 @@ SKIP_MARK = "[SKIP]"
 
 
 def gen() -> str:
-    """被测世代：3 = KiraAI 3.0（默认），2 = 2.x。"""
-    return os.environ.get("GEN", "3")
+    """被测世代：显式 `GEN` 优先；否则按 `KIRA_FW` 的世代特征自动判断。
+
+    旧实现默认写死 "3"：把 2.x 框架塞进 KIRA_FW 时，3.0 专用测试会继续
+    import `core.workflow...` 而**报失败**（本应跳过）。自动判断后，
+    2.x 跑套件会干净地 `[SKIP]`，不再产生假失败。
+    """
+    explicit = os.environ.get("GEN")
+    if explicit in ("2", "3"):
+        return explicit
+    fw = os.environ.get("KIRA_FW")
+    if fw:
+        if _looks_like("3", fw):
+            return "3"
+        if _looks_like("2", fw):
+            return "2"
+    return "3"
 
 
 def _looks_like(gen_want: str, root: str) -> bool:
