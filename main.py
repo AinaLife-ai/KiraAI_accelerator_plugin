@@ -54,6 +54,37 @@ PLUGIN_ID = "kira_accelerator"
 MAX_PACING_SIDS = 512
 
 
+class _SentIdPlaceholder:
+    """最后兜底：只带 `message_id` 的最小替身（拿不到框架原生结果类时才用）。"""
+
+    __slots__ = ('message_id',)
+
+    def __init__(self, message_id=''):
+        self.message_id = message_id
+
+
+def _make_id_placeholder(message_results):
+    """给「被去重删掉、从未发送」的 <msg> 造一个**与框架同类型**的空结果。
+
+    优先级：
+      1. 直接复用本批真实结果的类（`type(message_results[0])`）—— 类型、字段
+         与框架原生完全一致，未来框架若读取 `.ok` / `.is_notice` 也不会出事；
+      2. 退而导入 `core.chat.message_utils.KiraIMSentResult`（两代都有）；
+      3. 都失败才用最小替身（只保证 `.message_id` 可读，当前框架只读这个字段）。
+    """
+    if message_results:
+        try:
+            return type(message_results[0])(message_id="")
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        from core.chat.message_utils import KiraIMSentResult  # noqa: WPS433
+
+        return KiraIMSentResult(message_id="")
+    except Exception:  # noqa: BLE001
+        return _SentIdPlaceholder("")
+
+
 class SendCtx:
     """一轮请求的发送上下文（会话 / 事件 / 标签集）。
 
@@ -118,6 +149,8 @@ class AcceleratorPlugin(BasePlugin):
         # L4
         self.force_stream = bool(c_str.get("force_stream", True))
         self.early_send = bool(c_str.get("early_send", True))
+        #: 内容级去重：与已发段同内容、仅多 reply/at 的残留块整块丢弃（可关）
+        self.dedupe_blocks = bool(c_str.get("dedupe_blocks", True))
         self.stream_providers = list(c_str.get("providers", []) or [])
 
         # 请求体兼容加固（默认开，零风险）
@@ -204,7 +237,8 @@ class AcceleratorPlugin(BasePlugin):
         #   否则"少解析一段 ⇒ 少一个结果"会让模型历史里的 message_id 错位
         #   （`add_message_ids` 是**按 `<msg>` 位置**贴 ID 的）。
         #   两层都留了兜底：链级对账（v1.0.85）仍在，剥离失败只告警、不改变发送。
-        self._strip_ctx: dict[str, list] = {}     # 本轮响应文本 → 抢发结果（供拼回）
+        #: 本轮响应文本 -> (抢发结果列表, 被去重删掉的 <msg> 位置)
+        self._strip_ctx: dict[str, tuple] = {}
         self._accel_parse_inflight: int = 0       # 我们自己调 parse_xml 时的标记
         # （`_ledger_consumed` 已删除：它编码的是"已消费 ⇒ 跳过剥离"这个
         #   错误设计，而它正是"还是经常重复发送"的根因 ——
@@ -1020,22 +1054,41 @@ class AcceleratorPlugin(BasePlugin):
                 if key and segs:
                     from .early_sent import strip_early_sent_smart
                     stripped = strip_early_sent_smart(xml_data, len(segs), segs)
+                    # 先统计剥离实际剥掉多少（必须在去重之前，否则去重删掉残留
+                    # 块后会被误算成"没剥掉"，打出假的"会被框架再发一次"警告）
+                    try:
+                        from .early_sent import count_segments_removed
+                        _removed = count_segments_removed(stripped, segs, xml_data)
+                    except Exception:  # noqa: BLE001
+                        _removed = len(segs)
+                    # ★ v1.0.92：内容级去重 —— 与剥离是否改变文本无关都要跑
+                    _dropped_n = 0
+                    _drop_pos = []
+                    try:
+                        from .early_sent import drop_duplicate_blocks
+                        _deduped, _dropped = (
+                            drop_duplicate_blocks(stripped, segs)
+                            if getattr(self, "dedupe_blocks", True) else (stripped, []))
+                        if _dropped:
+                            _dropped_n = len(_dropped)
+                            try:
+                                from .early_sent import dropped_positions
+                                _drop_pos = dropped_positions(xml_data, _dropped)
+                            except Exception:  # noqa: BLE001
+                                _drop_pos = []
+                            stripped = _deduped
+                    except Exception:  # noqa: BLE001
+                        pass
                     if stripped != xml_data:
-                        # 记下"这条响应文本对应的抢发结果"，等 `add_message_ids`
-                        # 把 ID 贴回来时按顺序拼上（= 2.x 的 `early + rest`）
-                        self._strip_ctx[xml_data] = list(early)
+                        self._strip_ctx[xml_data] = (list(early), _drop_pos)
                         if len(self._strip_ctx) > 32:      # 防泄漏
                             self._strip_ctx.pop(next(iter(self._strip_ctx)), None)
                         self._stats["preparse_strip"] = self._stats.get("preparse_strip", 0) + 1
-                        # ★ v1.0.91：日志必须打**实际剥掉的段数**，而不是台账条数 ——
-                        #   旧日志（len(segs)）在"只剥掉一部分"时也会说"剥离 3 段"，
-                        #   把真正的重复发送线索掩盖掉。
-                        try:
-                            from .early_sent import count_segments_removed
-                            _removed = count_segments_removed(stripped, segs)
-                        except Exception:  # noqa: BLE001
-                            _removed = len(segs)
-                        if _removed < len(segs):
+                        if _dropped_n:
+                            logger.info(
+                                "[accel] 解析前剥离 %d/%d 段 + 内容去重 %d 块"
+                                "（不会重复发送）", _removed, len(segs), _dropped_n)
+                        elif _removed < len(segs):
                             logger.warning(
                                 "[accel] 解析前剥离：台账 %d 段，**实际只剥掉 %d 段** —— "
                                 "残留的段会被框架再发一次（群里出现重复消息时，这就是原因）",
@@ -1061,10 +1114,14 @@ class AcceleratorPlugin(BasePlugin):
         """
         def add_message_ids(xml_data=None, message_results=None, *args, **kwargs):
             # ★ v1.0.88：同样**原样透传**（框架加参数不能让这个接管点炸掉）
-            early = self._strip_ctx.pop(xml_data, None)
-            if early:
-                return original(xml_data, list(early) + list(message_results),
-                                *args, **kwargs)
+            ctx = self._strip_ctx.pop(xml_data, None)
+            if ctx:
+                early, drop_pos = ctx if isinstance(ctx, tuple) else (ctx, [])
+                combined = list(early) + list(message_results)
+                for pos in drop_pos:
+                    if 0 <= pos <= len(combined):
+                        combined.insert(pos, _make_id_placeholder(message_results))
+                return original(xml_data, combined, *args, **kwargs)
             return original(xml_data, message_results, *args, **kwargs)
         return add_message_ids
 

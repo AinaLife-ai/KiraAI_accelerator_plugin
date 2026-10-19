@@ -380,11 +380,115 @@ def _strip_leftover_segments(text: str, segments: list) -> str:
     return text if text.strip() else "<msg/>"
 
 
-def count_segments_removed(text: str, segments: list) -> int:
-    """返回 segments 里**已经不在 text 中**的条数（供调用方打真实日志/告警）。"""
+# ── v1.0.92：残留块的**内容级去重**（确定性，不依赖时间窗） ──────────────
+# 线上案例（引用回复）：模型输出两个 <msg> 块 —— 第一块只有正文+表情，第二块
+# 是「reply + at + 同一正文 + 同一表情」。acc 抢发第一块后，剥离按文本匹配，
+# 第二块因多了 reply/at 而**不是**已发段的超集 ⇒ 匹配不上 ⇒ 框架再发一次，
+# 群里就是「正文 @昵称 正文」。这里在剥离后做最后一道内容比对：
+#   · 去掉 <reply>/<at> 元数据后，若残留块与某个**已成功投递**的段内容等价
+#     ⇒ 该块就是重复内容，整块删除（只丢 quote/@ 元数据，不丢正文/媒体）；
+#   · 内容有任何差异（正文不同、媒体不同、多出元素）⇒ 原样保留，绝不误删。
+
+_MSG_BLOCK_RE = re.compile(r"<msg(?:\s[^>]*)?>.*?</msg>|<msg(?:\s[^>]*)?/>", re.DOTALL)
+_REPLY_AT_RE = re.compile(r"<(reply|at)(?:\s[^>]*)?>.*?</\1>", re.DOTALL)
+
+
+def _block_content_sig(block: str) -> str:
+    """块的内容签名：去掉 <msg> 外壳与 <reply>/<at>，压缩空白后比较。"""
+    text = (block or "").strip()
+    m = _MSG_BLOCK_RE.fullmatch(text)
+    if m:
+        text = m.group(0)
+    text = re.sub(r"^<msg(?:\s[^>]*)?>", "", text)
+    text = re.sub(r"</msg>$", "", text)
+    text = _REPLY_AT_RE.sub("", text)
+    text = unescape(text)
+    return re.sub(r"\s+", "", text)
+
+
+def locate_blocks(text: str) -> list:
+    """按文档顺序取出顶层 <msg> 块（与 add_message_ids 的 findall('msg') 同序）。"""
+    try:
+        return _MSG_BLOCK_RE.findall(text or "")
+    except Exception:
+        return []
+
+
+def dropped_positions(original: str, dropped) -> list:
+    """把「被去重删掉的块」映射回原文里的 <msg> 序号（供 ID 对位）。
+
+    相同内容的块可能有多份：按顺序一对一消耗，避免全部指到第一块。
+    """
+    try:
+        blocks = locate_blocks(original)
+        used = [False] * len(blocks)
+        pos = []
+        for d in dropped or []:
+            # 1) 精确匹配（最常见：剥离保留原块原文）
+            j = next((i for i, b in enumerate(blocks) if not used[i] and b == d), None)
+            # 2) 剥离可能改动空白/实体 ⇒ 退化为内容签名匹配，避免 ID 错位
+            if j is None:
+                sig = _block_content_sig(d)
+                if sig:
+                    j = next((i for i, b in enumerate(blocks)
+                              if not used[i] and _block_content_sig(b) == sig), None)
+            if j is not None:
+                used[j] = True
+                pos.append(j)
+        return sorted(pos)
+    except Exception:
+        return []
+
+
+def drop_duplicate_blocks(text: str, segments) -> tuple:
+    """删除与已发段**内容等价**的残留块（仅差 reply/at 元数据）。
+
+    返回 ``(新文本, 被删块列表)``；任何异常都原样返回 ``(text, [])``。
+    """
+    try:
+        sigs = {_block_content_sig(seg) for seg in (segments or [])
+                if str(seg or "").strip()}
+        sigs.discard("")
+        if not sigs:
+            return text, []
+        blocks = _MSG_BLOCK_RE.findall(text or "")
+        if not blocks:
+            return text, []
+        dropped = []
+        out = text
+        for block in blocks:
+            sig = _block_content_sig(block)
+            if sig and sig in sigs:
+                out = out.replace(block, "", 1)
+                dropped.append(block)
+        return out, dropped
+    except Exception:  # noqa: BLE001
+        return text, []
+
+
+def count_segments_removed(text: str, segments: list, original: str = None) -> int:
+    """统计**真正被剥掉**的段数（供调用方打真实日志/告警）。
+
+    v1.0.92 修正：只检查「text 里还有没有」会把两种相反的情况都算错 ——
+      · 文本被下游改写、段本就不在 ⇒ 误判为"已剥掉"（该报警时不报）；
+      · 两块同文、只剥掉一块 ⇒ 仍能匹配到另一块 ⇒ 误判为"没剥掉"。
+    正确口径按**出现次数差**：
+        剥掉数 = Σ max(0, 原文出现次数 − 剥离后出现次数)，上限 = 段数。
+
+    ``original`` 省略时退回旧行为（兼容既有测试/外部调用）。
+    """
     try:
         n_out = _norm_seg(text)
-        return sum(1 for s in segments if not (_norm_seg(s) and _norm_seg(s) in n_out))
+        if original is None:
+            return sum(1 for s in segments if not (_norm_seg(s) and _norm_seg(s) in n_out))
+        n_before = _norm_seg(original)
+        removed = 0
+        for s in segments:
+            n = _norm_seg(s)
+            if not n:
+                continue
+            removed += max(0, n_before.count(n) - n_out.count(n))
+        return min(len(segments), removed)
     except Exception:
         return 0
 
