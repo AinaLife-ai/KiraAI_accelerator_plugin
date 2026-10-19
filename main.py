@@ -215,7 +215,8 @@ class AcceleratorPlugin(BasePlugin):
         #   否则"少解析一段 ⇒ 少一个结果"会让模型历史里的 message_id 错位
         #   （`add_message_ids` 是**按 `<msg>` 位置**贴 ID 的）。
         #   两层都留了兜底：链级对账（v1.0.85）仍在，剥离失败只告警、不改变发送。
-        self._strip_ctx: dict[str, list] = {}     # 本轮响应文本 → 抢发结果（供拼回）
+        #: 本轮响应文本 -> (抢发结果列表, 被去重删掉的 <msg> 位置)
+        self._strip_ctx: dict[str, tuple] = {}
         self._accel_parse_inflight: int = 0       # 我们自己调 parse_xml 时的标记
         # （`_ledger_consumed` 已删除：它编码的是"已消费 ⇒ 跳过剥离"这个
         #   错误设计，而它正是"还是经常重复发送"的根因 ——
