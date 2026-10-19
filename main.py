@@ -1020,6 +1020,19 @@ class AcceleratorPlugin(BasePlugin):
                 if key and segs:
                     from .early_sent import strip_early_sent_smart
                     stripped = strip_early_sent_smart(xml_data, len(segs), segs)
+                    # ★ v1.0.92：内容级去重 —— 与剥离是否改变文本**无关**都要跑：
+                    #   漏剥场景（stripped == xml_data）同样可能残留「与已发段同内容、
+                    #   仅多 reply/at」的块，必须在这里整块删掉，否则框架会再发一次。
+                    try:
+                        from .early_sent import drop_duplicate_blocks
+                        _deduped, _dropped = drop_duplicate_blocks(stripped, segs)
+                        if _dropped:
+                            logger.warning(
+                                "[accel] 内容去重：丢弃 %d 个与已发段同内容的残留块"
+                                "（仅差 quote/@ 元数据，避免重复发送）", len(_dropped))
+                            stripped = _deduped
+                    except Exception:  # noqa: BLE001
+                        pass
                     if stripped != xml_data:
                         # 记下"这条响应文本对应的抢发结果"，等 `add_message_ids`
                         # 把 ID 贴回来时按顺序拼上（= 2.x 的 `early + rest`）
