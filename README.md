@@ -416,6 +416,7 @@ A：把你的图（webp/jpg/png）丢进 `wallpapers/` 目录，面板里就会�
   现在剥离后再做一次**块级内容比对**：去掉 `<reply>` / `<at>` 元数据后，若残留块与某个
   **已确认投递成功**的段内容完全等价 ⇒ 整块删除并打 warning（只丢 quote/@ 元数据，
   正文与媒体不丢）；正文/媒体有任何差异一律保留，绝不误删。
+- 配置项 `dedupe_blocks`（默认开）：关闭后完全回到 1.0.91 行为，只做文本层剥离。
 - 把 1.0.91 遗漏接入的两个回归套件并入 `run_tests.sh`：
   `test_strip_leftover.py`、`test_strip_compat_qqenhance.py`（此前 runner 会因「有测试文件
   没被引用」直接判失败）；新增 `test_dedupe_blocks.py` 锁住本修复。

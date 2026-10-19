@@ -118,6 +118,8 @@ class AcceleratorPlugin(BasePlugin):
         # L4
         self.force_stream = bool(c_str.get("force_stream", True))
         self.early_send = bool(c_str.get("early_send", True))
+        #: 内容级去重：与已发段同内容、仅多 reply/at 的残留块整块丢弃（可关）
+        self.dedupe_blocks = bool(c_str.get("dedupe_blocks", True))
         self.stream_providers = list(c_str.get("providers", []) or [])
 
         # 请求体兼容加固（默认开，零风险）
@@ -1025,7 +1027,9 @@ class AcceleratorPlugin(BasePlugin):
                     #   仅多 reply/at」的块，必须在这里整块删掉，否则框架会再发一次。
                     try:
                         from .early_sent import drop_duplicate_blocks
-                        _deduped, _dropped = drop_duplicate_blocks(stripped, segs)
+                        _deduped, _dropped = (
+                            drop_duplicate_blocks(stripped, segs)
+                            if getattr(self, "dedupe_blocks", True) else (stripped, []))
                         if _dropped:
                             logger.warning(
                                 "[accel] 内容去重：丢弃 %d 个与已发段同内容的残留块"

@@ -93,6 +93,12 @@
           }
         }
       },
+      "dedupe_blocks": {
+        "type": "switch",
+        "name": "内容级去重（防引用回复重发）",
+        "default": true,
+        "hint": "抢先发送后，如果模型在同一响应里又写了一个与已发段内容相同、仅多 reply/at 的块，整块丢弃（只丢 quote/@ 元数据，正文/媒体不丢），避免群里出现「正文 @昵称 正文」。正文或媒体有任何差异都不会删。默认：开。"
+      },
       "providers": {
         "type": "multi_select",
         "name": "Provider allowlist (empty = all)",
