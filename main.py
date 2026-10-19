@@ -55,12 +55,34 @@ MAX_PACING_SIDS = 512
 
 
 class _SentIdPlaceholder:
-    """占位结果：给被去重删掉、从未发送的 <msg> 留一个空 message_id。"""
+    """最后兜底：只带 `message_id` 的最小替身（拿不到框架原生结果类时才用）。"""
 
     __slots__ = ('message_id',)
 
     def __init__(self, message_id=''):
         self.message_id = message_id
+
+
+def _make_id_placeholder(message_results):
+    """给「被去重删掉、从未发送」的 <msg> 造一个**与框架同类型**的空结果。
+
+    优先级：
+      1. 直接复用本批真实结果的类（`type(message_results[0])`）—— 类型、字段
+         与框架原生完全一致，未来框架若读取 `.ok` / `.is_notice` 也不会出事；
+      2. 退而导入 `core.chat.message_utils.KiraIMSentResult`（两代都有）；
+      3. 都失败才用最小替身（只保证 `.message_id` 可读，当前框架只读这个字段）。
+    """
+    if message_results:
+        try:
+            return type(message_results[0])(message_id="")
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        from core.chat.message_utils import KiraIMSentResult  # noqa: WPS433
+
+        return KiraIMSentResult(message_id="")
+    except Exception:  # noqa: BLE001
+        return _SentIdPlaceholder("")
 
 
 class SendCtx:
@@ -1098,7 +1120,7 @@ class AcceleratorPlugin(BasePlugin):
                 combined = list(early) + list(message_results)
                 for pos in drop_pos:
                     if 0 <= pos <= len(combined):
-                        combined.insert(pos, _SentIdPlaceholder(''))
+                        combined.insert(pos, _make_id_placeholder(message_results))
                 return original(xml_data, combined, *args, **kwargs)
             return original(xml_data, message_results, *args, **kwargs)
         return add_message_ids
