@@ -54,6 +54,15 @@ PLUGIN_ID = "kira_accelerator"
 MAX_PACING_SIDS = 512
 
 
+class _SentIdPlaceholder:
+    """占位结果：给被去重删掉、从未发送的 <msg> 留一个空 message_id。"""
+
+    __slots__ = ('message_id',)
+
+    def __init__(self, message_id=''):
+        self.message_id = message_id
+
+
 class SendCtx:
     """一轮请求的发送上下文（会话 / 事件 / 标签集）。
 
@@ -1022,37 +1031,41 @@ class AcceleratorPlugin(BasePlugin):
                 if key and segs:
                     from .early_sent import strip_early_sent_smart
                     stripped = strip_early_sent_smart(xml_data, len(segs), segs)
-                    # ★ v1.0.92：内容级去重 —— 与剥离是否改变文本**无关**都要跑：
-                    #   漏剥场景（stripped == xml_data）同样可能残留「与已发段同内容、
-                    #   仅多 reply/at」的块，必须在这里整块删掉，否则框架会再发一次。
+                    # 先统计剥离实际剥掉多少（必须在去重之前，否则去重删掉残留
+                    # 块后会被误算成"没剥掉"，打出假的"会被框架再发一次"警告）
+                    try:
+                        from .early_sent import count_segments_removed
+                        _removed = count_segments_removed(stripped, segs, xml_data)
+                    except Exception:  # noqa: BLE001
+                        _removed = len(segs)
+                    # ★ v1.0.92：内容级去重 —— 与剥离是否改变文本无关都要跑
+                    _dropped_n = 0
+                    _drop_pos = []
                     try:
                         from .early_sent import drop_duplicate_blocks
                         _deduped, _dropped = (
                             drop_duplicate_blocks(stripped, segs)
                             if getattr(self, "dedupe_blocks", True) else (stripped, []))
                         if _dropped:
-                            logger.warning(
-                                "[accel] 内容去重：丢弃 %d 个与已发段同内容的残留块"
-                                "（仅差 quote/@ 元数据，避免重复发送）", len(_dropped))
+                            _dropped_n = len(_dropped)
+                            try:
+                                from .early_sent import dropped_positions
+                                _drop_pos = dropped_positions(xml_data, _dropped)
+                            except Exception:  # noqa: BLE001
+                                _drop_pos = []
                             stripped = _deduped
                     except Exception:  # noqa: BLE001
                         pass
                     if stripped != xml_data:
-                        # 记下"这条响应文本对应的抢发结果"，等 `add_message_ids`
-                        # 把 ID 贴回来时按顺序拼上（= 2.x 的 `early + rest`）
-                        self._strip_ctx[xml_data] = list(early)
+                        self._strip_ctx[xml_data] = (list(early), _drop_pos)
                         if len(self._strip_ctx) > 32:      # 防泄漏
                             self._strip_ctx.pop(next(iter(self._strip_ctx)), None)
                         self._stats["preparse_strip"] = self._stats.get("preparse_strip", 0) + 1
-                        # ★ v1.0.91：日志必须打**实际剥掉的段数**，而不是台账条数 ——
-                        #   旧日志（len(segs)）在"只剥掉一部分"时也会说"剥离 3 段"，
-                        #   把真正的重复发送线索掩盖掉。
-                        try:
-                            from .early_sent import count_segments_removed
-                            _removed = count_segments_removed(stripped, segs)
-                        except Exception:  # noqa: BLE001
-                            _removed = len(segs)
-                        if _removed < len(segs):
+                        if _dropped_n:
+                            logger.info(
+                                "[accel] 解析前剥离 %d/%d 段 + 内容去重 %d 块"
+                                "（不会重复发送）", _removed, len(segs), _dropped_n)
+                        elif _removed < len(segs):
                             logger.warning(
                                 "[accel] 解析前剥离：台账 %d 段，**实际只剥掉 %d 段** —— "
                                 "残留的段会被框架再发一次（群里出现重复消息时，这就是原因）",
@@ -1078,10 +1091,14 @@ class AcceleratorPlugin(BasePlugin):
         """
         def add_message_ids(xml_data=None, message_results=None, *args, **kwargs):
             # ★ v1.0.88：同样**原样透传**（框架加参数不能让这个接管点炸掉）
-            early = self._strip_ctx.pop(xml_data, None)
-            if early:
-                return original(xml_data, list(early) + list(message_results),
-                                *args, **kwargs)
+            ctx = self._strip_ctx.pop(xml_data, None)
+            if ctx:
+                early, drop_pos = ctx if isinstance(ctx, tuple) else (ctx, [])
+                combined = list(early) + list(message_results)
+                for pos in drop_pos:
+                    if 0 <= pos <= len(combined):
+                        combined.insert(pos, _SentIdPlaceholder(''))
+                return original(xml_data, combined, *args, **kwargs)
             return original(xml_data, message_results, *args, **kwargs)
         return add_message_ids
 

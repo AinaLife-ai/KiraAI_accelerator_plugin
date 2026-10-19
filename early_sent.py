@@ -402,7 +402,42 @@ def _block_content_sig(block: str) -> str:
     text = re.sub(r"^<msg(?:\s[^>]*)?>", "", text)
     text = re.sub(r"</msg>$", "", text)
     text = _REPLY_AT_RE.sub("", text)
+    text = unescape(text)
     return re.sub(r"\s+", "", text)
+
+
+def locate_blocks(text: str) -> list:
+    """按文档顺序取出顶层 <msg> 块（与 add_message_ids 的 findall('msg') 同序）。"""
+    try:
+        return _MSG_BLOCK_RE.findall(text or "")
+    except Exception:
+        return []
+
+
+def dropped_positions(original: str, dropped) -> list:
+    """把「被去重删掉的块」映射回原文里的 <msg> 序号（供 ID 对位）。
+
+    相同内容的块可能有多份：按顺序一对一消耗，避免全部指到第一块。
+    """
+    try:
+        blocks = locate_blocks(original)
+        used = [False] * len(blocks)
+        pos = []
+        for d in dropped or []:
+            # 1) 精确匹配（最常见：剥离保留原块原文）
+            j = next((i for i, b in enumerate(blocks) if not used[i] and b == d), None)
+            # 2) 剥离可能改动空白/实体 ⇒ 退化为内容签名匹配，避免 ID 错位
+            if j is None:
+                sig = _block_content_sig(d)
+                if sig:
+                    j = next((i for i, b in enumerate(blocks)
+                              if not used[i] and _block_content_sig(b) == sig), None)
+            if j is not None:
+                used[j] = True
+                pos.append(j)
+        return sorted(pos)
+    except Exception:
+        return []
 
 
 def drop_duplicate_blocks(text: str, segments) -> tuple:
@@ -431,11 +466,29 @@ def drop_duplicate_blocks(text: str, segments) -> tuple:
         return text, []
 
 
-def count_segments_removed(text: str, segments: list) -> int:
-    """返回 segments 里**已经不在 text 中**的条数（供调用方打真实日志/告警）。"""
+def count_segments_removed(text: str, segments: list, original: str = None) -> int:
+    """统计**真正被剥掉**的段数（供调用方打真实日志/告警）。
+
+    v1.0.92 修正：只检查「text 里还有没有」会把两种相反的情况都算错 ——
+      · 文本被下游改写、段本就不在 ⇒ 误判为"已剥掉"（该报警时不报）；
+      · 两块同文、只剥掉一块 ⇒ 仍能匹配到另一块 ⇒ 误判为"没剥掉"。
+    正确口径按**出现次数差**：
+        剥掉数 = Σ max(0, 原文出现次数 − 剥离后出现次数)，上限 = 段数。
+
+    ``original`` 省略时退回旧行为（兼容既有测试/外部调用）。
+    """
     try:
         n_out = _norm_seg(text)
-        return sum(1 for s in segments if not (_norm_seg(s) and _norm_seg(s) in n_out))
+        if original is None:
+            return sum(1 for s in segments if not (_norm_seg(s) and _norm_seg(s) in n_out))
+        n_before = _norm_seg(original)
+        removed = 0
+        for s in segments:
+            n = _norm_seg(s)
+            if not n:
+                continue
+            removed += max(0, n_before.count(n) - n_out.count(n))
+        return min(len(segments), removed)
     except Exception:
         return 0
 

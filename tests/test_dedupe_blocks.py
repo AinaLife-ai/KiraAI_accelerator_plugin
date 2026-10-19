@@ -73,5 +73,19 @@ try:
 except Exception as exc:  # noqa: BLE001
     check("None 输入安全", False, repr(exc))
 
+print("\n## 6) count_segments_removed 的真实口径（v1.0.92）")
+B1 = ('<msg><text>脏一点都不放过ww</text><text>哥真严  香香乖</text>'
+      '<sticker>7</sticker></msg>')
+B2 = ('<msg><reply>r</reply><at>a</at><text>脏一点都不放过ww</text>'
+      '<text>哥真严  香香乖</text><sticker>7</sticker></msg>')
+stripped = es.strip_early_sent_smart(B1 + "\n" + B2, 1, [B1])
+check("两块同文：真实剥掉 1 段",
+      es.count_segments_removed(stripped, [B1], B1 + "\n" + B2) == 1,
+      es.count_segments_removed(stripped, [B1], B1 + "\n" + B2))
+check("单块剥净：真实剥掉 1 段",
+      es.count_segments_removed("<msg/>", [B2], B2) == 1)
+check("文本被改写、段本不在 ⇒ 0（应触发 warning）",
+      es.count_segments_removed(B2, ['<msg><text>完全不同</text></msg>'], B2) == 0)
+
 print("\n" + ("ALL PASSED" if not FAIL else f"FAILED: {FAIL}"))
 raise SystemExit(0 if not FAIL else 1)
