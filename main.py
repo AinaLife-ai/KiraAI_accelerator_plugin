@@ -1070,13 +1070,20 @@ class AcceleratorPlugin(BasePlugin):
                             drop_duplicate_blocks(stripped, segs)
                             if getattr(self, "dedupe_blocks", True) else (stripped, []))
                         if _dropped:
-                            _dropped_n = len(_dropped)
                             try:
                                 from .early_sent import dropped_positions
-                                _drop_pos = dropped_positions(xml_data, _dropped)
+                                _positions = dropped_positions(xml_data, _dropped)
                             except Exception:  # noqa: BLE001
-                                _drop_pos = []
-                            stripped = _deduped
+                                _positions = []
+                            # 与 2.x 同一安全约定：映射不全就不去重，避免后续消息 ID 错位。
+                            if len(_positions) == len(_dropped):
+                                stripped = _deduped
+                                _drop_pos = _positions
+                                _dropped_n = len(_dropped)
+                            else:
+                                logger.warning(
+                                    "[accel] 解析前内容去重位置映射不完整（%d/%d），为保消息 ID 对位本次不去重",
+                                    len(_positions), len(_dropped))
                     except Exception:  # noqa: BLE001
                         pass
                     if stripped != xml_data:
