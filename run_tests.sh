@@ -76,6 +76,8 @@ run "★文本被改写后的剥离"     tests/test_strip_when_text_rewritten.py
 run "★★解析前剥离兜底（重排/拆分）" tests/test_strip_leftover.py
 run "★★QQ增强兼容（md/键盘/at/reply）" tests/test_strip_compat_qqenhance.py
 run "★★内容级去重（同文块不重发）" tests/test_dedupe_blocks.py
+run "★★2.x内容去重与ID对位" tests/test_dedupe_blocks_2x.py
+run "★★3.x内容去重与ID对位" tests/test_dedupe_blocks_3x.py
 run "★前端审计（层级/开屏/墨渗）" tests/test_frontend_audit.py
 run "★计数保留期（30天/永久）" tests/test_stats_retention.py
 run "★计数清理安全性（不误伤）" tests/test_stats_safety.py

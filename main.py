@@ -1070,13 +1070,20 @@ class AcceleratorPlugin(BasePlugin):
                             drop_duplicate_blocks(stripped, segs)
                             if getattr(self, "dedupe_blocks", True) else (stripped, []))
                         if _dropped:
-                            _dropped_n = len(_dropped)
                             try:
                                 from .early_sent import dropped_positions
-                                _drop_pos = dropped_positions(xml_data, _dropped)
+                                _positions = dropped_positions(xml_data, _dropped)
                             except Exception:  # noqa: BLE001
-                                _drop_pos = []
-                            stripped = _deduped
+                                _positions = []
+                            # 与 2.x 同一安全约定：映射不全就不去重，避免后续消息 ID 错位。
+                            if len(_positions) == len(_dropped):
+                                stripped = _deduped
+                                _drop_pos = _positions
+                                _dropped_n = len(_dropped)
+                            else:
+                                logger.warning(
+                                    "[accel] 解析前内容去重位置映射不完整（%d/%d），为保消息 ID 对位本次不去重",
+                                    len(_positions), len(_dropped))
                     except Exception:  # noqa: BLE001
                         pass
                     if stripped != xml_data:
@@ -2113,7 +2120,32 @@ class AcceleratorPlugin(BasePlugin):
                     #   而 xml_tag_fixer 这类插件可能已改写 text_response
                     #   （补 <msg> / 拆分消息块 / 合并块 / 转义实体），
                     #   按序号切会少切（重复）或多切（丢内容）。
+                    original_xml_data = xml_data
                     xml_data = strip_early_sent_smart(xml_data, n, segs)
+
+                    # ★★ v1.0.93：2.x 也必须做「同正文、仅差 reply/@」内容去重。
+                    # 1.0.92 只在 3.0 的 parse_xml 路径接入，2.x 的 send_xml_messages
+                    # 仍会把残留块再发一次（群里就是「正文 @昵称 正文」）。
+                    # 同时记录原块位置，返回结果时插入空占位，保证后续消息 ID 不错位。
+                    _drop_pos = []
+                    if getattr(plugin, "dedupe_blocks", True):
+                        try:
+                            from .early_sent import drop_duplicate_blocks, dropped_positions
+                            _deduped, _dropped = drop_duplicate_blocks(xml_data, segs)
+                            if _dropped:
+                                _positions = dropped_positions(original_xml_data, _dropped)
+                                # 映射不全时保守保留：宁可重复，也不让后续 ID 错位的去重。
+                                if len(_positions) == len(_dropped):
+                                    xml_data = _deduped
+                                    _drop_pos = _positions
+                                    logger.info("[accel] 发送前内容去重 %d 块（仅差 reply/@，不会重复发送）",
+                                                len(_dropped))
+                                else:
+                                    logger.warning(
+                                        "[accel] 内容去重位置映射不完整（%d/%d），为保消息 ID 对位本次不去重",
+                                        len(_positions), len(_dropped))
+                        except Exception:  # noqa: BLE001
+                            logger.exception("[accel] 发送前内容去重失败（按剥离后原文发送）")
 
                     # ★★ 事后核对（**唯一有意义的重复判据**）：
                     #   剥离之后，剩余文本里若**仍然整段包含**某个已抢发段的内容，
@@ -2164,7 +2196,11 @@ class AcceleratorPlugin(BasePlugin):
                     #   注意：这里只是"还账"，框架**并没有重发**那些段，
                     #   所以锁里也不会为它们多睡一次（提速收益不受影响）。
                     if early:
-                        return (early + list(rest or []))
+                        combined = early + list(rest or [])
+                        for pos in _drop_pos:
+                            if 0 <= pos <= len(combined):
+                                combined.insert(pos, _make_id_placeholder(rest or early))
+                        return combined
                     return rest
                 finally:
                     # ★ 只清"跟这一次调用绑定"的东西（响应标记 / 响应缓存）。
