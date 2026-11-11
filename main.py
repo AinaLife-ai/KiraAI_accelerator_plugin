@@ -1896,6 +1896,18 @@ class AcceleratorPlugin(BasePlugin):
                 except (TypeError, ValueError):
                     max_calls = 5
 
+                # ★ v1.0.95：与框架 3.1.x 的 execute_tool 对齐 —— 工具输出上限。
+                #   3.1.0（#383）起，框架会把工具输出截断到 max_tool_output_tokens。
+                #   并行路径以前没读这个配置 ⇒ 用户把它调小也无效，大输出会整段
+                #   进下一轮请求。这里按框架同样的校验规则读取（含 bool/负数兜底）。
+                default_output_tokens = 10000
+                max_tool_output_tokens = self.kira_config.get_config(
+                    "bot_config.agent.max_tool_output_tokens", default_output_tokens)
+                if (not isinstance(max_tool_output_tokens, int)
+                        or isinstance(max_tool_output_tokens, bool)
+                        or max_tool_output_tokens < 0):
+                    max_tool_output_tokens = default_output_tokens
+
                 to_run = calls[:max_calls] if max_calls >= 0 else []
                 ok, reason = gate.can_parallelize(to_run)
                 if not ok:
@@ -1921,6 +1933,7 @@ class AcceleratorPlugin(BasePlugin):
                         return {}
 
                 async def run_one(tc):
+                    import asyncio as _a          # 先绑定：except 子句要用 _a.TimeoutError
                     fn = tc.get("function") or {}
                     name = fn.get("name")
                     args = parse_args(tc)
@@ -1929,8 +1942,10 @@ class AcceleratorPlugin(BasePlugin):
                     try:
                         inst = tool_set.get(name)
                         coro = inst.execute(event, **args)
-                        import asyncio as _a
                         return await (_a.wait_for(coro, timeout) if timeout else coro)
+                    except _a.TimeoutError:
+                        # 与框架 execute_tool 的超时文案保持一致（模型据此决定是否重试）
+                        return {"__error": f"Tool '{name}' timed out after {timeout}s"}
                     except Exception as e:  # noqa: BLE001 —— 与框架一致：任何异常都变成结果
                         return {"__error": f"Failed to call tool '{name}': {e}"}
 
@@ -1940,7 +1955,11 @@ class AcceleratorPlugin(BasePlugin):
 
                 # ── 阶段二：按序做"不能并行"的部分（与框架逐行等价）──
                 from asyncio import wait_for, TimeoutError as AsyncTimeoutError
-                from core.agent.tool import ToolResult
+                try:  # 3.1.x 才有 truncate_tool_output；2.x 退回不截断（行为与旧版一致）
+                    from core.agent.tool import ToolResult, truncate_tool_output
+                except ImportError:
+                    from core.agent.tool import ToolResult
+                    truncate_tool_output = None
                 event_handler_reg, EventType = event_system()
                 import core.agent.func_tool_manager as _ftm
 
@@ -1954,7 +1973,9 @@ class AcceleratorPlugin(BasePlugin):
                         _ftm.tool_logger.warning(warn_msg)
                         resp.tool_results.append({
                             "role": "tool", "tool_call_id": tool_call_id,
-                            "name": name, "content": warn_msg,
+                            "name": name,
+                            "content": (truncate_tool_output(warn_msg, max_tool_output_tokens)
+                                        if truncate_tool_output else warn_msg),
                         })
                         continue
 
@@ -1973,6 +1994,15 @@ class AcceleratorPlugin(BasePlugin):
                             return
 
                     content = await tool_result_obj.assemble_result()
+                    # ★ v1.0.95：与框架 3.1.x 逐行等价 —— 先截断，再交给
+                    #   build_content 把 media_refs（工具返回的图片引用）组装成
+                    #   content 列表。缺这两步时：① 用户配置的输出上限被无视；
+                    #   ② 工具返回的图片被静默丢弃，模型只能看到文字。
+                    if truncate_tool_output is not None:
+                        content = truncate_tool_output(content, max_tool_output_tokens)
+                    build_content = getattr(tool_result_obj, "build_content", None)
+                    if callable(build_content):
+                        content = build_content(content)
                     _ftm.tool_logger.info(f"tool_result: {content}")
                     resp.tool_results.append({
                         "role": "tool", "tool_call_id": tool_call_id,

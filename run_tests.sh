@@ -50,6 +50,7 @@ run "流式引擎 stream_engine"  tests/test_stream_engine.py
 run "自动思考 auto_thinking"  tests/test_auto_thinking.py
 run "工具并行 parallel"       tests/test_parallel.py
 run "并行等价性 parallel_eq"  tests/test_parallel_equiv.py
+run "★★真框架漂移守卫 parallel_parity" tests/test_parallel_framework_parity.py
 run "壁纸轮换 rotation"       tests/test_rotation.py
 run "插件兼容性 compat"       tests/test_compat.py
 run "装载与还原 load"         tests/test_load.py
