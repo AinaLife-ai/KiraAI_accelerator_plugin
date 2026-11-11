@@ -385,6 +385,26 @@ A：把你的图（webp/jpg/png）丢进 `wallpapers/` 目录，面板里就会�
 <details>
 <summary><b>📜 更新日志</b>（点击展开）</summary>
 
+### v1.0.95
+
+- **同轮工具并行与框架 3.1.x 对齐**：3.1.0（#383）给 `execute_tool` 加了
+  `max_tool_output_tokens` 截断，以及 `ToolResult.build_content`（把工具返回的
+  `media_refs` 组装成 content 列表）。并行路径是**复刻实现**、没有跟上 ⇒
+  ① 用户把输出上限调小时并行模式**完全不生效**，大输出整段进下一轮请求
+  （成本、延迟、上下文全涨）；② 工具返回的图片被**静默丢弃**，模型只能看到文字
+  （`read_media`、内置 `read_file` 的 native 图片模式都会中招，且后者正文还写着
+  「图片附在下面」——实际没有）。
+- 并行路径现在按框架**同样的规则**读配置并截断、组装媒体引用；超限告警同样截断；
+  超时文案从 `Failed to call tool 'x':` 改为框架的 `Tool 'x' timed out after {t}s`。
+- 2.x 兼容：`truncate_tool_output` 缺失时退回不截断，`build_content` 用
+  `getattr` 探测 ⇒ 旧框架上行为与改前完全一致。
+- 新增 `tests/test_parallel_framework_parity.py`：直接 import 框架的
+  `core.agent.func_tool_manager`，用**真实现**做基线逐字节比对（10 组用例，
+  外加「不改 `text_response` / 不产生 `_accel*` 抢发标记」不变量）。框架以后
+  再改 `execute_tool`，这条会立刻报红——旧的手抄基线做不到这点。
+  找不到框架源码时 `[SKIP]`，不伪装成通过。
+- 版本 v1.0.94 → v1.0.95
+
 ### v1.0.94
 
 - **修复非官方 QQ/OneBot 引用消息重复投递**：3.x 的 `_turn_for_text` 只按响应文本
