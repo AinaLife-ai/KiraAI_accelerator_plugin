@@ -38,6 +38,41 @@ from core.provider.llm_model import LLMRequest, LLMResponse, LLMStreamChunk
 # 非贪婪 + DOTALL ⇒ "流到哪发到哪"：只要有一个完整段出现就立刻可以发。
 _MSG_CLOSED = re.compile(r"<msg(?:\s[^>]*)?>.*?</msg>|<msg(?:\s[^>]*)?/>", re.DOTALL)
 
+# 一个完整的 <sticker> 段（自闭合或带内文）
+_STICKER_TAG = re.compile(
+    r"<sticker(?:\s[^>]*)?(?:/>|>.*?</sticker>)", re.DOTALL | re.IGNORECASE)
+# 段最外层的 <msg …> / </msg> 包裹
+_MSG_WRAP = re.compile(r"^\s*<msg(?:\s[^>]*)?/?>|</msg>\s*$", re.IGNORECASE)
+
+
+def sticker_restructure_needed(seg: str) -> bool:
+    """这一段是否会被「表情独立成行」类插件在 XML 层**改写结构**。
+
+    为什么抢发要看这个（线上事故，2026-11-14）：
+        qq-enhance 的表情控制挂在 ON_LLM_RESPONSE 上改写 XML —— 它只能改
+        **还没发出去**的文本。而抢发发生在流式过程中，比它更早：
+        模型把 `<text>` 和 `<sticker>` 写在同一个 `<msg>` 里时，抢发会把这个
+        **合并形态**直接发出去（QQ 客户端把它渲染成"文字套在表情气泡里"），
+        之后插件再拆也晚了 ⇒ 「表情独立成行」静默失效。
+
+    判定（只拦**结构会变**的段，纯表情单条照常抢发，不牺牲速度）：
+        · 段内有 >=2 个 <sticker>            ⇒ 插件会拆成多条；
+        · 段内有 <sticker> 且还有别的内容     ⇒ 插件会拆成「表情 + 正文」。
+    其余情况（单个 <sticker> 独占一段）结构不变，抢发安全。
+    """
+    if "<sticker" not in (seg or "").lower():
+        return False
+    body = _MSG_WRAP.sub("", seg or "")
+    stickers = _STICKER_TAG.findall(body)
+    if not stickers:
+        return False
+    if len(stickers) > 1:
+        return True
+    rest = _STICKER_TAG.sub("", body)
+    # 空白 <text> 解析后不产生任何元素（和内置标签一致）⇒ 不算"别的内容"
+    rest = re.sub(r"<text(?:\s[^>]*)?>\s*</text>", "", rest, flags=re.IGNORECASE)
+    return bool(rest.strip())
+
 
 class SegmentEmitter:
     """把流式增量切成"已成型的 <msg> 段"。
@@ -51,19 +86,29 @@ class SegmentEmitter:
         self.pending: list[str] = []   # 待发送（已闭合、非空）
         self.emitted: list[str] = []   # 已交给发送方的段
         self.send_failed = False
+        # 遇到「结构会被下游插件改写」的段后置位：该段及之后**全部交回框架**。
+        # 不能只跳过这一段继续抢发后面的 —— 已发段会排到没发段之前，顺序就错了。
+        self.hold = False
 
     def feed(self, delta: str) -> None:
         # ⚠️ 必须**先缓冲**再判断：发送失败后如果直接 return，
         #    这段增量就永远丢失了（既没发出去，也不在 remaining 里 → 用户看不到）。
         #    失败只是"不再抢先发"，内容仍要完整交回框架。
         self.buf += delta
-        if self.send_failed:
+        if self.send_failed or self.hold:
             return
         while True:
             m = _MSG_CLOSED.search(self.buf)
             if not m:
                 break
             seg = m.group(0)
+            if sticker_restructure_needed(seg):
+                # ★ 结构会被 XML 层改写（表情独立成行/随机位置）⇒ 现在发出去就是
+                #   **改写前**的形态，已经发出的消息收不回来。整段留给框架：
+                #   它在 ON_LLM_RESPONSE 之后再解析，拿到的就是改写后的消息块。
+                #   段留在 buf 里不动（remaining() 仍会把它交回框架），顺序不变。
+                self.hold = True
+                break
             # 从"未发送缓冲"里摘掉（无论后面发不发，都不该再重复出现在 remaining）
             self.buf = self.buf[:m.start()] + self.buf[m.end():]
             if len(seg) < self.min_len or seg.rstrip() in ("<msg/>", "<msg />"):
