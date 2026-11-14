@@ -409,6 +409,18 @@ A：把你的图（webp/jpg/png）丢进 `wallpapers/` 目录，面板里就会�
   （合并段不抢发、纯表情照发、同一 chunk、标记只含已发段）；`run_tests.sh` 已登记。
 - 面板无需改动：配置项走 schema 驱动，`/config` 的 GET/PUT 自动带上该字段
   （已用框架真实的 `build_fields` + `schema_to_dict` 验证）。
+- **3.2 兼容：同轮工具并行恢复可用**。3.2.0 把工具执行从
+  `FuncToolManager.execute_tool` 迁到 `ToolExecutor.execute_tools`
+  （`IMToolExecutor` 继承之），旧接管点在新版上**永远不会被调用**（静默失效）。
+  现在按世代自动选择：3.2+ 接管 `execute_tools`，≤3.1 仍用旧入口。
+  新路径与框架串行实现**逐字节等价**（结果/顺序/截断/media_refs/异常/超时/上限），
+  只把"调用工具"这一层并发；`on_tool_call` 拒绝、`on_tool_result` 停止、
+  非 IM 执行器原样交回等语义全部保留。框架未来给 `execute_tools` 加新参数时，
+  检测到 `**kwargs` 非空即**不并行、原样交回**（签名漂移防线）。
+- 测试补齐 3.2：新增 `tests/test_parallel_32.py`（10 组等价用例 + 并发计时 +
+  钩子语义 + 非 IM 直通，共 20 断言）；`test_patch_restore` 适配 3.2 的
+  descriptor 身份比较（`@deprecated` 每次 `getattr` 返回新对象）；旧的
+  `parallel_parity` 在 3.2 上改为跳过（基线已迁移，覆盖在 `test_parallel_32.py`）。
 - 版本 v1.0.95 → v1.0.96
 
 ### v1.0.95

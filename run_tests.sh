@@ -53,6 +53,7 @@ run "自动思考 auto_thinking"  tests/test_auto_thinking.py
 run "工具并行 parallel"       tests/test_parallel.py
 run "并行等价性 parallel_eq"  tests/test_parallel_equiv.py
 run "★★真框架漂移守卫 parallel_parity" tests/test_parallel_framework_parity.py
+run "★★3.2 执行器并行（等价+并发）" tests/test_parallel_32.py
 run "壁纸轮换 rotation"       tests/test_rotation.py
 run "插件兼容性 compat"       tests/test_compat.py
 run "装载与还原 load"         tests/test_load.py
