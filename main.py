@@ -898,8 +898,10 @@ class AcceleratorPlugin(BasePlugin):
                     self._resp_by_sid[_k] = resp
             self._current_resp = resp                    # 仅供观测
 
+        # 没开抢先发送时 hold 没有意义 —— 不检测、也不打那行日志
+        hold = self._hold_sticker_now() if emit is not None else False
         return StreamEngine(force_stream=self.force_stream, emit=emit,
-                            on_complete=_remember, hold_sticker=self._hold_sticker_now())
+                            on_complete=_remember, hold_sticker=hold)
 
     @staticmethod
     def _has_sendable(xml_data: str) -> bool:
