@@ -403,8 +403,12 @@ A：把你的图（webp/jpg/png）丢进 `wallpapers/` 目录，面板里就会�
   **只有检测到表情控制真的开着时才生效**：qq-enhance 的「启用表情控制」打开，
   或独立版 `sticker_control` 插件已启用；没开就不拦，不会白等。
   检测不到（老框架没有 `plugin_mgr`）时按「开启」处理，正确性优先。
-- 新增 `tests/test_sticker_hold.py`：判定函数 8 例 + 抢发行为 10 例（含分片喂入、
-  前缀段仍抢发、后续段顺序不颠倒、开关关闭）；`run_tests.sh` 已登记。
+- 新增 `tests/test_sticker_hold.py`（28 断言）：判定函数、抢发行为、分片喂入、
+  前缀段仍抢发、开关关闭、插件检测（含「插件被禁用但开关还留着 true」）；
+  `tests/test_sticker_hold_engine.py`（16 断言）：**真实 StreamEngine** 端到端
+  （合并段不抢发、纯表情照发、同一 chunk、标记只含已发段）；`run_tests.sh` 已登记。
+- 面板无需改动：配置项走 schema 驱动，`/config` 的 GET/PUT 自动带上该字段
+  （已用框架真实的 `build_fields` + `schema_to_dict` 验证）。
 - 版本 v1.0.95 → v1.0.96
 
 ### v1.0.95
