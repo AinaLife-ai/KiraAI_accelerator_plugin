@@ -34,6 +34,7 @@ from .early_sent import chain_signature as _chain_signature
 from .patches import (PatchHandle, PatchRegistry, install, breaker_for,
                       mark_side_effects)
 from .stream_engine import StreamEngine, LLMClientProxy
+from .stream_first import sticker_control_active
 from .auto_thinking import (
     AutoThinkingController,
     apply_thinking_params,
@@ -159,7 +160,9 @@ class AcceleratorPlugin(BasePlugin):
         self.dedupe_blocks = bool(c_str.get("dedupe_blocks", True))
         #: 「结构会被下游插件改写的段（表情合并段）不抢发」—— 关掉就回到旧行为：
         #: 合并段立刻发（快），但 qq-enhance/sticker-control 的「表情独立成行」失效。
+        #: 注意：**只有检测到表情控制真的开着**才会生效（见 `_hold_sticker_now`）。
         self.hold_sticker = bool(c_str.get("hold_sticker", True))
+        self._hold_logged: bool | None = None
         self.stream_providers = list(c_str.get("providers", []) or [])
 
         # 请求体兼容加固（默认开，零风险）
@@ -829,6 +832,27 @@ class AcceleratorPlugin(BasePlugin):
             logger.info("[accel] 流式引擎已安装（强制流式=%s 抢先发送=%s providers=%s）",
                         self.force_stream, self.early_send, sorted(allowed) or "ALL")
 
+    def _hold_sticker_now(self) -> bool:
+        """本次请求要不要「表情合并段不抢发」。
+
+        每次请求都重新检测（配置是热更新的 —— 用户可能在面板里刚开关表情控制）：
+          · 配置项 `hold_sticker` 关 ⇒ 永远不拦；
+          · 明确检测到表情控制**开着** ⇒ 拦（只有这时才有插件会改写 XML）；
+          · 明确没开（没装 / 开关是关的）⇒ 不拦 —— 不为不会发生的改写白等；
+          · 检测不了（老框架没有 plugin_mgr）⇒ 按配置拦（正确性优先）。
+        """
+        if not self.hold_sticker:
+            return False
+        state = sticker_control_active(getattr(self.ctx, "plugin_mgr", None))
+        hold = True if state is None else bool(state)
+        if hold != self._hold_logged:
+            self._hold_logged = hold
+            reason = ("表情控制已开启" if state
+                      else "检测不到表情控制状态，按开启处理" if state is None
+                      else "表情控制未开启")
+            logger.info("[accel] 表情合并段不抢发：%s（%s）", "开" if hold else "关", reason)
+        return hold
+
     def _make_engine(self, request=None) -> StreamEngine:
         """建一个引擎实例。request 必须传进来 —— 发送上下文挂在它身上。"""
         ctx = ctx_of(request) if request is not None else None
@@ -875,7 +899,7 @@ class AcceleratorPlugin(BasePlugin):
             self._current_resp = resp                    # 仅供观测
 
         return StreamEngine(force_stream=self.force_stream, emit=emit,
-                            on_complete=_remember, hold_sticker=self.hold_sticker)
+                            on_complete=_remember, hold_sticker=self._hold_sticker_now())
 
     @staticmethod
     def _has_sendable(xml_data: str) -> bool:

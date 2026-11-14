@@ -74,6 +74,57 @@ def sticker_restructure_needed(seg: str) -> bool:
     return bool(rest.strip())
 
 
+#: 已知的表情控制插件：plugin_id → 配置开关名（None = 插件启用即生效）
+_STICKER_CONTROL_PLUGINS = (
+    ("kira-ai-plugin-qq-enhance", "sticker_control_enabled"),
+    ("sticker_control", None),
+)
+
+
+def sticker_control_active(plugin_mgr) -> bool | None:
+    """表情控制是否真的开着（决定 `hold_sticker` 要不要生效）。
+
+    返回：
+        True  —— 有插件会改写表情 XML（qq-enhance 的「启用表情控制」打开，
+                 或独立版 sticker_control 插件已启用）
+        False —— 明确没开（没装 / 装了但开关是关的）
+        None  —— 无法判断（框架没有 plugin_mgr 这类接口）
+
+    为什么要判：`hold_sticker` 的代价是牺牲抢发速度。
+    没开表情控制还 hold，就是白等 —— 用户明确要求「只在真的开了表情控制时才拦」。
+    """
+    if plugin_mgr is None:
+        return None
+    get_cfg = getattr(plugin_mgr, "get_plugin_config", None)
+    if not callable(get_cfg):
+        return None
+    unknown = False
+    try:
+        for pid, key in _STICKER_CONTROL_PLUGINS:
+            try:
+                if key is None:
+                    has = getattr(plugin_mgr, "has_plugin", None)
+                    enabled = getattr(plugin_mgr, "is_plugin_enabled", None)
+                    if callable(has) and callable(enabled) and has(pid) and enabled(pid):
+                        return True
+                    continue
+                cfg = get_cfg(pid) or {}
+                # 插件被禁用时，配置里的开关即使还留着 true 也不会生效
+                has = getattr(plugin_mgr, "has_plugin", None)
+                enabled = getattr(plugin_mgr, "is_plugin_enabled", None)
+                if callable(has) and callable(enabled) and has(pid) and not enabled(pid):
+                    continue
+                if bool(cfg.get(key, False)):
+                    return True
+            except Exception:  # noqa: BLE001
+                # 检测失败 ≠ 没开：交给调用方按"开启"处理（宁可多等，不要功能失灵）
+                unknown = True
+                continue
+    except Exception:  # noqa: BLE001
+        return None
+    return None if unknown else False
+
+
 class SegmentEmitter:
     """把流式增量切成"已成型的 <msg> 段"。
 

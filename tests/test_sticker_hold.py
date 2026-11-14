@@ -58,9 +58,11 @@ sys.modules["core.provider.llm_model"] = _stub
 HERE = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(HERE.parent))
 _pkg = HERE.name
-_sf = __import__(f"{_pkg}.stream_first", fromlist=["SegmentEmitter", "sticker_restructure_needed"])
+_sf = __import__(f"{_pkg}.stream_first",
+                 fromlist=["SegmentEmitter", "sticker_restructure_needed", "sticker_control_active"])
 SegmentEmitter = _sf.SegmentEmitter
 needs = _sf.sticker_restructure_needed
+sticker_control_active = _sf.sticker_control_active
 
 FAILS = []
 
@@ -122,6 +124,47 @@ def main():
     for part in ["<msg><text>这表情", "，欠爱了</text>", "<sticker>1</sticker></msg>"]:
         e.feed(part)
     check("分片喂入也能识别", e.hold is True and e.pending == [], f"hold={e.hold} pending={e.pending}")
+
+    print()
+    print("== 表情控制检测")
+    check("无 plugin_mgr ⇒ 未知(None)", sticker_control_active(None) is None)
+    check("老框架没有 get_plugin_config ⇒ 未知", sticker_control_active(object()) is None)
+
+    class PM:
+        def __init__(self, cfg=None, installed=(), enabled=None):
+            self.cfg = cfg or {}
+            self.installed = set(installed)
+            self.enabled = enabled or {}
+
+        def get_plugin_config(self, pid):
+            return dict(self.cfg.get(pid, {}))
+
+        def has_plugin(self, pid):
+            return pid in self.installed
+
+        def is_plugin_enabled(self, pid):
+            return self.enabled.get(pid, True)
+
+    check("qq-enhance 开关=开 ⇒ True",
+          sticker_control_active(PM({"kira-ai-plugin-qq-enhance": {"sticker_control_enabled": True}})) is True)
+    check("qq-enhance 开关=关、没装独立版 ⇒ False",
+          sticker_control_active(PM({"kira-ai-plugin-qq-enhance": {"sticker_control_enabled": False}})) is False)
+    check("qq-enhance 没装 ⇒ False", sticker_control_active(PM()) is False)
+    check("qq-enhance 装了但被禁用（开关还留着 true）⇒ False",
+          sticker_control_active(PM({"kira-ai-plugin-qq-enhance": {"sticker_control_enabled": True}},
+                                    installed={"kira-ai-plugin-qq-enhance"},
+                                    enabled={"kira-ai-plugin-qq-enhance": False})) is False)
+    check("独立版已装且启用 ⇒ True",
+          sticker_control_active(PM(installed={"sticker_control"})) is True)
+    check("独立版已装但被禁用 ⇒ False",
+          sticker_control_active(PM(installed={"sticker_control"},
+                                    enabled={"sticker_control": False})) is False)
+
+    class Boom(PM):
+        def get_plugin_config(self, pid):
+            raise RuntimeError("config broken")
+
+    check("检测抛异常 ⇒ 未知(按开启处理)", sticker_control_active(Boom()) is None)
 
     print()
     if FAILS:
