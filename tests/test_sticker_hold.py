@@ -22,12 +22,9 @@
 只拦**结构会变**的段（>=2 个 sticker，或 sticker + 其它内容）；
 纯表情单条结构不变，继续抢发，不牺牲速度。
 """
-import os
 import pathlib
 import sys
 import types
-
-import _env  # noqa: E402
 
 # ---- 最小 stub：stream_first 只在模块级 import llm_model 的类型 ----
 _stub = types.ModuleType("core.provider.llm_model")

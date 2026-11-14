@@ -46,6 +46,7 @@ run() {
 run "接管护栏 patches"        tests/test_patches.py
 run "段切分 stream_first"     tests/test_stream_first.py
 run "★★表情段不抢发（防拆行失效）" tests/test_sticker_hold.py
+run "★★表情不抢发·引擎端到端" tests/test_sticker_hold_engine.py
 run "抢先发送 early_sent"     tests/test_early_sent.py
 run "流式引擎 stream_engine"  tests/test_stream_engine.py
 run "自动思考 auto_thinking"  tests/test_auto_thinking.py
