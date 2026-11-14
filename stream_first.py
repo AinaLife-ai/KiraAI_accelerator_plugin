@@ -80,8 +80,10 @@ class SegmentEmitter:
     职责分离：本类只负责**切分**，不做发送（发送是异步的，交给调用方 await）。
     """
 
-    def __init__(self, min_len: int = 1):
+    def __init__(self, min_len: int = 1, hold_sticker: bool = True):
         self.min_len = min_len
+        # 是否启用「结构会被改写 ⇒ 不抢发」（配置项 hold_sticker，默认开）
+        self.hold_sticker = hold_sticker
         self.buf = ""
         self.pending: list[str] = []   # 待发送（已闭合、非空）
         self.emitted: list[str] = []   # 已交给发送方的段
@@ -102,7 +104,7 @@ class SegmentEmitter:
             if not m:
                 break
             seg = m.group(0)
-            if sticker_restructure_needed(seg):
+            if self.hold_sticker and sticker_restructure_needed(seg):
                 # ★ 结构会被 XML 层改写（表情独立成行/随机位置）⇒ 现在发出去就是
                 #   **改写前**的形态，已经发出的消息收不回来。整段留给框架：
                 #   它在 ON_LLM_RESPONSE 之后再解析，拿到的就是改写后的消息块。

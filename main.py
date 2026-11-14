@@ -157,6 +157,9 @@ class AcceleratorPlugin(BasePlugin):
         self.early_send = bool(c_str.get("early_send", True))
         #: 内容级去重：与已发段同内容、仅多 reply/at 的残留块整块丢弃（可关）
         self.dedupe_blocks = bool(c_str.get("dedupe_blocks", True))
+        #: 「结构会被下游插件改写的段（表情合并段）不抢发」—— 关掉就回到旧行为：
+        #: 合并段立刻发（快），但 qq-enhance/sticker-control 的「表情独立成行」失效。
+        self.hold_sticker = bool(c_str.get("hold_sticker", True))
         self.stream_providers = list(c_str.get("providers", []) or [])
 
         # 请求体兼容加固（默认开，零风险）
@@ -871,7 +874,8 @@ class AcceleratorPlugin(BasePlugin):
                     self._resp_by_sid[_k] = resp
             self._current_resp = resp                    # 仅供观测
 
-        return StreamEngine(force_stream=self.force_stream, emit=emit, on_complete=_remember)
+        return StreamEngine(force_stream=self.force_stream, emit=emit,
+                            on_complete=_remember, hold_sticker=self.hold_sticker)
 
     @staticmethod
     def _has_sendable(xml_data: str) -> bool:

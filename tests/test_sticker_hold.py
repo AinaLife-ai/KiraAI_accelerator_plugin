@@ -111,6 +111,12 @@ def main():
     check("后续段也留在 buf（顺序不颠倒）",
           e.remaining().index("这表情") < e.remaining().index("第三句"), repr(e.remaining()))
 
+    # 开关关闭 ⇒ 回到旧行为（合并段照发，速度快，但「表情独立成行」失效）
+    e = SegmentEmitter(hold_sticker=False)
+    e.feed(merged)
+    check("hold_sticker=False 时照常抢发", e.pop_pending() == [merged], "未抢发")
+    check("hold_sticker=False 时 hold 不置位", e.hold is False)
+
     # 同一段拆成多次 delta 也要能识别
     e = SegmentEmitter()
     for part in ["<msg><text>这表情", "，欠爱了</text>", "<sticker>1</sticker></msg>"]:
