@@ -32,7 +32,7 @@ from core.chat.message_utils import KiraMessageBatchEvent
 from .core_compat import event_system, openai_compatible_client
 from .early_sent import chain_signature as _chain_signature
 from .patches import (PatchHandle, PatchRegistry, install, breaker_for,
-                      mark_side_effects)
+                      mark_side_effects, contains_mark)
 from .stream_engine import StreamEngine, LLMClientProxy
 from .stream_first import sticker_control_active
 from .auto_thinking import (
@@ -91,6 +91,11 @@ def _make_id_placeholder(message_results):
     except Exception:  # noqa: BLE001
         return _SentIdPlaceholder("")
 
+
+#: `_delivery_precheck` 的"未命中"哨兵。
+#   ⚠️ 不能用 None：`_consume_early_match` 命中时也可能返回 None，
+#   而"命中 None"意味着"这条链不用再发" —— 两者混淆会造成重复发送。
+_DELIVERY_MISS = object()
 
 class SendCtx:
     """一轮请求的发送上下文（会话 / 事件 / 标签集）。
@@ -465,6 +470,20 @@ class AcceleratorPlugin(BasePlugin):
         #   与 thinking_enabled 无关（这是"配置默认值"的迁移）；仅在需要且安全时
         #   才动（见 config_migrations.py），失败安静跳过、下次重试。
         self._schedule_nothink_migration()
+        # ★ 兼容：如果别的插件先于我们加载、并且把宿主方法换成了实例方法，
+        #   我们的类补丁会被遮住 ⇒ 在初始化末尾先补一次链（ON_LOADED 再兜一次）。
+        self._ensure_patch_chains()
+
+    @on.loaded(priority=Priority.LOW)
+    async def _heal_patch_chains_on_loaded(self):
+        """所有插件加载完成后自愈一次。
+
+        为什么要这个钩子：插件目录的加载顺序由 `os.listdir` 决定（不保证字典序），
+        我们可能在 multi-decision 之类的"实例级接管"插件**之前或之后**加载。
+        后加载的插件通常会链住当前方法；先加载的则可能被对方遮住 ——
+        在 ON_LOADED（所有 initialize 都已完成）补一次，第一轮对话就不受影响。
+        """
+        self._ensure_patch_chains()
 
     async def terminate(self) -> None:
         # ★ 取消尚未触发的一次性迁移定时器（已触发的任务由自身守卫兜底：
@@ -663,6 +682,9 @@ class AcceleratorPlugin(BasePlugin):
         # ★ 双保险：先清掉**明显陈旧**的本轮状态（若 final_result 因 processor
         #   被跳过而没执行，这里能兜住 ⇒ 不会残留到下一轮造成重复/误剥）。
         self._clear_stale_round_state()
+        # ★ 接管链自愈：别的插件可能在我们之后把宿主方法换成实例方法
+        #   （实例属性会遮住类补丁）。每轮请求前补一次，对**本轮**立即生效。
+        self._ensure_patch_chains()
         sid_now = getattr(event, "sid", None)
         # 仅供面板展示"最近一次判定属于哪个会话"，功能路径一律用 req 上的 SendCtx
         self._current_sid = sid_now
@@ -775,62 +797,121 @@ class AcceleratorPlugin(BasePlugin):
             return
 
         plugin = self
-        proxy_cache = self._proxy_cache
-        allowed = set(self.stream_providers)
-
-        # ★ 缓存上限：provider 反复重建时旧 proxy 会累积（且键是 id(client)，
-        #   id 复用会造成脏命中）。超过上限就整体清空重建 —— 代价只是下次多包一层。
-        MAX_PROXY_CACHE = 64
 
         def factory(original):
             def get_model_client(self, *args, **kwargs):
                 # ★ v1.0.90：签名原样透传（框架加参数/换顺序都不会把我们打死）
                 client = original(self, *args, **kwargs)
-                if client is None:
-                    return None
-                # 只包装 LLM 客户端（其它类型如 TTS/STT 无流式语义）
-                if type(client).__name__.endswith("EmbeddingClient") or \
-                   type(client).__name__.endswith("ImageClient"):
-                    return client
-                if not hasattr(client, "chat") or not hasattr(client, "chat_stream"):
-                    return client
-
-                # provider 白名单（空=全部）
-                # ★★ 多选下拉给的值是 `providerId:modelId`（框架 source:'model' 的格式），
-                #   所以三种写法都要认，否则用户从下拉里选了也匹配不上：
-                #     · "providerId:modelId"（模型级，下拉默认给这个）
-                #     · "providerId"（提供商级，兼容旧配置 / 手填）
-                #     · "providerName"（名称，最老的写法，继续兼容）
-                if allowed:
-                    m0 = getattr(client, "model", None)
-                    pname = getattr(m0, "provider_name", "") or ""
-                    pid = getattr(m0, "provider_id", "") or ""
-                    mid = getattr(m0, "model_id", "") or ""
-                    if not ({pname, pid, f"{pid}:{mid}"} & allowed):
-                        return client
-
-                # 用 (provider_id, model_id) 而非 id(client) 做键：
-                # id 会被解释器复用，拿它当键在对象被 GC 后可能命中"别人的"代理。
-                m = getattr(client, "model", None)
-                key = (getattr(m, "provider_id", ""), getattr(m, "model_id", ""))
-                if len(proxy_cache) > MAX_PROXY_CACHE:
-                    proxy_cache.clear()
-                    logger.info("[accel] 流式代理缓存超过 %d，已重置", MAX_PROXY_CACHE)
-                cached = proxy_cache.get(key)
-                if cached is not None:
-                    return cached
-                proxy = LLMClientProxy(client, plugin._make_engine)
-                proxy_cache[key] = proxy
-                logger.info("[accel] 已为 %s/%s 启用流式代理",
-                            getattr(m, "provider_name", "?"), getattr(m, "model_id", "?"))
-                return proxy
+                return plugin._stream_wrap_client(client)
             return get_model_client
 
         h = PatchHandle("stream_engine")
         if install(h, ProviderManager, "get_model_client", factory) is not None:
             self.patches.add(h)
+            self._stream_patch_installed = True
             logger.info("[accel] 流式引擎已安装（强制流式=%s 抢先发送=%s providers=%s）",
-                        self.force_stream, self.early_send, sorted(allowed) or "ALL")
+                        self.force_stream, self.early_send,
+                        sorted(set(self.stream_providers)) or "ALL")
+            # ★★ 兼容"实例级接管"的插件（multi-decision 等）：
+            #   Python 的实例属性会**遮住**类上的方法。如果它在本次安装之前
+            #   已经把 provider_mgr.get_model_client 换成自己的实例方法，
+            #   类补丁就永远不会被调用 ⇒ 流式/抢发整条静默失效。
+            #   这里在实例上再链一层（只包它已经装好的那一份，不覆盖）。
+            self._chain_provider_instance_patch()
+
+    def _stream_wrap_client(self, client):
+        """把 `get_model_client` 返回的客户端包成流式代理（幂等）。
+
+        抽成独立方法是为了让"类补丁"和"实例链补丁"共用同一份判断逻辑。
+        """
+        if client is None:
+            return None
+        # 只包装 LLM 客户端（其它类型如 TTS/STT 无流式语义）
+        if type(client).__name__.endswith("EmbeddingClient") or \
+           type(client).__name__.endswith("ImageClient"):
+            return client
+        # 已经是本插件的代理（实例链补丁会和类补丁重复进入）：原样返回。
+        if getattr(client, "_accel_proxy", False):
+            return client
+        if not hasattr(client, "chat") or not hasattr(client, "chat_stream"):
+            return client
+
+        # provider 白名单（空=全部）
+        # ★★ 多选下拉给的值是 `providerId:modelId`（框架 source:'model' 的格式），
+        #   所以三种写法都要认，否则用户从下拉里选了也匹配不上：
+        #     · "providerId:modelId"（模型级，下拉默认给这个）
+        #     · "providerId"（提供商级，兼容旧配置 / 手填）
+        #     · "providerName"（名称，最老的写法，继续兼容）
+        allowed = set(self.stream_providers)
+        m0 = getattr(client, "model", None)
+        if allowed:
+            pname = getattr(m0, "provider_name", "") or ""
+            pid = getattr(m0, "provider_id", "") or ""
+            mid = getattr(m0, "model_id", "") or ""
+            if not ({pname, pid, f"{pid}:{mid}"} & allowed):
+                return client
+
+        # 用 (provider_id, model_id) 而非 id(client) 做键：
+        # id 会被解释器复用，拿它当键在对象被 GC 后可能命中"别人的"代理。
+        key = (getattr(m0, "provider_id", ""), getattr(m0, "model_id", ""))
+        proxy_cache = self._proxy_cache
+        if len(proxy_cache) > 64:
+            proxy_cache.clear()
+            logger.info("[accel] 流式代理缓存超过 64，已重置")
+        cached = proxy_cache.get(key)
+        if cached is not None:
+            # ★ 只复用**配置也相同**的代理：provider 插件重载 / 用户改了
+            #   base_url、api_key、模型参数后，`get_model_client` 会造出新的
+            #   client 实例；旧代理还攥着旧实例，复用会把请求发回旧配置
+            #   （表现为"改了配置不生效，要重载插件"）。
+            #   ModelInfo 是 dataclass，按字段比较即可。
+            old = getattr(cached, "_wrapped", None)
+            old_model = getattr(old, "model", None)
+            try:
+                same = old_model is m0 or old_model == m0
+            except Exception:  # noqa: BLE001
+                same = old_model is m0
+            if same:
+                return cached
+            proxy_cache.pop(key, None)
+        proxy = LLMClientProxy(client, self._make_engine)
+        proxy_cache[key] = proxy
+        logger.info("[accel] 已为 %s/%s 启用流式代理",
+                    getattr(m0, "provider_name", "?"), getattr(m0, "model_id", "?"))
+        return proxy
+
+    def _chain_provider_instance_patch(self) -> None:
+        """如果 provider_mgr 上有实例级的 get_model_client，就在它外面再链一层。
+
+        只在**本次安装之前**就存在实例补丁时才需要（之后装的插件一般会
+        取当前方法做 previous，天然链住我们）。重复调用是幂等的：
+        自己的包装带 MARK，`contains_mark` 会认出来。
+        """
+        mgr = getattr(self.ctx, "provider_mgr", None)
+        if mgr is None:
+            return
+        try:
+            own = vars(mgr).get("get_model_client")
+        except Exception:  # noqa: BLE001
+            return
+        if own is None or not callable(own):
+            return
+        if contains_mark(own):
+            return
+        plugin = self
+
+        def factory(original):
+            def get_model_client(*args, **kwargs):
+                return plugin._stream_wrap_client(original(*args, **kwargs))
+            return get_model_client
+
+        handle = PatchHandle("stream_engine_instance")
+        try:
+            if install(handle, mgr, "get_model_client", factory) is not None:
+                self.patches.add(handle)
+                logger.info("[accel] 流式引擎已在实例级补丁外链一层（兼容先前接管 get_model_client 的插件）")
+        except Exception:  # noqa: BLE001
+            logger.exception("[accel] 实例级流式补链失败（不影响原有补丁）")
 
     def _hold_sticker_now(self) -> bool:
         """本次请求要不要「表情合并段不抢发」。
@@ -2332,6 +2413,110 @@ class AcceleratorPlugin(BasePlugin):
             self.patches.add(h)
             logger.info("[accel] 记忆落盘已优化（去掉缩进：序列化快约 6 倍）")
 
+    # ══════════════════════════════════════════════════════════
+    # 与"实例级接管"插件的链式共存
+    # ══════════════════════════════════════════════════════════
+    async def _delivery_precheck(self, session, chain):
+        """发送前的抢发对账 / 交接节奏。
+
+        命中（这条链已经在抢发时发过）⇒ 返回当时的结果对象，**不再调用原发送**；
+        未命中 ⇒ 返回 `_DELIVERY_MISS`，调用方继续走原实现。
+
+        ★ 抽成独立方法：类补丁与实例链补丁共用同一份逻辑。两份实现迟早会漂移，
+          而这段逻辑关系到"会不会重复发送"，不能有两份。
+        """
+        _session_key = session if isinstance(session, str) else getattr(session, "sid", None)
+        _inflight = getattr(self, "_early_inflight_sids", {}).get(
+            str(_session_key or "-"), 0)
+        if not _inflight:
+            try:
+                hit = self._consume_early_match(session, chain)
+                if hit is not None:
+                    self._stats["strip_calls"] = self._stats.get("strip_calls", 0) + 1
+                    return hit
+            except Exception:  # noqa: BLE001
+                logger.exception("[accel] 抢发对账异常（放行原发送）")
+            # ★★ 交接节奏（v1.0.83）：框架的 sleep 在**每段之后**，
+            #   它发的第一条不会等待 ⇒ 抢发段与框架首段之间会出现
+            #   **零间隔**（"两段挤成一条"）—— 2.x 侧当年修过同一个坑，
+            #   3.0 的链级路径没搬过来，这里补齐。
+            #
+            #   判据天然收敛、不会双重等待：只有"距上次发送 < 配置下限"
+            #   时才等；而框架自己每发一条就 sleep 一次（min..max），
+            #   所以同轮后续链到来时已经满足间隔，不会再等。
+            try:
+                _lo, _hi = self._frame_delay()
+                _last = self._last_seg_ts.get(session)
+                if _hi > 0 and _last is not None and (time.monotonic() - _last) < _lo:
+                    _ctx_now = SendCtx(session, None, None)
+                    await self._pace(_ctx_now)
+                    self._mark_sent(_ctx_now)
+            except Exception:  # noqa: BLE001
+                logger.exception("[accel] 交接节奏处理失败（不影响发送）")
+        return _DELIVERY_MISS
+
+    def _chain_delivery_instance_patch(self) -> None:
+        """`message_delivery.send_message_chain` 被别的插件换成**实例方法**时再链一层。
+
+        为什么必须有：
+          · Python 的属性查找里，**实例属性优先于类方法**；
+          · multi-decision（B3.1.8.x）在 `ctx.message_delivery` 上装了自己的
+            ReplyDeliveryGuard（实例方法）；
+          · 如果它先于本插件加载，我们的类补丁就永远收不到调用
+            ⇒ 抢发对账静默失效（实测：`_consume_early_match` 调用次数 0）。
+          · 之后加载的插件通常会拿"当前方法"当 previous，天然把我们链进去；
+            只有"先装"的才会造成遮蔽 —— 所以这里只处理"已经存在的实例补丁"。
+
+        幂等：自己的包装带 MARK，`contains_mark` 会认出来，不会反复套。
+        """
+        if not getattr(self, "early_send", False):
+            return
+        service = getattr(self.ctx, "message_delivery", None)
+        if service is None:
+            return
+        try:
+            own = vars(service).get("send_message_chain")
+        except Exception:  # noqa: BLE001
+            return
+        if own is None or not callable(own):
+            return
+        if contains_mark(own):
+            return
+
+        def factory(original):
+            async def send_message_chain(session=None, chain=None, *args, **kwargs):
+                hit = await self._delivery_precheck(session, chain)
+                if hit is not _DELIVERY_MISS:
+                    return hit
+                return await original(session, chain, *args, **kwargs)
+            return mark_side_effects(send_message_chain)
+
+        handle = PatchHandle("early_sent_dedupe_delivery_instance")
+        try:
+            if install(handle, service, "send_message_chain", factory) is not None:
+                self.patches.add(handle)
+                logger.info(
+                    "[accel] 发送层已在实例级补丁外链一层（兼容先前接管 send_message_chain 的插件）")
+        except Exception:  # noqa: BLE001
+            logger.exception("[accel] 实例级发送补链失败（不影响原有补丁）")
+
+    def _ensure_patch_chains(self) -> None:
+        """每轮请求前自愈一次：把"被实例补丁遮住"的接管点补链。
+
+        调用点在 ON_LLM_REQUEST：此刻还没有开始发送，补链能立刻对**本轮**生效。
+        代价只有两次 dict 查找；出错只记日志，绝不影响请求。
+        """
+        try:
+            if getattr(self, "_stream_patch_installed", False):
+                self._chain_provider_instance_patch()
+        except Exception:  # noqa: BLE001
+            logger.exception("[accel] 流式接管链自愈失败（忽略）")
+        try:
+            if getattr(self, "_delivery_patch_installed", False):
+                self._chain_delivery_instance_patch()
+        except Exception:  # noqa: BLE001
+            logger.exception("[accel] 发送接管链自愈失败（忽略）")
+
     def _install_early_sent_strip(self) -> None:
         """发送时剥离"已抢先发出的段"，避免重复发送。
 
@@ -2592,41 +2777,22 @@ class AcceleratorPlugin(BasePlugin):
                     #   ⇒ 现在只按位置取 session/chain，其余 `*args, **kwargs` 原样转发。
                     async def send_message_chain(d_self, session=None, chain=None,
                                                  *args, **kwargs):
-                        _session_key = session if isinstance(session, str) else getattr(session, "sid", None)
-                        _inflight = getattr(self, "_early_inflight_sids", {}).get(
-                            str(_session_key or "-"), 0)
-                        if not _inflight:
-                            try:
-                                hit = self._consume_early_match(session, chain)
-                                if hit is not None:
-                                    self._stats["strip_calls"] = self._stats.get("strip_calls", 0) + 1
-                                    return hit
-                            except Exception:  # noqa: BLE001
-                                logger.exception("[accel] 抢发对账异常（放行原发送）")
-                            # ★★ 交接节奏（v1.0.83）：框架的 sleep 在**每段之后**，
-                            #   它发的第一条不会等待 ⇒ 抢发段与框架首段之间会出现
-                            #   **零间隔**（"两段挤成一条"）—— 2.x 侧当年修过同一个坑，
-                            #   3.0 的链级路径没搬过来，这里补齐。
-                            #
-                            #   判据天然收敛、不会双重等待：只有"距上次发送 < 配置下限"
-                            #   时才等；而框架自己每发一条就 sleep 一次（min..max），
-                            #   所以同轮后续链到来时已经满足间隔，不会再等。
-                            try:
-                                _lo, _hi = self._frame_delay()
-                                _last = self._last_seg_ts.get(session)
-                                if _hi > 0 and _last is not None and (time.monotonic() - _last) < _lo:
-                                    _ctx_now = SendCtx(session, None, None)
-                                    await self._pace(_ctx_now)
-                                    self._mark_sent(_ctx_now)
-                            except Exception:  # noqa: BLE001
-                                logger.exception("[accel] 交接节奏处理失败（不影响发送）")
+                        hit = await self._delivery_precheck(session, chain)
+                        if hit is not _DELIVERY_MISS:
+                            return hit
                         return await original(d_self, session, chain, *args, **kwargs)
                     return mark_side_effects(send_message_chain)
 
                 h2 = PatchHandle("early_sent_dedupe_delivery")
                 if install(h2, dcls, "send_message_chain", delivery_factory) is not None:
                     self.patches.add(h2)
-                    logger.info("[accel] 发送层已接管（按链对账去重已抢发段）")
+                self._delivery_patch_installed = True
+                logger.info("[accel] 发送层已接管（按链对账去重已抢发段）")
+                # ★★ 实例级链式（见 `_chain_delivery_instance_patch`）：
+                #   有的插件（multi-decision 等）把 `message_delivery.send_message_chain`
+                #   换成了**实例方法**。实例属性会遮住类补丁 ⇒ 我们的对账永远不会被调用，
+                #   而它下面的 parse_xml 剥离未必总能兜住（文本被别的插件改写时）。
+                self._chain_delivery_instance_patch()
 
                 # ── ★★★ v1.0.86：把接缝补到**解析之前**（等价 2.x 的入口剥离）──
                 #   这是"生成类被生成两次"的根治：只要框架那遍**解析不到**已抢发段，

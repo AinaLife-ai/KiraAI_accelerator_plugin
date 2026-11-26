@@ -56,6 +56,7 @@ run "★★真框架漂移守卫 parallel_parity" tests/test_parallel_framework_
 run "★★3.2 执行器并行（等价+并发）" tests/test_parallel_32.py
 run "壁纸轮换 rotation"       tests/test_rotation.py
 run "插件兼容性 compat"       tests/test_compat.py
+run "★★插件链式共存（实例级接管/流式旁听）" tests/test_plugin_instance_chain.py
 run "装载与还原 load"         tests/test_load.py
 run "★会话路由不串"           tests/test_session_routing.py
 run "★消息间隔"               tests/test_message_pacing.py
