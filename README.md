@@ -324,10 +324,12 @@ KiraAI 默认是「等模型把整段话写完，再一次性给你」。
 
 ### 与其它插件的兼容
 
-我们用**真实源码**测过插件市场上 **9 个**较活跃的插件（版本逐一比对，均为最新）：
+我们用**真实源码**测过插件市场上 **12 个**较活跃的插件（版本逐一比对，均为最新）：
 
 | 插件 | 我们做的避让 |
 |---|---|
+| **多样决策 multi-decision**（2skr1996-cloud） | 它在**实例**上包装 `send_message_chain` / `get_model_client`（实例属性会遮住类补丁）⇒ 我们按"对方先装/后装"两种情况链式共存，并在 ON_LOADED / 每轮请求自愈 |
+| **qqbot-fullmsg-bridge** | 它会往客户端上包 `chat_stream` 做私聊流式预览 ⇒ 代理允许写属性、并把写入的那份读回去（幂等判断成立），不再静默失效 |
 | Sustained Chat 可持续聊天 | 它用 HIGH 优先级，我们用 **SYS_LOW**（最低）⇒ 永远最后执行，不抢 |
 | Default Chat（z） | 同上 |
 | Midflight 随时插话 | 它读 `tool_result.text`，我们**只读不改** |
@@ -384,6 +386,32 @@ A：把你的图（webp/jpg/png）丢进 `wallpapers/` 目录，面板里就会�
 
 <details>
 <summary><b>📜 更新日志</b>（点击展开）</summary>
+
+### v1.0.97
+
+- **与「实例级接管」插件共存**（实测 multi-decision B3.1.8.1）：
+  有些插件会把宿主方法换**实例属性**（`ctx.message_delivery.send_message_chain`、
+  `provider_mgr.get_model_client`）。Python 里实例属性优先于类方法 ⇒ 我们打在
+  **类**上的补丁会被完全遮住（实测 `_consume_early_match` 调用 0 次、
+  provider 代理不生效），而日志里一切正常。插件目录的加载顺序由 `os.listdir`
+  决定、并不保证，所以这是**随机复现**的。
+  修复：安装时若实例上已有别人的补丁，就在它外面再链一层；并在 `ON_LOADED`
+  与每轮 `ON_LLM_REQUEST` 自愈一次（覆盖"对方后装"的情况）。链上已有我们的
+  包装（顺着 `__wrapped__` 认 MARK）就不再套 —— 不会重复包、不会抢别人的实现。
+- **代理不再拒绝插件写属性 / 包 `chat_stream`**（实测 qqbot-fullmsg-bridge）：
+  `LLMClientProxy` 是 `__slots__` 对象，`client.chat_stream = wrapper` 会抛
+  `AttributeError`，对方只能 `return False` **静默放弃** ⇒ 开提速器时私聊流式
+  预览失效。现在：普通属性写到真实 client（写不进才留本地），
+  `chat` / `chat_stream` 双写并让 `getattr(proxy, name)` 能读回插件打的标记
+  （bridge 的 `MARK` 幂等判断成立，不会每轮套娃）。`copy` / `deepcopy` / `weakref` 也补齐
+  —— 之前会顺着 `__class__` 冒充递归到爆栈。
+- **代理缓存校验模型配置**：`get_model_client` 每次都会新建客户端；旧实现只按
+  `(provider_id, model_id)` 复用代理，provider 插件重载 / 改 base_url 后仍把请求
+  发给旧客户端（表现为"改了配置不生效"）。现在 `ModelInfo` 不同就重建。
+- 新增 `tests/test_plugin_instance_chain.py`（22 断言）：三种安装顺序、自愈、
+  代理可写/可包/可复制、实例级 provider 补丁、配置变化换代理，以及
+  **真实 `MessageDeliveryService` 发送链**（2 段 → 2 次投递，不重复）；
+  `run_tests.sh` 已登记（2.x 自动跳过链式发送段）。
 
 ### v1.0.96
 

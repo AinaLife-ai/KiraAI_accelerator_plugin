@@ -51,11 +51,15 @@ class LLMClientProxy:
     所以必须把 `.model` 原样透传。
     """
 
-    __slots__ = ("_wrapped", "_engine_factory")
+    __slots__ = ("_wrapped", "_engine_factory", "_extra", "__weakref__")
+
+    #: 给外部插件认「这是一层代理」用（不依赖类名/模块路径）。
+    _accel_proxy = True
 
     def __init__(self, wrapped: Any, engine_factory: Callable[[Any], "StreamEngine"]):
-        self._wrapped = wrapped
-        self._engine_factory = engine_factory
+        object.__setattr__(self, "_wrapped", wrapped)
+        object.__setattr__(self, "_engine_factory", engine_factory)
+        object.__setattr__(self, "_extra", {})
 
     # ★ 冒充被包裹对象的类型，让 isinstance 认账。
     #   为什么必须有：框架（以及插件）到处用 isinstance 判断客户端种类，实测 20+ 处，例如
@@ -74,26 +78,107 @@ class LLMClientProxy:
         return self._wrapped.__class__
 
     # 插件/框架读属性 → 透传原 client
+    #
+    # ★ 顺序：先看本代理自己的"插件写入区"（_extra），再透传被包裹对象。
+    #   为什么需要 _extra：有些插件会把状态挂在客户端上（缓存、标记、
+    #   甚至替换 chat_stream 做旁听）。代理是 __slots__ 对象，默认写不进去，
+    #   一律抛 AttributeError ⇒ 对方只能**静默放弃**（实测 qqbot-fullmsg-bridge
+    #   的私聊流式预览就是这样被关掉的）。
     def __getattr__(self, name):
-        return getattr(self._wrapped, name)
+        extra = object.__getattribute__(self, "_extra")
+        if name in extra:
+            return extra[name]
+        return getattr(object.__getattribute__(self, "_wrapped"), name)
+
+    # 写属性：优先落到真实 client（别人解包代理后也能看到同一份状态），
+    # 写不进去才留在本地 _extra。chat / chat_stream 两个方法名必须**双写**：
+    #   · 真实 client 上那一份给"解包后直接调用"的代码（以及我们的引擎）用；
+    #   · 本地 _extra 那一份让 `getattr(proxy, name)` 能看到插件打的标记
+    #     （例如 bridge 用 MARK 判断"已经装过"，看不到就会每轮重复套娃）。
+    def __setattr__(self, name, value):
+        if name in LLMClientProxy.__slots__:
+            object.__setattr__(self, name, value)
+            return
+        extra = object.__getattribute__(self, "_extra")
+        wrapped = object.__getattribute__(self, "_wrapped")
+        if name in ("chat", "chat_stream"):
+            try:
+                setattr(wrapped, name, value)
+            except Exception:  # noqa: BLE001
+                pass
+            extra[name] = value
+            return
+        try:
+            setattr(wrapped, name, value)
+        except Exception:  # noqa: BLE001
+            extra[name] = value
+
+    def __delattr__(self, name):
+        extra = object.__getattribute__(self, "_extra")
+        extra.pop(name, None)
+        try:
+            delattr(object.__getattribute__(self, "_wrapped"), name)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def __dir__(self):
+        try:
+            names = set(dir(object.__getattribute__(self, "_wrapped")))
+        except Exception:  # noqa: BLE001
+            names = set()
+        names.update(object.__getattribute__(self, "_extra"))
+        names.update(object.__dir__(self))
+        return sorted(names)
 
     @property
     def model(self):
-        return self._wrapped.model
+        return object.__getattribute__(self, "_wrapped").model
 
     def __repr__(self):
-        return f"<LLMClientProxy {self._wrapped!r}>"
+        return f"<LLMClientProxy {object.__getattribute__(self, '_wrapped')!r}>"
 
-    # 真正被替换的方法
-    async def chat(self, request: LLMRequest, **kwargs) -> LLMResponse:
+    # 真正被替换的方法（保持"强制流式"这一核心能力）
+    #
+    # ★ chat 也用 property：插件如果真的要替换 chat（而不是 chat_stream），
+    #   写进来的那一份必须被尊重 —— 否则就是"写入成功、读取却是我们的"，
+    #   这种表里不一会让排查极其困难。没人替换时返回本类的实现，零行为变化。
+    @property
+    def chat(self):
+        extra = object.__getattribute__(self, "_extra")
+        if "chat" in extra:
+            return extra["chat"]
+        return self._accel_chat
+
+    async def _accel_chat(self, request: LLMRequest, **kwargs) -> LLMResponse:
         # 每次调用一个新引擎 ⇒ 统计不串（并发安全）。
         # ★ 必须把 request 传进工厂：发送上下文（会话 sid 等）挂在它身上，
         #   工厂拿不到就会退回实例变量 ⇒ 并发会话下消息会发串（线上事故）。
-        return await self._engine_factory(request).run(self._wrapped, request, **kwargs)
+        return await object.__getattribute__(self, "_engine_factory")(request).run(
+            object.__getattribute__(self, "_wrapped"), request, **kwargs)
 
-    # chat_stream 原样透传（不要再包一层，避免互相干扰）
-    def chat_stream(self, request: LLMRequest, **kwargs):
-        return self._wrapped.chat_stream(request, **kwargs)
+    # chat_stream 原样透传（不要再包一层，避免互相干扰）。
+    # ★ property：插件（如 qqbot-fullmsg-bridge）会在客户端上包一层 chat_stream
+    #   做旁听；写进来的那一份必须能被读回去，否则对方判断"没装上"会反复套娃。
+    @property
+    def chat_stream(self):
+        extra = object.__getattribute__(self, "_extra")
+        if "chat_stream" in extra:
+            return extra["chat_stream"]
+        return object.__getattribute__(self, "_wrapped").chat_stream
+
+    # 复制/深拷贝：客户端是网络句柄，不能真复制；返回同源的新代理即可。
+    # 不加这两个方法时，copy 会顺着 __getattr__ 找到被包裹对象的 __reduce_ex__，
+    # 在 __class__ 冒充下递归到爆栈（实测 RecursionError）。
+    def __copy__(self):
+        new = LLMClientProxy(object.__getattribute__(self, "_wrapped"),
+                             object.__getattribute__(self, "_engine_factory"))
+        new._extra.update(object.__getattribute__(self, "_extra"))
+        return new
+
+    def __deepcopy__(self, memo):
+        new = self.__copy__()
+        memo[id(self)] = new
+        return new
 
 
 class StreamEngine:

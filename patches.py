@@ -80,6 +80,35 @@ def has_side_effects(fn) -> bool:
         cur = nxt
     return False
 
+
+def contains_mark(fn) -> bool:
+    """这个函数（或它包裹的任意一层）是不是**本插件**装上去的。
+
+    用途：别的插件把实例方法换成自己的包装时，我们决定"要不要再链一层"。
+    链上已经有我们的东西就不要再套 —— 否则每次请求都会加深一层，
+    既浪费又会让熔断计数/健康面板失真。
+
+    ★ 必须顺着 `__wrapped__` 走：functools.wraps 会保留它，
+      而 third-party 的包装器普遍用 wraps。
+    """
+    cur, seen = fn, set()
+    for _ in range(16):
+        if cur is None or id(cur) in seen:
+            break
+        seen.add(id(cur))
+        try:
+            if getattr(cur, MARK, False):
+                return True
+            nxt = getattr(cur, "__wrapped__", None)
+        except Exception:  # noqa: BLE001
+            # 第三方包装器的 __wrapped__ 可能是个会抛错的 property；
+            # 认不出来就当"不是我们的"（最多多链一层，绝不会误判成已装而漏装）。
+            break
+        if nxt is None or nxt is cur:
+            break
+        cur = nxt
+    return False
+
 class PatchHandle:
     """一个接管点的句柄。装得上、还原得回、坏得掉。"""
 
