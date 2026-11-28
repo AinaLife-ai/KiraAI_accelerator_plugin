@@ -24,7 +24,12 @@
 
 ## 装什么、怎么装
 
-> **兼容性**：KiraAI 2.33.1+ 与 3.0 全系列（含 v3.0.0-rc.1；兼容判断走特征识别，不绑版本号）。
+> **兼容性**：KiraAI 2.33.1+ 与 3.0 全系列（含 v3.0.0-rc.1、**3.4.0**；兼容判断走特征识别，不绑版本号）。
+> v1.0.98 起：**3.4.0 的 `async with self._build_client()` 会主动关闭客户端**（框架 #469
+> 修连接泄漏），而我们的 HTTP 客户端复用需要跨请求保留同一个客户端 —— 直接复用会被关死，
+> 表现为第一次健康检查正常、随后全部 `APIConnectionError: Connection error.`。
+> 现在缓存外面套一层"`async with` 退出不关闭"的外壳，所有权留在插件（上限 32 个，
+> 淘汰/卸载时显式 close），3.4.0 下复用照常生效，也不会泄漏连接。
 > v1.0.82 起：抢先发送在 3.0 改为对 `MessageDeliveryService.send_message_chain` 的**按链对账去重**
 > （rc.1 已删 `MessageProcessor.send_xml_messages`/`_parse_xml_msg`），段解析走 `parse_xml` 服务化接口；
 > 面板模型下拉显示可读名（不再显示内部 ID）。
@@ -386,6 +391,22 @@ A：把你的图（webp/jpg/png）丢进 `wallpapers/` 目录，面板里就会�
 
 <details>
 <summary><b>📜 更新日志</b>（点击展开）</summary>
+
+### v1.0.98
+
+- **修复 KiraAI 3.4.0 下 `APIConnectionError: Connection error.`（模型健康检查后全部不可用）**。
+  根因：3.4.0（#469）把 `chat` / `chat_stream` 改成
+  `async with self._build_client() as client:`，`AsyncOpenAI.__aexit__` 会 **close** 客户端；
+  而「复用 HTTP 客户端」缓存的是同一个客户端 ⇒ 第一次请求结束就被关掉，
+  下一次拿到已关闭的客户端 ⇒ 连接错误（表现为健康检查先用掉了第一次，正式回复全失败）。
+- 修复：缓存外面套 `_ReusableHTTPClient`（`async with` 退出**不关闭**真实客户端，
+  其余属性原样转发）；所有权留在插件缓存（最多 32 个），
+  淘汰延迟 30s 关闭、卸载时显式 `close()`，既不误关在跑的请求，也不泄漏连接。
+- 复用前检查 `is_closed()`：万一客户端被外部关掉，下一次自动重建，绝不复用死连接。
+- 新增 `tests/test_client_lifecycle_340.py`（14 断言）：真实 OpenAI SDK + 本地假 HTTP 服务，
+  原生 / 缓存补丁各跑 `chat×2 + stream×2`，覆盖"外部关闭 → 重建"与"卸载收尾"；
+  `run_tests.sh` 已登记。
+- 版本 v1.0.97 → v1.0.98（3.3.x / 3.2.x / 3.1.x / 2.34.x 回归不受影响）。
 
 ### v1.0.97
 

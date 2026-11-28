@@ -61,6 +61,7 @@ run "装载与还原 load"         tests/test_load.py
 run "★会话路由不串"           tests/test_session_routing.py
 run "★消息间隔"               tests/test_message_pacing.py
 run "★客户端复用缓存"         tests/test_client_cache.py
+run "★★★3.4.0 客户端生命周期（async with 不关缓存）" tests/test_client_lifecycle_340.py
 run "★接管点精确还原"         tests/test_patch_restore.py
 run "★记忆落盘优化"           tests/test_memory_dump.py
 run "★抢发后的消息ID对齐"     tests/test_early_sent_alignment.py
