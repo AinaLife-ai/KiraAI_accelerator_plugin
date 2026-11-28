@@ -97,6 +97,102 @@ def _make_id_placeholder(message_results):
 #   而"命中 None"意味着"这条链不用再发" —— 两者混淆会造成重复发送。
 _DELIVERY_MISS = object()
 
+
+class _ReusableHTTPClient:
+    """缓存 HTTP 客户端的 `async with` 外壳（KiraAI 3.4.0+ 生命周期兼容）。
+
+    背景（3.4.0 / #469 "explicitly close async clients to avoid connection leaks"）：
+      框架把 `chat` / `chat_stream` 改成
+          async with self._build_client() as client:
+              ...
+      `AsyncOpenAI.__aexit__` 会 **close** 客户端。而本插件为了复用连接池，
+      `_build_client` 返回的是**缓存里的同一个客户端** ⇒ 第一次请求结束就被关掉，
+      下一次拿到已关闭的客户端 ⇒ `APIConnectionError: Connection error.`
+      （模型健康检查先跑一次，正式回复必然失败，就是这个原因。）
+
+    本外壳只做一件事：`__aexit__` **不关闭**真实客户端，把所有权留在插件缓存；
+    缓存淘汰 / 插件卸载时由插件显式 close（有上限 32 个，不会无限泄漏）。
+    其余属性全部原样转发，3.3.x 那种 `client = self._build_client()` 的用法不变。
+    """
+
+    __slots__ = ("_client",)
+
+    def __init__(self, client: Any):
+        object.__setattr__(self, "_client", client)
+
+    def __getattr__(self, name):
+        return getattr(object.__getattribute__(self, "_client"), name)
+
+    def __setattr__(self, name, value):
+        if name == "_client":
+            object.__setattr__(self, name, value)
+            return
+        setattr(object.__getattribute__(self, "_client"), name, value)
+
+    def __delattr__(self, name):
+        if name == "_client":
+            object.__delattr__(self, name)
+            return
+        delattr(object.__getattribute__(self, "_client"), name)
+
+    async def __aenter__(self):
+        return object.__getattribute__(self, "_client")
+
+    async def __aexit__(self, exc_type, exc, tb):
+        # ★ 不关闭：这个客户端属于插件缓存，下一次请求还要复用。
+        return False
+
+    def __repr__(self):
+        return f"<ReusableHTTPClient {object.__getattribute__(self, '_client')!r}>"
+
+
+def _raw_http_client(item: Any) -> Any:
+    """取出缓存项里的真实客户端（兼容旧缓存里直接存客户端的情况）。
+
+    ★ 必须用 isinstance 判断，不能直接 `getattr(item, "_client")` ——
+      AsyncOpenAI 自己也有一个 `_client`（内部的 httpx 客户端），
+      那样会把"真实客户端"误认成 httpx，收尾时语义就错了。
+    """
+    if isinstance(item, _ReusableHTTPClient):
+        return object.__getattribute__(item, "_client")
+    return item
+
+
+def _http_client_closed(item: Any) -> bool:
+    """缓存里的客户端是不是已经被关掉了（3.4.0 的 async with 会这么做）。"""
+    raw = _raw_http_client(item)
+    fn = getattr(raw, "is_closed", None)
+    if not callable(fn):
+        return False
+    try:
+        return bool(fn())
+    except Exception:  # noqa: BLE001
+        return False
+
+
+async def _aclose_quietly(raw: Any) -> None:
+    """关闭一个客户端，任何异常都不外抛（收尾路径不能影响卸载）。"""
+    if raw is None:
+        return
+    close = getattr(raw, "close", None)
+    if not callable(close):
+        return
+    try:
+        result = close()
+        if hasattr(result, "__await__"):
+            await result
+    except Exception:  # noqa: BLE001
+        pass
+
+
+async def _aclose_after(raw: Any, delay: float) -> None:
+    """等一会儿再关（淘汰时可能还有请求在用旧客户端）。"""
+    try:
+        await asyncio.sleep(max(0.0, float(delay)))
+    except Exception:  # noqa: BLE001
+        return
+    await _aclose_quietly(raw)
+
 class SendCtx:
     """一轮请求的发送上下文（会话 / 事件 / 标签集）。
 
@@ -501,6 +597,12 @@ class AcceleratorPlugin(BasePlugin):
         except Exception:  # noqa: BLE001
             pass
         self.patches.uninstall_all()
+        # ★ 3.4.0 起框架主动关闭客户端；复用缓存的所有权在我们这里，
+        #   卸载前显式收尾，避免连接泄漏。
+        try:
+            await self._close_client_cache()
+        except Exception:  # noqa: BLE001
+            logger.exception("[accel] 关闭缓存客户端失败（忽略）")
         self._proxy_cache.clear()
         self._early_inflight_sids.clear()
         logger.info("[accel] terminate，所有接管点已还原")
@@ -749,6 +851,7 @@ class AcceleratorPlugin(BasePlugin):
             return
 
         cache = self._client_cache
+        plugin = self
 
         def factory(original):
             def make(self, *args, **kwargs):
@@ -766,17 +869,57 @@ class AcceleratorPlugin(BasePlugin):
                 key = (pc.get("base_url", ""), pc.get("api_key", ""),
                        repr(sorted(hdr.items())) if isinstance(hdr, dict) else "")
                 c = cache.get(key)
-                if c is None:
-                    c = original(self, *args, **kwargs)
-                    if len(cache) > 32:          # 防着配置反复变更把缓存撑大
-                        cache.clear()
-                    cache[key] = c
+                if c is not None:
+                    # ★ KiraAI 3.4.0+：框架每次请求 `async with self._build_client()`
+                    #   并在退出时 close。真实客户端被关掉后**不能**再复用，
+                    #   否则下一次就是 APIConnectionError: Connection error.
+                    if not _http_client_closed(c):
+                        return c
+                    cache.pop(key, None)
+                raw = original(self, *args, **kwargs)
+                # 用"async with 不关闭"的外壳缓存真实客户端：
+                # 3.4.0 复用连接池仍然成立；3.3.x 直接取 client.chat 也照常转发。
+                c = _ReusableHTTPClient(raw)
+                if len(cache) > 32:          # 防着配置反复变更把缓存撑大
+                    stale = list(cache.values())
+                    cache.clear()
+                    plugin._close_clients_later(stale)
+                cache[key] = c
                 return c
             return make
 
         h = PatchHandle("reuse_http_client")
         if install(h, client_cls, "_build_client", factory) is not None:
             self.patches.add(h)
+
+    # ── 缓存客户端的显式收尾（3.4.0：所有权在插件，必须自己关）──
+    def _close_clients_later(self, items) -> None:
+        """延迟关闭被淘汰的客户端（不阻塞调用方，也不打断可能仍在跑的请求）。"""
+        if not items:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        for item in items:
+            raw = _raw_http_client(item)
+            if raw is None or not callable(getattr(raw, "close", None)):
+                continue
+            try:
+                # 淘汰时可能还有请求在用旧客户端：等一会儿再关（30s 足够一轮回复）。
+                loop.create_task(_aclose_after(raw, 30.0))
+            except Exception:  # noqa: BLE001
+                pass
+
+    async def _close_client_cache(self) -> None:
+        """插件卸载/热重载前关闭所有缓存客户端，避免连接泄漏。"""
+        cache = getattr(self, "_client_cache", None)
+        if not cache:
+            return
+        items = list(cache.values())
+        cache.clear()
+        for item in items:
+            await _aclose_quietly(_raw_http_client(item))
 
     # ══════════════════════════════════════════════════════════
     # L4 流式引擎（强制流式 + 抢先发送）
